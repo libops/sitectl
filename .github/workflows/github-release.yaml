@@ -10,7 +10,8 @@ jobs:
     if: github.event.pull_request.merged == true && !contains(github.event.pull_request.title, 'skip-release')
     uses: libops/actions/.github/workflows/bump-release.yaml@main
     with:
-      workflow_file: goreleaser.yml
+      workflow_file: goreleaser.yaml
+      prefix: v
     permissions:
       contents: write
       actions: write
