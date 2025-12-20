@@ -234,13 +234,56 @@ var editSiteCmd = &cobra.Command{
 			siteConfig.SiteName = name
 		}
 
+		if cmd.Flags().Changed("github-repository") {
+			v, _ := cmd.Flags().GetString("github-repository")
+			siteConfig.GithubRepository = v
+		}
+
 		if cmd.Flags().Changed("github-ref") {
 			githubRef, _ := cmd.Flags().GetString("github-ref")
 			siteConfig.GithubRef = githubRef
 		}
 
+		if cmd.Flags().Changed("compose-path") {
+			v, _ := cmd.Flags().GetString("compose-path")
+			siteConfig.ComposePath = v
+		}
+
+		if cmd.Flags().Changed("compose-file") {
+			v, _ := cmd.Flags().GetString("compose-file")
+			siteConfig.ComposeFile = v
+		}
+
+		if cmd.Flags().Changed("port") {
+			v, _ := cmd.Flags().GetInt32("port")
+			siteConfig.Port = v
+		}
+
+		if cmd.Flags().Changed("application-type") {
+			v, _ := cmd.Flags().GetString("application-type")
+			siteConfig.ApplicationType = v
+		}
+
+		if cmd.Flags().Changed("up-cmd") {
+			v, _ := cmd.Flags().GetStringArray("up-cmd")
+			siteConfig.UpCmd = v
+		}
+
+		if cmd.Flags().Changed("init-cmd") {
+			v, _ := cmd.Flags().GetStringArray("init-cmd")
+			siteConfig.InitCmd = v
+		}
+
+		if cmd.Flags().Changed("rollout-cmd") {
+			v, _ := cmd.Flags().GetStringArray("rollout-cmd")
+			siteConfig.RolloutCmd = v
+		}
+
 		// Build field mask
-		fieldMask := buildFieldMask(cmd, []string{"name", "github-ref"})
+		fieldMask := buildFieldMask(cmd, []string{
+			"name", "github-repository", "github-ref", "compose-path", "compose-file",
+			"port", "application-type", "up-cmd", "init-cmd", "rollout-cmd",
+		})
 		if fieldMask == nil {
 			return fmt.Errorf("no fields to update - specify at least one flag to edit")
 		}
@@ -292,5 +335,13 @@ func init() {
 
 	// Site edit flags (same as create, but all optional)
 	editSiteCmd.Flags().String("name", "", "Site name")
+	editSiteCmd.Flags().String("github-repository", "", "GitHub repository URL")
 	editSiteCmd.Flags().String("github-ref", "", "GitHub reference (e.g., heads/main, tags/v1.0)")
+	editSiteCmd.Flags().String("compose-path", "", "Path to docker-compose directory")
+	editSiteCmd.Flags().String("compose-file", "", "Docker compose file name")
+	editSiteCmd.Flags().Int32("port", 0, "Port the application listens on")
+	editSiteCmd.Flags().String("application-type", "", "Type of application")
+	editSiteCmd.Flags().StringArray("up-cmd", []string{}, "Commands to start containers")
+	editSiteCmd.Flags().StringArray("init-cmd", []string{}, "Commands to run on initial setup")
+	editSiteCmd.Flags().StringArray("rollout-cmd", []string{}, "Commands to run during rollout")
 }

@@ -118,16 +118,6 @@ var createProjectCmd = &cobra.Command{
 			return err
 		}
 
-		githubRepo, err := cmd.Flags().GetString("github-repo")
-		if err != nil {
-			return err
-		}
-
-		var githubRepoPtr *string
-		if githubRepo != "" {
-			githubRepoPtr = &githubRepo
-		}
-
 		resp, err := client.ProjectService.CreateProject(cmd.Context(), connect.NewRequest(&libopsv1.CreateProjectRequest{
 			OrganizationId: orgID,
 			Project: &common.ProjectConfig{
@@ -136,7 +126,6 @@ var createProjectCmd = &cobra.Command{
 				Zone:              zone,
 				MachineType:       machineType,
 				CreateBranchSites: createBranchSites,
-				GithubRepo:        githubRepoPtr,
 			},
 		}))
 		if err != nil {
@@ -150,9 +139,6 @@ var createProjectCmd = &cobra.Command{
 		fmt.Printf("  Organization ID: %s\n", resp.Msg.Project.OrganizationId)
 		fmt.Printf("  Region: %s\n", resp.Msg.Project.Region)
 		fmt.Printf("  Zone: %s\n", resp.Msg.Project.Zone)
-		if resp.Msg.Project.GithubRepo != nil && *resp.Msg.Project.GithubRepo != "" {
-			fmt.Printf("  GitHub Repo: %s\n", *resp.Msg.Project.GithubRepo)
-		}
 
 		// Invalidate project cache
 		if err := resources.InvalidateAllResourceCaches(); err != nil {
@@ -187,7 +173,47 @@ var createSiteCmd = &cobra.Command{
 			return err
 		}
 
+		githubRepository, err := cmd.Flags().GetString("github-repository")
+		if err != nil {
+			return err
+		}
+
 		githubRef, err := cmd.Flags().GetString("github-ref")
+		if err != nil {
+			return err
+		}
+
+		composePath, err := cmd.Flags().GetString("compose-path")
+		if err != nil {
+			return err
+		}
+
+		composeFile, err := cmd.Flags().GetString("compose-file")
+		if err != nil {
+			return err
+		}
+
+		port, err := cmd.Flags().GetInt32("port")
+		if err != nil {
+			return err
+		}
+
+		appType, err := cmd.Flags().GetString("application-type")
+		if err != nil {
+			return err
+		}
+
+		upCmd, err := cmd.Flags().GetStringArray("up-cmd")
+		if err != nil {
+			return err
+		}
+
+		initCmd, err := cmd.Flags().GetStringArray("init-cmd")
+		if err != nil {
+			return err
+		}
+
+		rolloutCmd, err := cmd.Flags().GetStringArray("rollout-cmd")
 		if err != nil {
 			return err
 		}
@@ -195,8 +221,16 @@ var createSiteCmd = &cobra.Command{
 		resp, err := client.SiteService.CreateSite(cmd.Context(), connect.NewRequest(&libopsv1.CreateSiteRequest{
 			ProjectId: projID,
 			Site: &common.SiteConfig{
-				SiteName:  name,
-				GithubRef: githubRef,
+				SiteName:         name,
+				GithubRepository: githubRepository,
+				GithubRef:        githubRef,
+				ComposePath:      composePath,
+				ComposeFile:      composeFile,
+				Port:             port,
+				ApplicationType:  appType,
+				UpCmd:            upCmd,
+				InitCmd:          initCmd,
+				RolloutCmd:       rolloutCmd,
 			},
 		}))
 		if err != nil {
@@ -209,7 +243,12 @@ var createSiteCmd = &cobra.Command{
 		fmt.Printf("  Name: %s\n", resp.Msg.Site.SiteName)
 		fmt.Printf("  Organization ID: %s\n", resp.Msg.Site.OrganizationId)
 		fmt.Printf("  Project ID: %s\n", resp.Msg.Site.ProjectId)
+		fmt.Printf("  GitHub Repo: %s\n", resp.Msg.Site.GithubRepository)
 		fmt.Printf("  GitHub Ref: %s\n", resp.Msg.Site.GithubRef)
+		fmt.Printf("  Compose Path: %s\n", resp.Msg.Site.ComposePath)
+		fmt.Printf("  Compose File: %s\n", resp.Msg.Site.ComposeFile)
+		fmt.Printf("  Port: %d\n", resp.Msg.Site.Port)
+		fmt.Printf("  Application Type: %s\n", resp.Msg.Site.ApplicationType)
 
 		// Invalidate site cache
 		if err := resources.InvalidateAllResourceCaches(); err != nil {
@@ -235,19 +274,26 @@ func init() {
 	// Project flags
 	createProjectCmd.Flags().String("organization-id", "", "Organization ID (required)")
 	createProjectCmd.Flags().String("name", "", "Project name (required)")
-	createProjectCmd.Flags().String("github-repo", "", "GitHub repository URL (required)")
 	createProjectCmd.Flags().String("region", "us-central1", "GCP region")
 	createProjectCmd.Flags().String("zone", "us-central1-f", "GCP zone")
 	createProjectCmd.Flags().String("machine-type", "e2-standard-2", "GCP machine type")
 	createProjectCmd.Flags().Bool("create-branch-sites", false, "Auto-create sites for new branches")
 	_ = createProjectCmd.MarkFlagRequired("organization-id")
 	_ = createProjectCmd.MarkFlagRequired("name")
-	_ = createProjectCmd.MarkFlagRequired("github-repo")
 
 	// Site flags
 	createSiteCmd.Flags().String("project-id", "", "Project ID (required)")
 	createSiteCmd.Flags().String("name", "", "Site name (required)")
+	createSiteCmd.Flags().String("github-repository", "", "GitHub repository URL (required)")
 	createSiteCmd.Flags().String("github-ref", "", "GitHub reference (e.g., heads/main, tags/v1.0)")
+	createSiteCmd.Flags().String("compose-path", "", "Path to docker-compose directory")
+	createSiteCmd.Flags().String("compose-file", "docker-compose.yml", "Docker compose file name")
+	createSiteCmd.Flags().Int32("port", 80, "Port the application listens on")
+	createSiteCmd.Flags().String("application-type", "generic", "Type of application")
+	createSiteCmd.Flags().StringArray("up-cmd", []string{}, "Commands to start containers")
+	createSiteCmd.Flags().StringArray("init-cmd", []string{}, "Commands to run on initial setup")
+	createSiteCmd.Flags().StringArray("rollout-cmd", []string{}, "Commands to run during rollout")
 	_ = createSiteCmd.MarkFlagRequired("project-id")
 	_ = createSiteCmd.MarkFlagRequired("name")
+	_ = createSiteCmd.MarkFlagRequired("github-repository")
 }
