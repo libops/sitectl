@@ -1,4 +1,4 @@
-.PHONY: build deps lint test docker integration-test docs
+.PHONY: build deps lint test docker integration-test docs plugins install-plugins
 
 BINARY_NAME=sitectl
 
@@ -22,3 +22,4 @@ lint:
 
 test: build
 	go test -v -race ./...
+

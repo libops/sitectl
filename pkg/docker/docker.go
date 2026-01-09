@@ -3,15 +3,18 @@ package docker
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/libops/sitectl/pkg/config"
 	"golang.org/x/crypto/ssh"
 )
@@ -148,4 +151,138 @@ func (d *DockerClient) GetContainerName(c *config.Context, service string, never
 	}
 
 	return "", nil
+}
+
+// ExecOptions holds options for executing a command in a container
+type ExecOptions struct {
+	// Container is the container ID or name
+	Container string
+
+	// Cmd is the command to execute
+	Cmd []string
+
+	// Env is additional environment variables
+	Env []string
+
+	// WorkingDir is the working directory
+	WorkingDir string
+
+	// User to run as
+	User string
+
+	// AttachStdin attaches stdin
+	AttachStdin bool
+
+	// AttachStdout attaches stdout
+	AttachStdout bool
+
+	// AttachStderr attaches stderr
+	AttachStderr bool
+
+	// Tty allocates a pseudo-TTY
+	Tty bool
+
+	// Stdin is the input stream
+	Stdin io.Reader
+
+	// Stdout is the output stream
+	Stdout io.Writer
+
+	// Stderr is the error stream
+	Stderr io.Writer
+}
+
+// Exec executes a command in a container using the DockerClient
+func (d *DockerClient) Exec(ctx context.Context, opts ExecOptions) (int, error) {
+	// Set defaults
+	if opts.Stdout == nil {
+		opts.Stdout = os.Stdout
+	}
+	if opts.Stderr == nil {
+		opts.Stderr = os.Stderr
+	}
+	if opts.Stdin == nil {
+		opts.Stdin = os.Stdin
+	}
+
+	// Get the underlying client (type assert to *client.Client)
+	cli, ok := d.CLI.(*client.Client)
+	if !ok {
+		return -1, fmt.Errorf("CLI is not a *client.Client")
+	}
+
+	// Create exec instance
+	execConfig := dockercontainer.ExecOptions{
+		AttachStdin:  opts.AttachStdin,
+		AttachStdout: opts.AttachStdout,
+		AttachStderr: opts.AttachStderr,
+		Tty:          opts.Tty,
+		Cmd:          opts.Cmd,
+		Env:          opts.Env,
+		WorkingDir:   opts.WorkingDir,
+		User:         opts.User,
+	}
+
+	execID, err := cli.ContainerExecCreate(ctx, opts.Container, execConfig)
+	if err != nil {
+		return -1, fmt.Errorf("failed to create exec: %w", err)
+	}
+
+	// Attach to exec
+	resp, err := cli.ContainerExecAttach(ctx, execID.ID, dockercontainer.ExecStartOptions{
+		Tty: opts.Tty,
+	})
+	if err != nil {
+		return -1, fmt.Errorf("failed to attach to exec: %w", err)
+	}
+	defer resp.Close()
+
+	// Copy output
+	errCh := make(chan error, 1)
+	go func() {
+		if opts.Tty {
+			// For TTY, copy directly
+			_, err := io.Copy(opts.Stdout, resp.Reader)
+			errCh <- err
+		} else {
+			// For non-TTY, demux stdout/stderr
+			_, err := stdcopy.StdCopy(opts.Stdout, opts.Stderr, resp.Reader)
+			errCh <- err
+		}
+	}()
+
+	// Wait for completion
+	if err := <-errCh; err != nil && err != io.EOF {
+		return -1, fmt.Errorf("failed to copy output: %w", err)
+	}
+
+	// Get exit code
+	inspectResp, err := cli.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return -1, fmt.Errorf("failed to inspect exec: %w", err)
+	}
+
+	return inspectResp.ExitCode, nil
+}
+
+// ExecSimple executes a simple command and returns the exit code
+func (d *DockerClient) ExecSimple(ctx context.Context, containerID string, cmd []string) (int, error) {
+	return d.Exec(ctx, ExecOptions{
+		Container:    containerID,
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+}
+
+// ExecInteractive executes an interactive command with TTY
+func (d *DockerClient) ExecInteractive(ctx context.Context, containerID string, cmd []string) (int, error) {
+	return d.Exec(ctx, ExecOptions{
+		Container:    containerID,
+		Cmd:          cmd,
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		Tty:          true,
+	})
 }
