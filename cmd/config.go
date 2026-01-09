@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/libops/sitectl/internal/utils"
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/spf13/cobra"
 )
 
@@ -132,7 +132,7 @@ var setContextCmd = &cobra.Command{
 		}
 
 		if err = config.SaveContext(cc, defaultContext); err != nil {
-			utils.ExitOnError(err)
+			helpers.ExitOnError(err)
 		}
 
 		return nil
