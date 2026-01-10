@@ -64,14 +64,8 @@ func init() {
 		ll = "INFO"
 	}
 
-	apiURL := os.Getenv("LIBOPS_API_URL")
-	if apiURL == "" {
-		apiURL = "https://api.libops.io"
-	}
-
 	RootCmd.PersistentFlags().String("context", c, "The sitectl context to use. See sitectl config --help for more info")
 	RootCmd.PersistentFlags().String("log-level", ll, "The logging level for the command")
-	RootCmd.PersistentFlags().String("api-url", apiURL, "Base URL of the libops API")
 	RootCmd.PersistentFlags().String("format", "table", `Format output using a custom template:
 'table':            Print output in table format with column headers (default)
 'table TEMPLATE':   Print output in table format using the given Go template

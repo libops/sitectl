@@ -286,3 +286,62 @@ func (d *DockerClient) ExecInteractive(ctx context.Context, containerID string, 
 		Tty:          true,
 	})
 }
+
+// GetUris constructs MySQL and SSH connection URIs for database tools like Sequel Ace
+// Returns: mysqlURI, sshURI, error
+func GetUris(c *config.Context) (string, string, error) {
+	ctx := context.Background()
+
+	// Get Docker client
+	dockerCli, err := GetDockerCli(c)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get docker client: %w", err)
+	}
+	defer dockerCli.Close()
+
+	// Get the MariaDB container name
+	containerName, err := dockerCli.GetContainerName(c, "mariadb", false)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get mariadb container: %w", err)
+	}
+	if containerName == "" {
+		return "", "", fmt.Errorf("mariadb container not found")
+	}
+
+	// Get MySQL credentials from container environment
+	rootPassword, err := GetSecret(ctx, dockerCli.CLI, c, containerName, "DB_ROOT_PASSWORD")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get MySQL root password: %w", err)
+	}
+
+	database, err := GetConfigEnv(ctx, dockerCli.CLI, containerName, "MARIADB_DATABASE")
+	if err != nil {
+		database = "drupal_default"
+	}
+
+	var mysqlURI string
+	var sshURI string
+
+	if c.DockerHostType == config.ContextLocal {
+		// For local contexts, connect directly to the container
+		mysqlURI = fmt.Sprintf("mysql://root:%s@127.0.0.1:3306/%s", rootPassword, database)
+		sshURI = "" // No SSH needed for local
+	} else {
+		// For remote contexts, use SSH tunnel
+		mysqlURI = fmt.Sprintf("mysql://root:%s@127.0.0.1:3306/%s", rootPassword, database)
+
+		// Build SSH URI components for Sequel Ace
+		sshPort := c.SSHPort
+		if sshPort == 0 {
+			sshPort = 22
+		}
+
+		sshParams := fmt.Sprintf("sshHost=%s&sshUser=%s&sshPort=%d", c.SSHHostname, c.SSHUser, sshPort)
+		if c.SSHKeyPath != "" {
+			sshParams += fmt.Sprintf("&sshKeyFile=%s", c.SSHKeyPath)
+		}
+		sshURI = sshParams
+	}
+
+	return mysqlURI, sshURI, nil
+}

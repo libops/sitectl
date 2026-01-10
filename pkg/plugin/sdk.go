@@ -83,9 +83,6 @@ func (s *SDK) setupLogging(cmd *cobra.Command) error {
 	if s.RootCmd.PersistentFlags().Lookup("context") != nil {
 		s.Config.Context, _ = cmd.Flags().GetString("context")
 	}
-	if s.RootCmd.PersistentFlags().Lookup("api-url") != nil {
-		s.Config.APIUrl, _ = cmd.Flags().GetString("api-url")
-	}
 	if s.RootCmd.PersistentFlags().Lookup("format") != nil {
 		s.Config.Format, _ = cmd.Flags().GetString("format")
 	}
@@ -120,15 +117,9 @@ func (s *SDK) Execute() {
 	}
 }
 
-// AddLibopsFlags adds common libops-specific flags
-func (s *SDK) AddLibopsFlags(currentContext string) {
-	apiURL := os.Getenv("LIBOPS_API_URL")
-	if apiURL == "" {
-		apiURL = "https://api.libops.io"
-	}
-
+// AddGlobalFlags adds common libops-specific flags
+func (s *SDK) AddGlobalFlags(currentContext string) {
 	s.RootCmd.PersistentFlags().String("context", currentContext, "The sitectl context to use. See sitectl config --help for more info")
-	s.RootCmd.PersistentFlags().String("api-url", apiURL, "Base URL of the libops API")
 }
 
 // GetMetadataCommand returns a command that displays plugin metadata
