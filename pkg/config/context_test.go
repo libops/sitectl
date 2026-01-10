@@ -77,7 +77,6 @@ func contextsEqual(a, b Context) bool {
 		a.DockerHostType == b.DockerHostType &&
 		a.DockerSocket == b.DockerSocket &&
 		a.ProjectName == b.ProjectName &&
-		a.Profile == b.Profile &&
 		a.ProjectDir == b.ProjectDir &&
 		a.SSHUser == b.SSHUser &&
 		a.SSHHostname == b.SSHHostname &&
@@ -312,7 +311,6 @@ func TestVerifyRemoteInputExistingConfig(t *testing.T) {
 		SSHUser:     "bar",
 		SSHPort:     123,
 		SSHKeyPath:  "/assuming/we/already/checked",
-		Profile:     "prod",
 		ProjectName: "baz",
 	}
 	cc := original

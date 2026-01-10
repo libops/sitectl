@@ -16,7 +16,6 @@ func TestLoadFromFlags(t *testing.T) {
 	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	flags.String("docker-socket", "/var/run/docker.sock", "Path to Docker socket")
 	flags.String("type", "local", "Context type: local or remote")
-	flags.String("profile", "default", "Profile name")
 	flags.String("ssh-hostname", "example.com", "SSH host for remote context")
 	flags.Uint("ssh-port", 22, "port")
 	flags.String("ssh-user", "user", "SSH user for remote context")
@@ -34,7 +33,6 @@ func TestLoadFromFlags(t *testing.T) {
 	args := []string{
 		"--docker-socket", "/custom/docker.sock",
 		"--type", "remote",
-		"--profile", "prod",
 		"--ssh-hostname", "remote.example.com",
 		"--ssh-port", "123",
 		"--ssh-user", "remoteuser",
@@ -61,9 +59,6 @@ func TestLoadFromFlags(t *testing.T) {
 	}
 	if ctx.DockerHostType != "remote" {
 		t.Errorf("Expected type 'remote', got %q", ctx.DockerHostType)
-	}
-	if ctx.Profile != "prod" {
-		t.Errorf("Expected profile 'prod', got %q", ctx.Profile)
 	}
 	if ctx.SSHHostname != "remote.example.com" {
 		t.Errorf("Expected ssh-host 'remote.example.com', got %q", ctx.SSHHostname)

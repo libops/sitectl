@@ -162,7 +162,6 @@ func SetCommandFlags(flags *pflag.FlagSet) {
 	flags.String("ssh-key", "", "Path to SSH private key for remote context. e.g. "+key)
 	flags.String("project-dir", "", "Path to docker compose project directory")
 	flags.String("project-name", "docker-compose", "Name of the docker compose project")
-	flags.String("profile", "", "docker compose profile")
 	flags.Bool("sudo", false, "for remote contexts, run docker commands as sudo")
 	flags.StringSlice("env-file", []string{}, "when running remote docker commands, the --env-file paths to pass to docker compose")
 	flags.String("database-service", "mariadb", "Name of the database service in Docker Compose")

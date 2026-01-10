@@ -29,19 +29,17 @@ const (
 )
 
 type Context struct {
-	Name           string            `yaml:"name"`
-	DockerHostType ContextType       `mapstructure:"type" yaml:"type"`
-	DockerSocket   string            `yaml:"docker-socket"`
-	ProjectName    string            `yaml:"project-name"`
-	Profile        string            `yaml:"profile"`
-	ProjectDir     string            `yaml:"project-dir"`
-	SSHUser        string            `yaml:"ssh-user"`
-	SSHHostname    string            `yaml:"ssh-hostname,omitempty"`
-	SSHPort        uint              `yaml:"ssh-port,omitempty"`
-	SSHKeyPath     string            `yaml:"ssh-key,omitempty"`
-	EnvFile        []string          `yaml:"env-file"`
-	RunSudo        bool              `yaml:"sudo"`
-	UriMap         map[string]string `yaml:"uriMap"`
+	Name           string      `yaml:"name"`
+	DockerHostType ContextType `mapstructure:"type" yaml:"type"`
+	DockerSocket   string      `yaml:"docker-socket"`
+	ProjectName    string      `yaml:"project-name"`
+	ProjectDir     string      `yaml:"project-dir"`
+	SSHUser        string      `yaml:"ssh-user"`
+	SSHHostname    string      `yaml:"ssh-hostname,omitempty"`
+	SSHPort        uint        `yaml:"ssh-port,omitempty"`
+	SSHKeyPath     string      `yaml:"ssh-key,omitempty"`
+	EnvFile        []string    `yaml:"env-file"`
+	RunSudo        bool        `yaml:"sudo"`
 
 	// Database connection configuration
 	DatabaseService        string `yaml:"database-service,omitempty"`
