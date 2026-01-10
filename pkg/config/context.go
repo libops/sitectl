@@ -437,3 +437,22 @@ func (c *Context) UploadFile(source, destination string) error {
 
 	return nil
 }
+
+// GetSshUri returns an SSH connection URI
+func (c *Context) GetSshUri() string {
+	if c.DockerHostType == ContextLocal {
+		return ""
+	}
+
+	sshPort := c.SSHPort
+	if sshPort == 0 {
+		sshPort = 22
+	}
+
+	sshParams := fmt.Sprintf("sshHost=%s&sshUser=%s&sshPort=%d", c.SSHHostname, c.SSHUser, sshPort)
+	if c.SSHKeyPath != "" {
+		sshParams += fmt.Sprintf("&sshKeyFile=%s", c.SSHKeyPath)
+	}
+
+	return sshParams
+}

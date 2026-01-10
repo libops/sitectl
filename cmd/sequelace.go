@@ -31,7 +31,27 @@ var sequelAceCmd = &cobra.Command{
 			return err
 		}
 
-		mysql, ssh, err := docker.GetUris(context)
+		dbService, err := f.GetString("database-service")
+		if err != nil {
+			return err
+		}
+
+		dbUser, err := f.GetString("db-user")
+		if err != nil {
+			return err
+		}
+
+		dbPasswordSecret, err := f.GetString("db-password-secret")
+		if err != nil {
+			return err
+		}
+
+		dbName, err := f.GetString("database-name")
+		if err != nil {
+			return err
+		}
+
+		mysql, ssh, err := docker.GetDatabaseUris(context, dbService, dbUser, dbPasswordSecret, dbName)
 		if err != nil {
 			return err
 		}
@@ -55,4 +75,8 @@ func init() {
 	RootCmd.AddCommand(sequelAceCmd)
 
 	sequelAceCmd.Flags().String("sequel-ace-path", "/Applications/Sequel Ace.app/Contents/MacOS/Sequel Ace", "Full path to your Sequel Ace app")
+	sequelAceCmd.Flags().String("database-service", "mariadb", "Name of the database service in Docker Compose")
+	sequelAceCmd.Flags().String("db-user", "root", "Database user to connect as")
+	sequelAceCmd.Flags().String("db-password-secret", "DB_ROOT_PASSWORD", "Name of the secret containing the database password")
+	sequelAceCmd.Flags().String("database-name", "drupal_default", "Name of the database to connect to")
 }
