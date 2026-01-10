@@ -84,7 +84,11 @@ func contextsEqual(a, b Context) bool {
 		a.SSHPort == b.SSHPort &&
 		a.SSHKeyPath == b.SSHKeyPath &&
 		len(a.EnvFile) == len(b.EnvFile) &&
-		a.RunSudo == b.RunSudo
+		a.RunSudo == b.RunSudo &&
+		a.DatabaseService == b.DatabaseService &&
+		a.DatabaseUser == b.DatabaseUser &&
+		a.DatabasePasswordSecret == b.DatabasePasswordSecret &&
+		a.DatabaseName == b.DatabaseName
 }
 
 func TestContextString(t *testing.T) {

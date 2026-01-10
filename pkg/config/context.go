@@ -43,6 +43,12 @@ type Context struct {
 	RunSudo        bool              `yaml:"sudo"`
 	UriMap         map[string]string `yaml:"uriMap"`
 
+	// Database connection configuration
+	DatabaseService        string `yaml:"database-service,omitempty"`
+	DatabaseUser           string `yaml:"database-user,omitempty"`
+	DatabasePasswordSecret string `yaml:"database-password-secret,omitempty"`
+	DatabaseName           string `yaml:"database-name,omitempty"`
+
 	ReadSmallFileFunc func(filename string) string `yaml:"-"`
 }
 
@@ -95,6 +101,20 @@ func SaveContext(ctx *Context, setDefault bool) error {
 	cfg, err := Load()
 	if err != nil {
 		return err
+	}
+
+	// Set database defaults if not provided
+	if ctx.DatabaseService == "" {
+		ctx.DatabaseService = "mariadb"
+	}
+	if ctx.DatabaseUser == "" {
+		ctx.DatabaseUser = "root"
+	}
+	if ctx.DatabasePasswordSecret == "" {
+		ctx.DatabasePasswordSecret = "DB_ROOT_PASSWORD"
+	}
+	if ctx.DatabaseName == "" {
+		ctx.DatabaseName = "drupal_default"
 	}
 
 	updated := false

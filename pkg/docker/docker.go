@@ -289,7 +289,7 @@ func (d *DockerClient) ExecInteractive(ctx context.Context, containerID string, 
 
 // GetDatabaseUris constructs MySQL and SSH connection URIs for database tools like Sequel Ace
 // Returns: mysqlURI, sshURI, error
-func GetDatabaseUris(c *config.Context, dbService, dbUser, dbPasswordSecret, dbName string) (string, string, error) {
+func GetDatabaseUris(c *config.Context) (string, string, error) {
 	ctx := context.Background()
 
 	// Get Docker client
@@ -300,29 +300,20 @@ func GetDatabaseUris(c *config.Context, dbService, dbUser, dbPasswordSecret, dbN
 	defer dockerCli.Close()
 
 	// Get the database container name
-	containerName, err := dockerCli.GetContainerName(c, dbService, false)
+	containerName, err := dockerCli.GetContainerName(c, c.DatabaseService, false)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get %s container: %w", dbService, err)
+		return "", "", fmt.Errorf("failed to get %s container: %w", c.DatabaseService, err)
 	}
 	if containerName == "" {
-		return "", "", fmt.Errorf("%s container not found", dbService)
+		return "", "", fmt.Errorf("%s container not found", c.DatabaseService)
 	}
 
 	// Get database password from container environment
-	password, err := GetSecret(ctx, dockerCli.CLI, c, containerName, dbPasswordSecret)
+	password, err := GetSecret(ctx, dockerCli.CLI, c, containerName, c.DatabasePasswordSecret)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get database password from %s: %w", dbPasswordSecret, err)
+		return "", "", fmt.Errorf("failed to get database password from %s: %w", c.DatabasePasswordSecret, err)
 	}
 
-	// Use provided database name, or fall back to reading from container environment
-	database := dbName
-	if database == "" {
-		database, err = GetConfigEnv(ctx, dockerCli.CLI, containerName, "MARIADB_DATABASE")
-		if err != nil {
-			database = "drupal_default"
-		}
-	}
-
-	mysqlURI := fmt.Sprintf("mysql://%s:%s@127.0.0.1:3306/%s", dbUser, password, database)
+	mysqlURI := fmt.Sprintf("mysql://%s:%s@127.0.0.1:3306/%s", c.DatabaseUser, password, c.DatabaseName)
 	return mysqlURI, c.GetSshUri(), nil
 }

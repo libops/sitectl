@@ -165,4 +165,8 @@ func SetCommandFlags(flags *pflag.FlagSet) {
 	flags.String("profile", "", "docker compose profile")
 	flags.Bool("sudo", false, "for remote contexts, run docker commands as sudo")
 	flags.StringSlice("env-file", []string{}, "when running remote docker commands, the --env-file paths to pass to docker compose")
+	flags.String("database-service", "mariadb", "Name of the database service in Docker Compose")
+	flags.String("database-user", "root", "Database user to connect as (e.g. root, admin)")
+	flags.String("database-password-secret", "DB_ROOT_PASSWORD", "Name of the docker compose secret containing the database password")
+	flags.String("database-name", "drupal_default", "Name of the database to connect to (e.g. drupal_default)")
 }
