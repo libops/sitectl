@@ -66,20 +66,14 @@ func init() {
 
 	RootCmd.PersistentFlags().String("context", c, "The sitectl context to use. See sitectl config --help for more info")
 	RootCmd.PersistentFlags().String("log-level", ll, "The logging level for the command")
-	RootCmd.PersistentFlags().String("format", "table", `Format output using a custom template:
-'table':            Print output in table format with column headers (default)
-'table TEMPLATE':   Print output in table format using the given Go template
-'json':             Print in JSON format
-'TEMPLATE':         Print output using the given Go template`)
-
 	discoverAndRegisterPlugins()
 }
 
 func discoverAndRegisterPlugins() {
 	path := os.Getenv("PATH")
-	paths := strings.Split(path, string(os.PathListSeparator))
+	paths := strings.SplitSeq(path, string(os.PathListSeparator))
 
-	for _, p := range paths {
+	for p := range paths {
 		files, err := os.ReadDir(p)
 		if err != nil {
 			continue // Ignore directories that can't be read

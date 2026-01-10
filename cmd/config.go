@@ -5,6 +5,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/helpers"
@@ -204,12 +205,125 @@ var deleteContextCmd = &cobra.Command{
 	},
 }
 
+// createConfigCmd creates sitectl config for existing isle-site-template installs
+var createConfigCmd = &cobra.Command{
+	Use:   "create [context-name]",
+	Args:  cobra.ExactArgs(1),
+	Short: "Create a sitectl config for existing Docker Compose installs",
+	Long: `Create a sitectl context for an existing Docker Compose installation.
+
+This command registers an existing Docker Compose site with sitectl so you can manage it.
+It does NOT create a new Docker Compose site - use 'create context' for that.
+
+The command will interactively prompt for:
+  - Whether the site is local or remote
+  - Project directory path
+  - Remote SSH connection details (if applicable)
+
+Examples:
+  # Create config for a local Docker Compose site
+  sitectl create config dev --type local --project-dir /home/user/isle
+
+  # Create config for a remote Docker Compose site
+  sitectl create config prod \
+    --type remote \
+    --project-dir /opt/isle \
+    --ssh-hostname isle.example.com \
+    --ssh-user deploy \
+    --ssh-key ~/.ssh/id_rsa`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cc, err := config.GetContext(args[0])
+		if err != nil {
+			return err
+		}
+
+		cexists := cc.DockerSocket != ""
+
+		f := cmd.Flags()
+		context, err := config.LoadFromFlags(f, cc)
+		if err != nil {
+			return err
+		}
+		context.Name = args[0]
+
+		if cexists {
+			overwrite, err := config.GetInput("The context already exists. Do you want to overwrite it? [y/N]: ")
+			if err != nil {
+				return err
+			}
+			if !strings.EqualFold(overwrite, "y") && !strings.EqualFold(overwrite, "yes") {
+				fmt.Println("Cancelling...")
+				os.Exit(1)
+			}
+		}
+
+		t, err := config.GetInput(fmt.Sprintf("Is the context local (on this machine) or remote (on a VM)? [%s]: ", string(context.DockerHostType)))
+		if err != nil {
+			return err
+		}
+		if t != "" {
+			if t != "remote" && t != "local" {
+				fmt.Printf("Unknown context type (%s). Valid values are local or remote\n", t)
+				os.Exit(1)
+			}
+			context.DockerHostType = config.ContextType(t)
+		}
+		dir, err := config.GetInput(fmt.Sprintf("Full directory path to the project (directory where docker-compose.yml is located) [%s]: ", context.ProjectDir))
+		if err != nil {
+			return err
+		}
+		if dir != "" {
+			context.ProjectDir = dir
+		}
+
+		if context.DockerHostType == config.ContextRemote {
+			err = cc.VerifyRemoteInput(true)
+			if err != nil {
+				return err
+			}
+		} else {
+			if !f.Changed("docker-socket") {
+				context.DockerSocket = config.GetDefaultLocalDockerSocket(context.DockerSocket)
+			}
+		}
+		exists, err := context.ProjectDirExists()
+		if err != nil {
+			return err
+		}
+		if !exists {
+			slog.Error("Project directory does not exist. You may want to create a new site and context with `sitectl create context`", "dir", context.ProjectDir, "err", err)
+			os.Exit(1)
+		}
+
+		defaultContext, err := f.GetBool("default")
+		if err != nil {
+			fmt.Printf("Error reading default flag: %v\n", err)
+			return err
+		}
+
+		err = config.SaveContext(context, defaultContext)
+		if err != nil {
+			return err
+		}
+
+		contextStr, err := context.String()
+		if err != nil {
+			return err
+		}
+		fmt.Println("\nContext created successfully")
+		fmt.Println(contextStr)
+
+		return nil
+	},
+}
+
 func init() {
 	flags := setContextCmd.Flags()
 	config.SetCommandFlags(flags)
 	flags.Bool("default", false, "set to default context")
 
 	configCmd.AddCommand(viewConfigCmd)
+	configCmd.AddCommand(createConfigCmd)
 	configCmd.AddCommand(currentContextCmd)
 	configCmd.AddCommand(getContextsCmd)
 	configCmd.AddCommand(setContextCmd)

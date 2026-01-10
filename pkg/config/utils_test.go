@@ -24,6 +24,7 @@ func TestLoadFromFlags(t *testing.T) {
 	flags.String("project-name", "foo", "Composer Project Name")
 	flags.Bool("sudo", false, "Run commands on remote hosts as sudo")
 	flags.StringSlice("env-file", []string{}, "path to env files to pass to docker compose")
+	flags.StringSliceP("compose-file", "f", []string{}, "docker compose file paths to use")
 	flags.String("database-service", "mariadb", "Name of the database service in Docker Compose")
 	flags.String("database-user", "root", "Database user to connect as")
 	flags.String("database-password-secret", "DB_ROOT_PASSWORD", "Name of the secret containing the database password")
@@ -42,6 +43,8 @@ func TestLoadFromFlags(t *testing.T) {
 		"--sudo", "true",
 		"--env-file", ".env",
 		"--env-file", "/tmp/.env",
+		"--compose-file", "docker-compose.yml",
+		"--compose-file", "docker-compose.override.yml",
 	}
 	if err := flags.Parse(args); err != nil {
 		t.Fatalf("Error parsing flags: %v", err)
@@ -84,6 +87,10 @@ func TestLoadFromFlags(t *testing.T) {
 	expectedSlice := []string{".env", "/tmp/.env"}
 	if !reflect.DeepEqual(ctx.EnvFile, expectedSlice) {
 		t.Errorf("expected env-file slice %v but got %v", expectedSlice, ctx.EnvFile)
+	}
+	expectedComposeFiles := []string{"docker-compose.yml", "docker-compose.override.yml"}
+	if !reflect.DeepEqual(ctx.ComposeFile, expectedComposeFiles) {
+		t.Errorf("expected compose-file slice %v but got %v", expectedComposeFiles, ctx.ComposeFile)
 	}
 }
 
