@@ -125,15 +125,12 @@ func (d *DockerClient) GetServiceIp(ctx context.Context, c *config.Context, cont
 	return network.IPAddress, nil
 }
 
-func (d *DockerClient) GetContainerName(c *config.Context, service string, neverPrefixProfile bool) (string, error) {
+func (d *DockerClient) GetContainerName(c *config.Context, service string) (string, error) {
 	ctx := context.Background()
 
 	// Define the filters based on the Docker Compose labels.
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "com.docker.compose.project="+c.ProjectName)
-	if c.Profile != "" && !neverPrefixProfile {
-		service = service + "-" + c.Profile
-	}
 	filterArgs.Add("label", "com.docker.compose.service="+service)
 
 	slog.Debug("Querying docker", "filters", filterArgs)
@@ -285,4 +282,35 @@ func (d *DockerClient) ExecInteractive(ctx context.Context, containerID string, 
 		AttachStderr: true,
 		Tty:          true,
 	})
+}
+
+// GetDatabaseUris constructs MySQL and SSH connection URIs for database tools like Sequel Ace
+// Returns: mysqlURI, sshURI, error
+func GetDatabaseUris(c *config.Context) (string, string, error) {
+	ctx := context.Background()
+
+	// Get Docker client
+	dockerCli, err := GetDockerCli(c)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get docker client: %w", err)
+	}
+	defer dockerCli.Close()
+
+	// Get the database container name
+	containerName, err := dockerCli.GetContainerName(c, c.DatabaseService)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get %s container: %w", c.DatabaseService, err)
+	}
+	if containerName == "" {
+		return "", "", fmt.Errorf("%s container not found", c.DatabaseService)
+	}
+
+	// Get database password from container environment
+	password, err := GetSecret(ctx, dockerCli.CLI, c, containerName, c.DatabasePasswordSecret)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get database password from %s: %w", c.DatabasePasswordSecret, err)
+	}
+
+	mysqlURI := fmt.Sprintf("mysql://%s:%s@127.0.0.1:3306/%s", c.DatabaseUser, password, c.DatabaseName)
+	return mysqlURI, c.GetSshUri(), nil
 }

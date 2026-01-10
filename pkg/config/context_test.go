@@ -77,14 +77,17 @@ func contextsEqual(a, b Context) bool {
 		a.DockerHostType == b.DockerHostType &&
 		a.DockerSocket == b.DockerSocket &&
 		a.ProjectName == b.ProjectName &&
-		a.Profile == b.Profile &&
 		a.ProjectDir == b.ProjectDir &&
 		a.SSHUser == b.SSHUser &&
 		a.SSHHostname == b.SSHHostname &&
 		a.SSHPort == b.SSHPort &&
 		a.SSHKeyPath == b.SSHKeyPath &&
 		len(a.EnvFile) == len(b.EnvFile) &&
-		a.RunSudo == b.RunSudo
+		a.RunSudo == b.RunSudo &&
+		a.DatabaseService == b.DatabaseService &&
+		a.DatabaseUser == b.DatabaseUser &&
+		a.DatabasePasswordSecret == b.DatabasePasswordSecret &&
+		a.DatabaseName == b.DatabaseName
 }
 
 func TestContextString(t *testing.T) {
@@ -308,7 +311,6 @@ func TestVerifyRemoteInputExistingConfig(t *testing.T) {
 		SSHUser:     "bar",
 		SSHPort:     123,
 		SSHKeyPath:  "/assuming/we/already/checked",
-		Profile:     "prod",
 		ProjectName: "baz",
 	}
 	cc := original
@@ -320,5 +322,72 @@ func TestVerifyRemoteInputExistingConfig(t *testing.T) {
 
 	if !contextsEqual(cc, original) {
 		t.Fatalf("expected context %+v, got %+v", original, cc)
+	}
+}
+
+func TestGetSshUri(t *testing.T) {
+	tests := []struct {
+		name     string
+		context  Context
+		expected string
+	}{
+		{
+			name: "local context returns empty string",
+			context: Context{
+				DockerHostType: ContextLocal,
+			},
+			expected: "",
+		},
+		{
+			name: "remote context with default port",
+			context: Context{
+				DockerHostType: ContextRemote,
+				SSHHostname:    "example.com",
+				SSHUser:        "testuser",
+				SSHPort:        0, // Should default to 22
+			},
+			expected: "sshHost=example.com&sshUser=testuser&sshPort=22",
+		},
+		{
+			name: "remote context with custom port",
+			context: Context{
+				DockerHostType: ContextRemote,
+				SSHHostname:    "example.com",
+				SSHUser:        "testuser",
+				SSHPort:        2222,
+			},
+			expected: "sshHost=example.com&sshUser=testuser&sshPort=2222",
+		},
+		{
+			name: "remote context with SSH key path",
+			context: Context{
+				DockerHostType: ContextRemote,
+				SSHHostname:    "example.com",
+				SSHUser:        "testuser",
+				SSHPort:        22,
+				SSHKeyPath:     "/home/user/.ssh/id_rsa",
+			},
+			expected: "sshHost=example.com&sshUser=testuser&sshPort=22&sshKeyFile=/home/user/.ssh/id_rsa",
+		},
+		{
+			name: "remote context without SSH key path",
+			context: Context{
+				DockerHostType: ContextRemote,
+				SSHHostname:    "server.example.com",
+				SSHUser:        "admin",
+				SSHPort:        22,
+				SSHKeyPath:     "",
+			},
+			expected: "sshHost=server.example.com&sshUser=admin&sshPort=22",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.context.GetSshUri()
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
 	}
 }

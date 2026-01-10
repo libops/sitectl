@@ -29,19 +29,23 @@ const (
 )
 
 type Context struct {
-	Name           string            `yaml:"name"`
-	DockerHostType ContextType       `mapstructure:"type" yaml:"type"`
-	DockerSocket   string            `yaml:"docker-socket"`
-	ProjectName    string            `yaml:"project-name"`
-	Profile        string            `yaml:"profile"`
-	ProjectDir     string            `yaml:"project-dir"`
-	SSHUser        string            `yaml:"ssh-user"`
-	SSHHostname    string            `yaml:"ssh-hostname,omitempty"`
-	SSHPort        uint              `yaml:"ssh-port,omitempty"`
-	SSHKeyPath     string            `yaml:"ssh-key,omitempty"`
-	EnvFile        []string          `yaml:"env-file"`
-	RunSudo        bool              `yaml:"sudo"`
-	UriMap         map[string]string `yaml:"uriMap"`
+	Name           string      `yaml:"name"`
+	DockerHostType ContextType `mapstructure:"type" yaml:"type"`
+	DockerSocket   string      `yaml:"docker-socket"`
+	ProjectName    string      `yaml:"project-name"`
+	ProjectDir     string      `yaml:"project-dir"`
+	SSHUser        string      `yaml:"ssh-user"`
+	SSHHostname    string      `yaml:"ssh-hostname,omitempty"`
+	SSHPort        uint        `yaml:"ssh-port,omitempty"`
+	SSHKeyPath     string      `yaml:"ssh-key,omitempty"`
+	EnvFile        []string    `yaml:"env-file"`
+	RunSudo        bool        `yaml:"sudo"`
+
+	// Database connection configuration
+	DatabaseService        string `yaml:"database-service,omitempty"`
+	DatabaseUser           string `yaml:"database-user,omitempty"`
+	DatabasePasswordSecret string `yaml:"database-password-secret,omitempty"`
+	DatabaseName           string `yaml:"database-name,omitempty"`
 
 	ReadSmallFileFunc func(filename string) string `yaml:"-"`
 }
@@ -95,6 +99,20 @@ func SaveContext(ctx *Context, setDefault bool) error {
 	cfg, err := Load()
 	if err != nil {
 		return err
+	}
+
+	// Set database defaults if not provided
+	if ctx.DatabaseService == "" {
+		ctx.DatabaseService = "mariadb"
+	}
+	if ctx.DatabaseUser == "" {
+		ctx.DatabaseUser = "root"
+	}
+	if ctx.DatabasePasswordSecret == "" {
+		ctx.DatabasePasswordSecret = "DB_ROOT_PASSWORD"
+	}
+	if ctx.DatabaseName == "" {
+		ctx.DatabaseName = "drupal_default"
 	}
 
 	updated := false
@@ -436,4 +454,23 @@ func (c *Context) UploadFile(source, destination string) error {
 	}
 
 	return nil
+}
+
+// GetSshUri returns an SSH connection URI
+func (c *Context) GetSshUri() string {
+	if c.DockerHostType == ContextLocal {
+		return ""
+	}
+
+	sshPort := c.SSHPort
+	if sshPort == 0 {
+		sshPort = 22
+	}
+
+	sshParams := fmt.Sprintf("sshHost=%s&sshUser=%s&sshPort=%d", c.SSHHostname, c.SSHUser, sshPort)
+	if c.SSHKeyPath != "" {
+		sshParams += fmt.Sprintf("&sshKeyFile=%s", c.SSHKeyPath)
+	}
+
+	return sshParams
 }

@@ -16,7 +16,6 @@ func TestLoadFromFlags(t *testing.T) {
 	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	flags.String("docker-socket", "/var/run/docker.sock", "Path to Docker socket")
 	flags.String("type", "local", "Context type: local or remote")
-	flags.String("profile", "default", "Profile name")
 	flags.String("ssh-hostname", "example.com", "SSH host for remote context")
 	flags.Uint("ssh-port", 22, "port")
 	flags.String("ssh-user", "user", "SSH user for remote context")
@@ -25,12 +24,15 @@ func TestLoadFromFlags(t *testing.T) {
 	flags.String("project-name", "foo", "Composer Project Name")
 	flags.Bool("sudo", false, "Run commands on remote hosts as sudo")
 	flags.StringSlice("env-file", []string{}, "path to env files to pass to docker compose")
+	flags.String("database-service", "mariadb", "Name of the database service in Docker Compose")
+	flags.String("database-user", "root", "Database user to connect as")
+	flags.String("database-password-secret", "DB_ROOT_PASSWORD", "Name of the secret containing the database password")
+	flags.String("database-name", "drupal_default", "Name of the database to connect to")
 
 	// Define test arguments to override defaults.
 	args := []string{
 		"--docker-socket", "/custom/docker.sock",
 		"--type", "remote",
-		"--profile", "prod",
 		"--ssh-hostname", "remote.example.com",
 		"--ssh-port", "123",
 		"--ssh-user", "remoteuser",
@@ -57,9 +59,6 @@ func TestLoadFromFlags(t *testing.T) {
 	}
 	if ctx.DockerHostType != "remote" {
 		t.Errorf("Expected type 'remote', got %q", ctx.DockerHostType)
-	}
-	if ctx.Profile != "prod" {
-		t.Errorf("Expected profile 'prod', got %q", ctx.Profile)
 	}
 	if ctx.SSHHostname != "remote.example.com" {
 		t.Errorf("Expected ssh-host 'remote.example.com', got %q", ctx.SSHHostname)
