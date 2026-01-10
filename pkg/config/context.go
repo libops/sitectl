@@ -39,6 +39,7 @@ type Context struct {
 	SSHPort        uint        `yaml:"ssh-port,omitempty"`
 	SSHKeyPath     string      `yaml:"ssh-key,omitempty"`
 	EnvFile        []string    `yaml:"env-file"`
+	ComposeFile    []string    `yaml:"compose-file,omitempty"`
 	RunSudo        bool        `yaml:"sudo"`
 
 	// Database connection configuration
