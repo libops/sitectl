@@ -9,6 +9,7 @@ Command line utility to interact with your local and remote docker compose sites
 You can install `sitectl` using homebrew
 
 ```bash
+brew tap libops/homebrew
 brew install libops/homebrew/sitectl
 ```
 
