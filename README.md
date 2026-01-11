@@ -2,6 +2,23 @@
 
 Command line utility to interact with your local and remote docker compose sites.
 
+## Install
+
+### Homebrew
+
+You can install `sitectl` using homebrew
+
+```bash
+brew install libops/homebrew/sitectl
+```
+
+### Download Binary
+
+Instead of homebrew, you can download a binary for your system from [the latest release of sitectl](https://github.com/libops/sitectl/releases/latest)
+
+Then put the binary in a directory that is in your `$PATH`
+
+
 ## Why sitectl vs Docker Context?
 
 While [Docker's native context feature](https://docs.docker.com/engine/manage-resources/contexts/) handles basic daemon connections, `sitectl` is purpose-built for Docker Compose projects and adds:
