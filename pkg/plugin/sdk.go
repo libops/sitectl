@@ -9,6 +9,7 @@ import (
 
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
+	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/spf13/cobra"
 )
 
@@ -43,7 +44,7 @@ func NewSDK(metadata Metadata) *SDK {
 	}
 
 	sdk.RootCmd = &cobra.Command{
-		Use:     fmt.Sprintf("sitectl-plugin-%s", metadata.Name),
+		Use:     fmt.Sprintf("sitectl-%s", metadata.Name),
 		Short:   metadata.Description,
 		Version: metadata.Version,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -83,9 +84,6 @@ func (s *SDK) setupLogging(cmd *cobra.Command) error {
 	if s.RootCmd.PersistentFlags().Lookup("context") != nil {
 		s.Config.Context, _ = cmd.Flags().GetString("context")
 	}
-	if s.RootCmd.PersistentFlags().Lookup("format") != nil {
-		s.Config.Format, _ = cmd.Flags().GetString("format")
-	}
 
 	return nil
 }
@@ -96,13 +94,13 @@ func (s *SDK) addCommonFlags() {
 	if ll == "" {
 		ll = "INFO"
 	}
-
 	s.RootCmd.PersistentFlags().String("log-level", ll, "The logging level for the command")
-	s.RootCmd.PersistentFlags().String("format", "table", `Format output using a custom template:
-'table':            Print output in table format with column headers (default)
-'table TEMPLATE':   Print output in table format using the given Go template
-'json':             Print in JSON format
-'TEMPLATE':         Print output using the given Go template`)
+	c, err := config.Current()
+	if err != nil {
+		helpers.ExitOnError(fmt.Errorf("unable to fetch current context: %v", err))
+	}
+
+	s.RootCmd.PersistentFlags().String("context", c, "The sitectl context to use. See sitectl config --help for more info")
 }
 
 // AddCommand adds a subcommand to the plugin
