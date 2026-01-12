@@ -44,7 +44,7 @@ func NewSDK(metadata Metadata) *SDK {
 	}
 
 	sdk.RootCmd = &cobra.Command{
-		Use:     fmt.Sprintf("sitectl-%s", metadata.Name),
+		Use:     fmt.Sprintf("sitectl %s", metadata.Name),
 		Short:   metadata.Description,
 		Version: metadata.Version,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
