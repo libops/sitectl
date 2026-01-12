@@ -50,12 +50,10 @@ func NewSDK(metadata Metadata) *SDK {
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			return sdk.setupLogging(cmd)
 		},
+		Annotations: map[string]string{
+			cobra.CommandDisplayNameAnnotation: fmt.Sprintf("sitectl %s", metadata.Name),
+		},
 	}
-
-	// Customize the usage template to show "sitectl <plugin>" instead of just the plugin name
-	usageTemplate := sdk.RootCmd.UsageTemplate()
-	customTemplate := strings.ReplaceAll(usageTemplate, "{{.CommandPath}}", "sitectl {{.CommandPath}}")
-	sdk.RootCmd.SetUsageTemplate(customTemplate)
 
 	sdk.addCommonFlags()
 	return sdk
