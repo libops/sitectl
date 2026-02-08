@@ -49,6 +49,10 @@ type Context struct {
 	DatabaseName           string `yaml:"database-name,omitempty"`
 
 	ReadSmallFileFunc func(filename string) string `yaml:"-"`
+
+	// Extra holds plugin-specific configuration.
+	// Each plugin uses its own key (e.g., "drupal", "isle", "wordpress").
+	Extra map[string]yaml.Node `yaml:"extra,omitempty"`
 }
 
 // FileReader defines the behavior needed to read small files.
