@@ -45,3 +45,20 @@ brews:
     repository:
       owner: libops
       name: homebrew
+nfpms:
+  - id: sitectl
+    package_name: sitectl
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: libops
+    homepage: "https://github.com/libops/sitectl"
+    description: "CLI for managing local and remote Docker Compose projects"
+    maintainer: "Joe Corall <joe@libops.io>"
+    license: "MIT"
+    formats:
+      - apk
+      - deb
+      - rpm
+    mtime: "{{ .CommitDate }}"
+    builds:
+      - sitectl
+

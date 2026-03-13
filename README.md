@@ -19,6 +19,14 @@ Instead of homebrew, you can download a binary for your system from [the latest 
 
 Then put the binary in a directory that is in your `$PATH`
 
+### Linux Packages
+
+Releases also publish native Linux packages for:
+
+- Alpine (`.apk`)
+- Debian and Ubuntu (`.deb`)
+- Fedora and other RPM-based distributions (`.rpm`)
+
 ## Usage
 
 ```bash
