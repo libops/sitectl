@@ -8,7 +8,7 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
-type ComposeFile struct {
+type ComposeProject struct {
 	root map[string]any
 }
 
@@ -20,15 +20,15 @@ type ComposeDefinitions struct {
 	Configs  map[string]any
 }
 
-func LoadComposeFile(data []byte) (*ComposeFile, error) {
+func ParseComposeProject(data []byte) (*ComposeProject, error) {
 	root := map[string]any{}
 	if len(data) == 0 {
-		return &ComposeFile{root: root}, nil
+		return &ComposeProject{root: root}, nil
 	}
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil, fmt.Errorf("unmarshal compose yaml: %w", err)
 	}
-	return &ComposeFile{root: root}, nil
+	return &ComposeProject{root: root}, nil
 }
 
 func ParseComposeDefinitions(data []byte) (*ComposeDefinitions, error) {
@@ -45,7 +45,7 @@ func ParseComposeDefinitions(data []byte) (*ComposeDefinitions, error) {
 	}, nil
 }
 
-func (c *ComposeFile) Bytes() ([]byte, error) {
+func (c *ComposeProject) Bytes() ([]byte, error) {
 	data, err := yaml.Marshal(c.root)
 	if err != nil {
 		return nil, fmt.Errorf("marshal compose yaml: %w", err)
@@ -53,7 +53,7 @@ func (c *ComposeFile) Bytes() ([]byte, error) {
 	return data, nil
 }
 
-func (c *ComposeFile) RemoveService(name string) bool {
+func (c *ComposeProject) RemoveService(name string) bool {
 	services := c.services()
 	if services == nil {
 		return false
@@ -67,7 +67,7 @@ func (c *ComposeFile) RemoveService(name string) bool {
 	return true
 }
 
-func (c *ComposeFile) AddDefinitions(defs *ComposeDefinitions) {
+func (c *ComposeProject) AddDefinitions(defs *ComposeDefinitions) {
 	if defs == nil {
 		return
 	}
@@ -78,7 +78,7 @@ func (c *ComposeFile) AddDefinitions(defs *ComposeDefinitions) {
 	mergeIntoSection(c.root, "configs", defs.Configs)
 }
 
-func (c *ComposeFile) PruneUnusedResources() {
+func (c *ComposeProject) PruneUnusedResources() {
 	for _, section := range []string{"volumes", "networks", "secrets", "configs"} {
 		entries := nestedMap(c.root[section])
 		if len(entries) == 0 {
@@ -99,7 +99,7 @@ func (c *ComposeFile) PruneUnusedResources() {
 	}
 }
 
-func (c *ComposeFile) services() map[string]any {
+func (c *ComposeProject) services() map[string]any {
 	services := nestedMap(c.root["services"])
 	if services == nil {
 		return nil
@@ -108,7 +108,7 @@ func (c *ComposeFile) services() map[string]any {
 	return services
 }
 
-func (c *ComposeFile) removeServiceDependencyReferences(name string) {
+func (c *ComposeProject) removeServiceDependencyReferences(name string) {
 	for _, rawService := range c.services() {
 		service, ok := rawService.(map[string]any)
 		if !ok {
@@ -137,7 +137,7 @@ func (c *ComposeFile) removeServiceDependencyReferences(name string) {
 	}
 }
 
-func (c *ComposeFile) usedResources(section string) map[string]bool {
+func (c *ComposeProject) usedResources(section string) map[string]bool {
 	used := map[string]bool{}
 	for _, rawService := range c.services() {
 		service, ok := rawService.(map[string]any)

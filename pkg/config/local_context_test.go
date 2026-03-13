@@ -194,7 +194,7 @@ func TestPromptAndSaveLocalContextUsesNextAvailableDefaultName(t *testing.T) {
 	}
 
 	ctx, err := PromptAndSaveLocalContext(LocalContextCreateOptions{
-		DefaultName:      "isle-local",
+		DefaultName:       "isle-local",
 		DefaultProjectDir: projectDir,
 		Input: func(question ...string) (string, error) {
 			return "", nil

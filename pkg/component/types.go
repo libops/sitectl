@@ -37,7 +37,7 @@ type DrupalModuleDependencyMode string
 const (
 	// DrupalModuleDependencyStrict means the module is part of the component's
 	// core contract and should stay aligned with the component state.
-	DrupalModuleDependencyStrict     DrupalModuleDependencyMode = "strict"
+	DrupalModuleDependencyStrict DrupalModuleDependencyMode = "strict"
 	// DrupalModuleDependencyEnableOnly means the module must exist when the
 	// component is enabled, but disabling the component does not imply removing
 	// or uninstalling the module.

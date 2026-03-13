@@ -17,9 +17,9 @@ type DetectedState string
 const StateDrifted DetectedState = "drifted"
 
 type DetectOptions struct {
-	ComposeRoot string
+	ComposeRoot  string
 	DrupalRootfs string
-	DrupalRoot  string
+	DrupalRoot   string
 }
 
 type RuleCheckResult struct {

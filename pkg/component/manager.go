@@ -244,7 +244,7 @@ func (m *Manager) applyComposeDisable(spec ComposeSpec) error {
 		return fmt.Errorf("read compose file %q: %w", composePath, err)
 	}
 
-	composeFile, err := LoadComposeFile(data)
+	composeFile, err := ParseComposeProject(data)
 	if err != nil {
 		return err
 	}
@@ -277,7 +277,7 @@ func (m *Manager) applyComposeEnable(spec ComposeSpec) error {
 		return fmt.Errorf("read compose file %q: %w", composePath, err)
 	}
 
-	composeFile, err := LoadComposeFile(data)
+	composeFile, err := ParseComposeProject(data)
 	if err != nil {
 		return err
 	}
