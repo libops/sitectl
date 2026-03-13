@@ -6,8 +6,6 @@ import (
 )
 
 func TestCloneTemplateRepoWithoutUserRemote(t *testing.T) {
-	t.Parallel()
-
 	oldRunner := runGitCommand
 	t.Cleanup(func() {
 		runGitCommand = oldRunner
@@ -37,8 +35,6 @@ func TestCloneTemplateRepoWithoutUserRemote(t *testing.T) {
 }
 
 func TestCloneTemplateRepoConfiguresUserRemote(t *testing.T) {
-	t.Parallel()
-
 	oldRunner := runGitCommand
 	t.Cleanup(func() {
 		runGitCommand = oldRunner
@@ -73,8 +69,6 @@ func TestCloneTemplateRepoConfiguresUserRemote(t *testing.T) {
 }
 
 func TestCloneTemplateRepoRejectsMatchingRemoteNames(t *testing.T) {
-	t.Parallel()
-
 	err := CloneTemplateRepo(GitTemplateOptions{
 		TemplateRepo:       "https://github.com/islandora-devops/isle-site-template",
 		ProjectDir:         "/tmp/site",
@@ -88,8 +82,6 @@ func TestCloneTemplateRepoRejectsMatchingRemoteNames(t *testing.T) {
 }
 
 func TestConfigureTemplateRemotes(t *testing.T) {
-	t.Parallel()
-
 	oldRunner := runGitCommand
 	t.Cleanup(func() {
 		runGitCommand = oldRunner

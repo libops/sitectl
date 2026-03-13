@@ -7,8 +7,6 @@ import (
 )
 
 func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
-	t.Parallel()
-
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 
@@ -55,8 +53,6 @@ func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
 }
 
 func TestPromptAndSaveLocalContextPromptsForMissingValues(t *testing.T) {
-	t.Parallel()
-
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 
@@ -93,8 +89,6 @@ func TestPromptAndSaveLocalContextPromptsForMissingValues(t *testing.T) {
 }
 
 func TestPromptAndSaveLocalContextExpandsTildeInProvidedProjectDir(t *testing.T) {
-	t.Parallel()
-
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 
@@ -117,8 +111,6 @@ func TestPromptAndSaveLocalContextExpandsTildeInProvidedProjectDir(t *testing.T)
 }
 
 func TestPromptAndSaveLocalContextExpandsTildeInPromptedProjectDir(t *testing.T) {
-	t.Parallel()
-
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 
@@ -153,8 +145,6 @@ func TestPromptAndSaveLocalContextExpandsTildeInPromptedProjectDir(t *testing.T)
 }
 
 func TestPromptAndSaveLocalContextDeclinesOverwrite(t *testing.T) {
-	t.Parallel()
-
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 
@@ -186,8 +176,6 @@ func TestPromptAndSaveLocalContextDeclinesOverwrite(t *testing.T) {
 }
 
 func TestPromptAndSaveLocalContextUsesNextAvailableDefaultName(t *testing.T) {
-	t.Parallel()
-
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 

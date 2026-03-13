@@ -82,7 +82,7 @@ func TestYAMLDocumentSetStringPreservesExistingOrder(t *testing.T) {
 		t.Fatalf("Bytes() error = %v", err)
 	}
 	rendered := string(out)
-	if !strings.Contains(rendered, "target_type: file\n  uri_scheme: private") {
+	if !strings.Contains(rendered, "target_type: file\n  uri_scheme: \"private\"") {
 		t.Fatalf("expected key order preserved, got:\n%s", rendered)
 	}
 }
@@ -90,7 +90,7 @@ func TestYAMLDocumentSetStringPreservesExistingOrder(t *testing.T) {
 func TestYAMLDocumentDoesNotAddExplicitMergeTagWhenOriginalDidNotUseIt(t *testing.T) {
 	t.Parallel()
 
-	input := "services:\n  alpaca:\n    <<: *common\n"
+	input := "x-common: &common\n  restart: unless-stopped\nservices:\n  alpaca:\n    <<: *common\n"
 	doc, err := LoadYAMLDocument([]byte(input))
 	if err != nil {
 		t.Fatalf("LoadYAMLDocument() error = %v", err)
@@ -112,7 +112,7 @@ func TestYAMLDocumentDoesNotAddExplicitMergeTagWhenOriginalDidNotUseIt(t *testin
 func TestYAMLDocumentPreservesExplicitMergeTagWhenOriginalUsedIt(t *testing.T) {
 	t.Parallel()
 
-	input := "services:\n  alpaca:\n    !!merge <<: *common\n"
+	input := "x-common: &common\n  restart: unless-stopped\nservices:\n  alpaca:\n    !!merge <<: *common\n"
 	doc, err := LoadYAMLDocument([]byte(input))
 	if err != nil {
 		t.Fatalf("LoadYAMLDocument() error = %v", err)
