@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"io"
 	"reflect"
 	"testing"
 )
@@ -12,7 +13,7 @@ func TestCloneTemplateRepoWithoutUserRemote(t *testing.T) {
 	})
 
 	var calls [][]string
-	runGitCommand = func(name string, args ...string) error {
+	runGitCommand = func(stdout, stderr io.Writer, name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
@@ -41,7 +42,7 @@ func TestCloneTemplateRepoConfiguresUserRemote(t *testing.T) {
 	})
 
 	var calls [][]string
-	runGitCommand = func(name string, args ...string) error {
+	runGitCommand = func(stdout, stderr io.Writer, name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
@@ -88,7 +89,7 @@ func TestConfigureTemplateRemotes(t *testing.T) {
 	})
 
 	var calls [][]string
-	runGitCommand = func(name string, args ...string) error {
+	runGitCommand = func(stdout, stderr io.Writer, name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
