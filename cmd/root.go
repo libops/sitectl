@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"charm.land/fang/v2"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/spf13/cobra"
 )
@@ -43,7 +45,11 @@ var RootCmd = &cobra.Command{
 }
 
 func Execute() {
-	err := RootCmd.Execute()
+	err := fang.Execute(
+		context.Background(),
+		RootCmd,
+		fang.WithVersion(RootCmd.Version),
+	)
 	if err != nil {
 		os.Exit(1)
 	}
