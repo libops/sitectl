@@ -30,9 +30,9 @@ volumes:
   fedora-data: {}
 `)
 
-	composeFile, err := LoadComposeFile(input)
+	composeFile, err := ParseComposeProject(input)
 	if err != nil {
-		t.Fatalf("LoadComposeFile() error = %v", err)
+		t.Fatalf("ParseComposeProject() error = %v", err)
 	}
 
 	if !composeFile.RemoveService("fedora") {

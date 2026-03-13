@@ -10,16 +10,16 @@ import (
 type InputFunc func(question ...string) (string, error)
 
 type LocalContextCreateOptions struct {
-	Name             string
-	DefaultName      string
-	ProjectDir       string
-	DefaultProjectDir string
-	ProjectName      string
+	Name               string
+	DefaultName        string
+	ProjectDir         string
+	DefaultProjectDir  string
+	ProjectName        string
 	DefaultProjectName string
-	DockerSocket     string
-	SetDefault       bool
-	ConfirmOverwrite bool
-	Input            InputFunc
+	DockerSocket       string
+	SetDefault         bool
+	ConfirmOverwrite   bool
+	Input              InputFunc
 }
 
 func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error) {

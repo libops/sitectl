@@ -33,8 +33,9 @@ func LoadYAMLDocument(data []byte) (*YAMLDocument, error) {
 		return doc, nil
 	}
 
-	if err := yaml.Unmarshal(data, &doc.node); err != nil {
-		return nil, fmt.Errorf("unmarshal yaml document: %w", err)
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&doc.node); err != nil {
+		return nil, fmt.Errorf("decode yaml document: %w", err)
 	}
 	if doc.node.Kind != yaml.DocumentNode {
 		original := doc.node
