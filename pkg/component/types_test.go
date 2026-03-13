@@ -140,6 +140,31 @@ func TestDefinitionDrupalModuleHelpers(t *testing.T) {
 	}
 }
 
+func TestDefinitionCreateOptionIncludesPromptOnCreate(t *testing.T) {
+	t.Parallel()
+
+	def := Definition{
+		Name:           "fcrepo",
+		DefaultState:   StateOn,
+		Guidance:       StateGuidance{Question: "fcrepo?"},
+		PromptOnCreate: true,
+	}
+
+	option := def.CreateOption()
+	if option.Name != "fcrepo" {
+		t.Fatalf("expected option name fcrepo, got %q", option.Name)
+	}
+	if option.Default != StateOn {
+		t.Fatalf("expected option default on, got %q", option.Default)
+	}
+	if !option.PromptOnCreate {
+		t.Fatal("expected option to prompt on create")
+	}
+	if option.Guidance.Question != "fcrepo?" {
+		t.Fatalf("expected guidance question preserved, got %q", option.Guidance.Question)
+	}
+}
+
 func TestDependenciesComposerPackagesForEnableDeduplicatesSubmodules(t *testing.T) {
 	t.Parallel()
 

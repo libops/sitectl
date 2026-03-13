@@ -7,10 +7,11 @@ import (
 )
 
 type CreateOption struct {
-	Name      string
-	Default   State
-	Guidance  StateGuidance
-	Shorthand string
+	Name           string
+	Default        State
+	Guidance       StateGuidance
+	Shorthand      string
+	PromptOnCreate bool
 }
 
 func (o CreateOption) normalizedDefault() State {
@@ -21,6 +22,10 @@ func (o CreateOption) normalizedDefault() State {
 		return state
 	}
 	return StateOn
+}
+
+func (o CreateOption) shouldPromptOnCreate() bool {
+	return o.PromptOnCreate
 }
 
 func AddCreateFlags(cmd *cobra.Command, options ...CreateOption) {
@@ -52,6 +57,11 @@ func ResolveCreateStates(cmd *cobra.Command, input InputFunc, options ...CreateO
 				return nil, fmt.Errorf("invalid %s value %q: %w", option.Name, value, err)
 			}
 			states[option.Name] = state
+			continue
+		}
+
+		if !option.shouldPromptOnCreate() {
+			states[option.Name] = option.normalizedDefault()
 			continue
 		}
 

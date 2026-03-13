@@ -79,13 +79,15 @@ type DomainSpec struct {
 }
 
 type Definition struct {
-	Name         string
-	DefaultState State
-	Gates        GateSpec
-	Dependencies Dependencies
-	Behavior     Behavior
-	On           DomainSpec
-	Off          DomainSpec
+	Name           string
+	DefaultState   State
+	Guidance       StateGuidance
+	PromptOnCreate bool
+	Gates          GateSpec
+	Dependencies   Dependencies
+	Behavior       Behavior
+	On             DomainSpec
+	Off            DomainSpec
 }
 
 func (d Definition) DrupalModulesForEnable() []DrupalModuleDependency {
@@ -102,6 +104,15 @@ func (d Definition) ComposerPackagesForEnable() []string {
 
 func (d Definition) StrictComposerPackages() []string {
 	return d.Dependencies.StrictComposerPackages()
+}
+
+func (d Definition) CreateOption() CreateOption {
+	return CreateOption{
+		Name:           d.Name,
+		Default:        d.DefaultState,
+		Guidance:       d.Guidance,
+		PromptOnCreate: d.PromptOnCreate,
+	}
 }
 
 func ParseStateOverrides(values map[string]string) (map[string]State, error) {
