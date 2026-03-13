@@ -11,8 +11,8 @@ func TestResolveCreateStatesPromptsForMissingFlags(t *testing.T) {
 
 	cmd := &cobra.Command{Use: "create"}
 	AddCreateFlags(cmd,
-		CreateOption{Name: "fcrepo", Default: StateOn, Guidance: StateGuidance{Question: "fcrepo?", DefaultState: StateOn}},
-		CreateOption{Name: "blazegraph", Default: StateOn, Guidance: StateGuidance{Question: "blazegraph?", DefaultState: StateOn}},
+		CreateOption{Name: "fcrepo", Default: StateOn, Guidance: StateGuidance{Question: "fcrepo?", DefaultState: StateOn}, PromptOnCreate: true},
+		CreateOption{Name: "blazegraph", Default: StateOn, Guidance: StateGuidance{Question: "blazegraph?", DefaultState: StateOn}, PromptOnCreate: true},
 	)
 
 	var prompts [][]string
@@ -23,8 +23,8 @@ func TestResolveCreateStatesPromptsForMissingFlags(t *testing.T) {
 		inputs = inputs[1:]
 		return value, nil
 	},
-		CreateOption{Name: "fcrepo", Default: StateOn, Guidance: StateGuidance{Question: "fcrepo?", DefaultState: StateOn}},
-		CreateOption{Name: "blazegraph", Default: StateOn, Guidance: StateGuidance{Question: "blazegraph?", DefaultState: StateOn}},
+		CreateOption{Name: "fcrepo", Default: StateOn, Guidance: StateGuidance{Question: "fcrepo?", DefaultState: StateOn}, PromptOnCreate: true},
+		CreateOption{Name: "blazegraph", Default: StateOn, Guidance: StateGuidance{Question: "blazegraph?", DefaultState: StateOn}, PromptOnCreate: true},
 	)
 	if err != nil {
 		t.Fatalf("ResolveCreateStates() error = %v", err)
@@ -38,6 +38,34 @@ func TestResolveCreateStatesPromptsForMissingFlags(t *testing.T) {
 	}
 	if states["blazegraph"] != StateOn {
 		t.Fatalf("expected blazegraph on, got %q", states["blazegraph"])
+	}
+}
+
+func TestResolveCreateStatesUsesDefaultWithoutPromptWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{Use: "create"}
+	AddCreateFlags(cmd,
+		CreateOption{Name: "fcrepo", Default: StateOn, PromptOnCreate: false},
+		CreateOption{Name: "blazegraph", Default: StateOff, PromptOnCreate: false},
+	)
+
+	states, err := ResolveCreateStates(cmd, func(question ...string) (string, error) {
+		t.Fatal("did not expect prompt")
+		return "", nil
+	},
+		CreateOption{Name: "fcrepo", Default: StateOn, PromptOnCreate: false},
+		CreateOption{Name: "blazegraph", Default: StateOff, PromptOnCreate: false},
+	)
+	if err != nil {
+		t.Fatalf("ResolveCreateStates() error = %v", err)
+	}
+
+	if states["fcrepo"] != StateOn {
+		t.Fatalf("expected fcrepo on, got %q", states["fcrepo"])
+	}
+	if states["blazegraph"] != StateOff {
+		t.Fatalf("expected blazegraph off, got %q", states["blazegraph"])
 	}
 }
 
