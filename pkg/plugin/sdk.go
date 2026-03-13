@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
 	"github.com/libops/sitectl/pkg/helpers"
@@ -180,6 +181,22 @@ func (s *SDK) GetContext() (*config.Context, error) {
 	}
 
 	return nil, fmt.Errorf("context %q not found", contextName)
+}
+
+// GetComponentManager creates a component manager bound to the active sitectl context.
+func (s *SDK) GetComponentManager() (*component.Manager, error) {
+	ctx, err := s.GetContext()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get context: %w", err)
+	}
+
+	return component.NewManager(ctx), nil
+}
+
+// PromptAndSaveLocalContext creates or updates a local sitectl context using
+// the shared config prompts and save behavior.
+func (s *SDK) PromptAndSaveLocalContext(opts config.LocalContextCreateOptions) (*config.Context, error) {
+	return config.PromptAndSaveLocalContext(opts)
 }
 
 // ExecInContainer executes a command in a Docker container
