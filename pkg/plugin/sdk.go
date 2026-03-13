@@ -193,6 +193,12 @@ func (s *SDK) GetComponentManager() (*component.Manager, error) {
 	return component.NewManager(ctx), nil
 }
 
+// PromptAndSaveLocalContext creates or updates a local sitectl context using
+// the shared config prompts and save behavior.
+func (s *SDK) PromptAndSaveLocalContext(opts config.LocalContextCreateOptions) (*config.Context, error) {
+	return config.PromptAndSaveLocalContext(opts)
+}
+
 // ExecInContainer executes a command in a Docker container
 // This is a convenience wrapper for plugins
 func (s *SDK) ExecInContainer(ctx context.Context, containerID string, cmd []string) (int, error) {
