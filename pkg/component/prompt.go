@@ -121,6 +121,19 @@ func wrapText(text string, width int) string {
 }
 
 func wrapPrefixedText(prefix, text string, width int) string {
+	parts := strings.Split(text, "\n")
+	wrapped := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			wrapped = append(wrapped, strings.TrimRight(prefix, " "))
+			continue
+		}
+		wrapped = append(wrapped, wrapPrefixedParagraph(prefix, part, width))
+	}
+	return strings.Join(wrapped, "\n")
+}
+
+func wrapPrefixedParagraph(prefix, text string, width int) string {
 	if width <= visibleWidth(prefix)+1 {
 		return prefix + text
 	}
