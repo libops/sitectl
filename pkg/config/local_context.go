@@ -93,7 +93,20 @@ func resolveLocalContextName(existing Context, opts LocalContextCreateOptions, i
 		return strings.TrimSpace(opts.Name), nil
 	}
 
-	defaultName, err := nextAvailableContextName(firstNonEmpty(existing.Name, opts.DefaultName))
+	baseName := firstNonEmpty(existing.Name, opts.DefaultName)
+	if strings.TrimSpace(baseName) == "" {
+		return "", fmt.Errorf("context name cannot be empty")
+	}
+
+	exists, err := ContextExists(baseName)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return baseName, nil
+	}
+
+	defaultName, err := nextAvailableContextName(baseName)
 	if err != nil {
 		return "", err
 	}
