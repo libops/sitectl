@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"charm.land/fang/v2"
 	"github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
@@ -114,7 +115,11 @@ func (s *SDK) AddCommand(cmd *cobra.Command) {
 
 // Execute runs the plugin
 func (s *SDK) Execute() {
-	if err := s.RootCmd.Execute(); err != nil {
+	if err := fang.Execute(
+		context.Background(),
+		s.RootCmd,
+		fang.WithVersion(s.RootCmd.Version),
+	); err != nil {
 		os.Exit(1)
 	}
 }

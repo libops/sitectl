@@ -20,6 +20,9 @@ type LocalContextCreateOptions struct {
 	SetDefault         bool
 	ConfirmOverwrite   bool
 	Input              InputFunc
+	ContextNamePrompt  []string
+	ProjectDirPrompt   []string
+	OverwritePrompt    []string
 }
 
 func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error) {
@@ -46,7 +49,11 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 		return nil, err
 	}
 	if existing.DockerSocket != "" && opts.ConfirmOverwrite {
-		overwrite, err := input("The context already exists. Do you want to overwrite it? [y/N]: ")
+		prompt := opts.OverwritePrompt
+		if len(prompt) == 0 {
+			prompt = []string{"The context already exists. Do you want to overwrite it? [y/N]: "}
+		}
+		overwrite, err := input(prompt...)
 		if err != nil {
 			return nil, err
 		}
@@ -90,7 +97,13 @@ func resolveLocalContextName(existing Context, opts LocalContextCreateOptions, i
 	if err != nil {
 		return "", err
 	}
-	value, err := input(fmt.Sprintf("Context name [%s]: ", defaultName))
+	prompt := opts.ContextNamePrompt
+	if len(prompt) == 0 {
+		prompt = []string{fmt.Sprintf("Context name [%s]: ", defaultName)}
+	} else {
+		prompt = append(append([]string{}, prompt[:len(prompt)-1]...), fmt.Sprintf(prompt[len(prompt)-1], defaultName))
+	}
+	value, err := input(prompt...)
 	if err != nil {
 		return "", err
 	}
@@ -137,7 +150,13 @@ func resolveLocalProjectDir(existing Context, opts LocalContextCreateOptions, in
 		return "", err
 	}
 	defaultDir := firstNonEmpty(existing.ProjectDir, opts.DefaultProjectDir, cwd)
-	value, err := input(fmt.Sprintf("Full directory path to the project (directory where docker-compose.yml is located) [%s]: ", defaultDir))
+	prompt := opts.ProjectDirPrompt
+	if len(prompt) == 0 {
+		prompt = []string{fmt.Sprintf("Full directory path to the project (directory where docker-compose.yml is located) [%s]: ", defaultDir)}
+	} else {
+		prompt = append(append([]string{}, prompt[:len(prompt)-1]...), fmt.Sprintf(prompt[len(prompt)-1], defaultDir))
+	}
+	value, err := input(prompt...)
 	if err != nil {
 		return "", err
 	}

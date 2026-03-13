@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,9 +15,10 @@ type GitTemplateOptions struct {
 	GitRemoteURL       string
 	GitRemoteName      string
 	TemplateRemoteName string
+	Quiet              bool
 }
 
-type gitRunner func(name string, args ...string) error
+type gitRunner func(stdout, stderr io.Writer, name string, args ...string) error
 
 var runGitCommand gitRunner = defaultRunGitCommand
 
@@ -50,7 +52,12 @@ func CloneTemplateRepo(opts GitTemplateOptions) error {
 		args = append(args, "--branch", opts.TemplateBranch)
 	}
 	args = append(args, opts.TemplateRepo, opts.ProjectDir)
-	if err := runGitCommand("git", args...); err != nil {
+	stdout, stderr := io.Writer(os.Stdout), io.Writer(os.Stderr)
+	if opts.Quiet {
+		stdout = io.Discard
+		stderr = io.Discard
+	}
+	if err := runGitCommand(stdout, stderr, "git", args...); err != nil {
 		return fmt.Errorf("clone template repo %q: %w", opts.TemplateRepo, err)
 	}
 
@@ -78,20 +85,29 @@ func ConfigureTemplateRemotes(opts GitTemplateOptions) error {
 		return fmt.Errorf("git remote name %q cannot match template remote name %q", opts.GitRemoteName, opts.TemplateRemoteName)
 	}
 
-	if err := runGitCommand("git", "-C", opts.ProjectDir, "remote", "rename", "origin", opts.TemplateRemoteName); err != nil {
+	stdout, stderr := io.Writer(os.Stdout), io.Writer(os.Stderr)
+	if opts.Quiet {
+		stdout = io.Discard
+		stderr = io.Discard
+	}
+	if err := runGitCommand(stdout, stderr, "git", "-C", opts.ProjectDir, "remote", "rename", "origin", opts.TemplateRemoteName); err != nil {
 		return fmt.Errorf("rename template remote to %q: %w", opts.TemplateRemoteName, err)
 	}
-	if err := runGitCommand("git", "-C", opts.ProjectDir, "remote", "add", opts.GitRemoteName, opts.GitRemoteURL); err != nil {
+	if err := runGitCommand(stdout, stderr, "git", "-C", opts.ProjectDir, "remote", "add", opts.GitRemoteName, opts.GitRemoteURL); err != nil {
 		return fmt.Errorf("add git remote %q: %w", opts.GitRemoteName, err)
 	}
 
 	return nil
 }
 
-func defaultRunGitCommand(name string, args ...string) error {
+func defaultRunGitCommand(stdout, stderr io.Writer, name string, args ...string) error {
+	return runGitCommandWithIO(stdout, stderr, name, args...)
+}
+
+func runGitCommandWithIO(stdout, stderr io.Writer, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	cmd.Dir = workingDirFromArgs(args)
 	return cmd.Run()
 }
