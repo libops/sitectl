@@ -8,9 +8,15 @@ import (
 
 func TestCloneTemplateRepoWithoutUserRemote(t *testing.T) {
 	oldRunner := runGitCommand
+	oldHasRepo := hasGitRepositoryFunc
+	oldHasRemote := gitRemoteExistsFunc
 	t.Cleanup(func() {
 		runGitCommand = oldRunner
+		hasGitRepositoryFunc = oldHasRepo
+		gitRemoteExistsFunc = oldHasRemote
 	})
+	hasGitRepositoryFunc = func(projectDir string) (bool, error) { return false, nil }
+	gitRemoteExistsFunc = func(projectDir, remoteName string) (bool, error) { return false, nil }
 
 	var calls [][]string
 	runGitCommand = func(stdout, stderr io.Writer, name string, args ...string) error {
@@ -29,6 +35,7 @@ func TestCloneTemplateRepoWithoutUserRemote(t *testing.T) {
 
 	expected := [][]string{
 		{"git", "clone", "--branch", "main", "https://github.com/islandora-devops/isle-site-template", "/tmp/site"},
+		{"git", "-C", "/tmp/site", "init", "-b", "main"},
 	}
 	if !reflect.DeepEqual(calls, expected) {
 		t.Fatalf("unexpected git calls: %#v", calls)
@@ -37,9 +44,15 @@ func TestCloneTemplateRepoWithoutUserRemote(t *testing.T) {
 
 func TestCloneTemplateRepoConfiguresUserRemote(t *testing.T) {
 	oldRunner := runGitCommand
+	oldHasRepo := hasGitRepositoryFunc
+	oldHasRemote := gitRemoteExistsFunc
 	t.Cleanup(func() {
 		runGitCommand = oldRunner
+		hasGitRepositoryFunc = oldHasRepo
+		gitRemoteExistsFunc = oldHasRemote
 	})
+	hasGitRepositoryFunc = func(projectDir string) (bool, error) { return true, nil }
+	gitRemoteExistsFunc = func(projectDir, remoteName string) (bool, error) { return false, nil }
 
 	var calls [][]string
 	runGitCommand = func(stdout, stderr io.Writer, name string, args ...string) error {
@@ -61,7 +74,7 @@ func TestCloneTemplateRepoConfiguresUserRemote(t *testing.T) {
 
 	expected := [][]string{
 		{"git", "clone", "--branch", "main", "https://github.com/islandora-devops/isle-site-template", "/tmp/site"},
-		{"git", "-C", "/tmp/site", "remote", "rename", "origin", "upstream"},
+		{"git", "-C", "/tmp/site", "init", "-b", "main"},
 		{"git", "-C", "/tmp/site", "remote", "add", "origin", "git@github.com:example/site.git"},
 	}
 	if !reflect.DeepEqual(calls, expected) {
@@ -84,9 +97,15 @@ func TestCloneTemplateRepoRejectsMatchingRemoteNames(t *testing.T) {
 
 func TestConfigureTemplateRemotes(t *testing.T) {
 	oldRunner := runGitCommand
+	oldHasRepo := hasGitRepositoryFunc
+	oldHasRemote := gitRemoteExistsFunc
 	t.Cleanup(func() {
 		runGitCommand = oldRunner
+		hasGitRepositoryFunc = oldHasRepo
+		gitRemoteExistsFunc = oldHasRemote
 	})
+	hasGitRepositoryFunc = func(projectDir string) (bool, error) { return false, nil }
+	gitRemoteExistsFunc = func(projectDir, remoteName string) (bool, error) { return false, nil }
 
 	var calls [][]string
 	runGitCommand = func(stdout, stderr io.Writer, name string, args ...string) error {
@@ -105,7 +124,7 @@ func TestConfigureTemplateRemotes(t *testing.T) {
 	}
 
 	expected := [][]string{
-		{"git", "-C", "/tmp/site", "remote", "rename", "origin", "upstream"},
+		{"git", "-C", "/tmp/site", "init"},
 		{"git", "-C", "/tmp/site", "remote", "add", "origin", "git@github.com:example/site.git"},
 	}
 	if !reflect.DeepEqual(calls, expected) {
