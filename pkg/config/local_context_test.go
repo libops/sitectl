@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -241,5 +242,44 @@ func TestPromptAndSaveLocalContextPromptsForNameWhenDefaultTaken(t *testing.T) {
 
 	if ctx.Name != "isle-local-custom" {
 		t.Fatalf("expected prompted name isle-local-custom, got %q", ctx.Name)
+	}
+}
+
+func TestPromptAndSaveLocalContextRepromptsForInvalidProjectDir(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	invalidDir := filepath.Join(tempHome, "occupied")
+	if err := os.MkdirAll(invalidDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(invalidDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(invalidDir, "docker-compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+
+	validDir := filepath.Join(tempHome, "empty")
+	var prompts [][]string
+	inputs := []string{invalidDir, validDir}
+	ctx, err := PromptAndSaveLocalContext(LocalContextCreateOptions{
+		DefaultName: "site-a",
+		Input: func(question ...string) (string, error) {
+			prompts = append(prompts, append([]string{}, question...))
+			value := inputs[0]
+			inputs = inputs[1:]
+			return value, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("PromptAndSaveLocalContext() error = %v", err)
+	}
+
+	if ctx.ProjectDir != validDir {
+		t.Fatalf("expected valid project dir %q, got %q", validDir, ctx.ProjectDir)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("expected 2 prompts, got %d", len(prompts))
+	}
+	if len(prompts[1]) < 1 || !strings.HasPrefix(prompts[1][0], "Directory validation failed:") {
+		t.Fatalf("expected validation message before retry, got %#v", prompts[1])
 	}
 }

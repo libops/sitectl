@@ -31,6 +31,15 @@ var (
 	onLabelStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
 	offLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
 	promptStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
+	mutedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+	okStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	failStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
+	infoStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
+	commandStyle  = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("238")).
+			Background(lipgloss.Color("235")).
+			Padding(1, 2)
 )
 
 func PromptState(name string, guidance StateGuidance, input InputFunc) (State, error) {
@@ -85,6 +94,29 @@ func RenderIntroSection(title, body string) string {
 
 func RenderPromptLine(text string) string {
 	return promptStyle.Render(text)
+}
+
+func RenderChecklistItem(label, state, detail string) string {
+	prefix := mutedStyle.Render("  • ")
+	stateStyle := infoStyle
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "ok":
+		stateStyle = okStyle
+	case "failed":
+		stateStyle = failStyle
+	case "fallback":
+		stateStyle = infoStyle
+	}
+
+	line := prefix + questionStyle.Render(strings.TrimSpace(label)) + mutedStyle.Render(": ") + stateStyle.Render(state)
+	if strings.TrimSpace(detail) != "" {
+		line += mutedStyle.Render("  " + strings.TrimSpace(detail))
+	}
+	return line
+}
+
+func RenderCommandBlock(text string) string {
+	return commandStyle.Render(text)
 }
 
 func renderStatePrompt(name string, guidance StateGuidance, defaultState State) []string {

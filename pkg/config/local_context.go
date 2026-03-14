@@ -155,7 +155,14 @@ func nextAvailableContextName(base string) (string, error) {
 
 func resolveLocalProjectDir(existing Context, opts LocalContextCreateOptions, input InputFunc) (string, error) {
 	if strings.TrimSpace(opts.ProjectDir) != "" {
-		return expandAndCleanProjectDir(strings.TrimSpace(opts.ProjectDir))
+		projectDir, err := expandAndCleanProjectDir(strings.TrimSpace(opts.ProjectDir))
+		if err != nil {
+			return "", err
+		}
+		if err := validateLocalProjectDir(projectDir); err != nil {
+			return "", err
+		}
+		return projectDir, nil
 	}
 
 	cwd, err := os.Getwd()
@@ -169,15 +176,28 @@ func resolveLocalProjectDir(existing Context, opts LocalContextCreateOptions, in
 	} else {
 		prompt = append(append([]string{}, prompt[:len(prompt)-1]...), fmt.Sprintf(prompt[len(prompt)-1], defaultDir))
 	}
-	value, err := input(prompt...)
-	if err != nil {
-		return "", err
+	for {
+		value, err := input(prompt...)
+		if err != nil {
+			return "", err
+		}
+		value = strings.TrimSpace(value)
+
+		candidate := defaultDir
+		if value != "" {
+			candidate = value
+		}
+
+		projectDir, err := expandAndCleanProjectDir(candidate)
+		if err != nil {
+			return "", err
+		}
+		if err := validateLocalProjectDir(projectDir); err != nil {
+			prompt = append([]string{fmt.Sprintf("Directory validation failed: %v", err), ""}, prompt...)
+			continue
+		}
+		return projectDir, nil
 	}
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return expandAndCleanProjectDir(defaultDir)
-	}
-	return expandAndCleanProjectDir(value)
 }
 
 func expandAndCleanProjectDir(value string) (string, error) {
@@ -200,6 +220,28 @@ func expandAndCleanProjectDir(value string) (string, error) {
 		value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
 	}
 	return filepath.Clean(value), nil
+}
+
+func validateLocalProjectDir(projectDir string) error {
+	info, err := os.Stat(projectDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat project directory %q: %w", projectDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("project directory %q exists and is not a directory", projectDir)
+	}
+
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return fmt.Errorf("read project directory %q: %w", projectDir, err)
+	}
+	if len(entries) > 0 {
+		return fmt.Errorf("project directory %q must not exist or must be empty", projectDir)
+	}
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {
