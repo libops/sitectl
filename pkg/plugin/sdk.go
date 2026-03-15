@@ -124,6 +124,13 @@ func (s *SDK) Execute() {
 	}
 }
 
+// SetVersionInfo formats plugin version metadata like the main sitectl binary.
+func (s *SDK) SetVersionInfo(version, commit, date string) {
+	formatted := fmt.Sprintf("%s (Built on %s from Git SHA %s)", version, date, commit)
+	s.Metadata.Version = formatted
+	s.RootCmd.Version = formatted
+}
+
 // AddGlobalFlags adds common libops-specific flags
 func (s *SDK) AddGlobalFlags(currentContext string) {
 	s.RootCmd.PersistentFlags().String("context", currentContext, "The sitectl context to use. See sitectl config --help for more info")
