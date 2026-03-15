@@ -145,7 +145,6 @@ func promptChoiceInteractive(name string, choices []Choice, defaultValue string,
 	staticLines := []string{}
 	staticLines = append(staticLines, hint, "")
 	fmt.Fprint(os.Stdout, "\r\n"+strings.Join(staticLines, "\r\n")+"\r\n")
-	fmt.Fprint(os.Stdout, "\x1b[s")
 	fmt.Fprint(os.Stdout, strings.Join(lines, "\r\n"))
 	renderedLineCount := len(lines)
 
@@ -187,15 +186,30 @@ func promptChoiceInteractive(name string, choices []Choice, defaultValue string,
 			}
 		}
 
-		fmt.Fprint(os.Stdout, "\x1b[u")
-		for i := 0; i < renderedLineCount; i++ {
-			fmt.Fprint(os.Stdout, "\r\x1b[2K\x1b[1B")
-		}
-		fmt.Fprint(os.Stdout, "\x1b[u")
 		lines = renderInteractiveChoiceLines(choices, selected, customInput)
-		fmt.Fprint(os.Stdout, strings.Join(lines, "\r\n"))
+		redrawInteractiveChoiceLines(lines, renderedLineCount)
 		renderedLineCount = len(lines)
 	}
+}
+
+func redrawInteractiveChoiceLines(lines []string, previousLineCount int) {
+	if previousLineCount > 1 {
+		fmt.Fprintf(os.Stdout, "\r\x1b[%dA", previousLineCount-1)
+	} else {
+		fmt.Fprint(os.Stdout, "\r")
+	}
+	for i := 0; i < previousLineCount; i++ {
+		fmt.Fprint(os.Stdout, "\x1b[2K")
+		if i < previousLineCount-1 {
+			fmt.Fprint(os.Stdout, "\x1b[1B\r")
+		}
+	}
+	if previousLineCount > 1 {
+		fmt.Fprintf(os.Stdout, "\x1b[%dA\r", previousLineCount-1)
+	} else {
+		fmt.Fprint(os.Stdout, "\r")
+	}
+	fmt.Fprint(os.Stdout, strings.Join(lines, "\r\n"))
 }
 
 func RenderSection(title, body string) string {
