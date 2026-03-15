@@ -16,7 +16,7 @@ func TestResolveCreateStatesPromptsForMissingFlags(t *testing.T) {
 	)
 
 	var prompts [][]string
-	inputs := []string{"off", "on"}
+	inputs := []string{"2", "1"}
 	states, err := ResolveCreateStates(cmd, func(question ...string) (string, error) {
 		prompts = append(prompts, question)
 		value := inputs[0]

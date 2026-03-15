@@ -36,10 +36,10 @@ func TestPromptStateUsesDefaultOnEmptyInput(t *testing.T) {
 	if prompt[1] != "" {
 		t.Fatalf("expected blank line after title, got %q", prompt[1])
 	}
-	if !containsLine(prompt, "on  Use Fedora") {
+	if !containsLine(prompt, "1. on  Use Fedora") {
 		t.Fatalf("expected on help in prompt, got %#v", prompt)
 	}
-	if !containsLine(prompt, "off Store files") {
+	if !containsLine(prompt, "2. off  Store files") {
 		t.Fatalf("expected off help in prompt, got %#v", prompt)
 	}
 	if !containsLine(prompt, "Choose fcrepo (on/off) [off]: ") {
@@ -82,13 +82,13 @@ func TestPromptStateParsesInput(t *testing.T) {
 	t.Parallel()
 
 	state, err := PromptState("blazegraph", StateGuidance{}, func(question ...string) (string, error) {
-		return "OFF", nil
+		return "1", nil
 	})
 	if err != nil {
 		t.Fatalf("PromptState() error = %v", err)
 	}
-	if state != StateOff {
-		t.Fatalf("expected %q, got %q", StateOff, state)
+	if state != StateOn {
+		t.Fatalf("expected %q, got %q", StateOn, state)
 	}
 }
 
@@ -103,5 +103,23 @@ func TestPromptStateRejectsInvalidInput(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `invalid blazegraph value "maybe"`) {
 		t.Fatalf("unexpected error %v", err)
+	}
+}
+
+func TestPromptChoiceParsesAliases(t *testing.T) {
+	t.Parallel()
+
+	value, err := PromptChoice("filesystem", []Choice{
+		{Value: "public", Label: "public", Aliases: []string{"1"}},
+		{Value: "private", Label: "private", Aliases: []string{"2"}},
+		{Value: "other", Label: "other", Aliases: []string{"3"}},
+	}, "private", func(question ...string) (string, error) {
+		return "3", nil
+	})
+	if err != nil {
+		t.Fatalf("PromptChoice() error = %v", err)
+	}
+	if value != "other" {
+		t.Fatalf("expected %q, got %q", "other", value)
 	}
 }
