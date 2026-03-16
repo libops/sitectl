@@ -30,7 +30,10 @@ const (
 
 type Context struct {
 	Name           string      `yaml:"name"`
+	Site           string      `yaml:"site"`
+	Plugin         string      `yaml:"plugin"`
 	DockerHostType ContextType `mapstructure:"type" yaml:"type"`
+	Environment    string      `yaml:"environment,omitempty"`
 	DockerSocket   string      `yaml:"docker-socket"`
 	ProjectName    string      `yaml:"project-name"`
 	ProjectDir     string      `yaml:"project-dir"`
@@ -60,6 +63,8 @@ type FileReader interface {
 	ReadSmallFile(path string) (string, error)
 }
 
+var ErrContextNotFound = errors.New("context not found")
+
 func ContextExists(name string) (bool, error) {
 	c, err := Load()
 	if err != nil {
@@ -88,7 +93,7 @@ func GetContext(name string) (Context, error) {
 		}
 	}
 
-	return ctx, nil
+	return ctx, fmt.Errorf("%w: %s", ErrContextNotFound, name)
 }
 
 func (context Context) String() (string, error) {
@@ -135,9 +140,6 @@ func SaveContext(ctx *Context, setDefault bool) error {
 		if cfg.CurrentContext == "" {
 			cfg.CurrentContext = ctx.Name
 		}
-		fmt.Printf("Added new context: %s\n", ctx.Name)
-	} else {
-		fmt.Printf("Updated context: %s\n", ctx.Name)
 	}
 
 	if setDefault {
@@ -148,18 +150,13 @@ func SaveContext(ctx *Context, setDefault bool) error {
 }
 
 func CurrentContext(f *pflag.FlagSet) (*Context, error) {
-	c, err := f.GetString("context")
+	c, err := ResolveCurrentContextName(f)
 	if err != nil {
-		return nil, fmt.Errorf("error getting context flag: %v", err)
+		return nil, err
 	}
-
 	cfg, err := Load()
 	if err != nil {
 		return nil, fmt.Errorf("unable to load sitectl config. Have you ran `sitectl config set-context`?")
-	}
-
-	if c == "default" {
-		c = cfg.CurrentContext
 	}
 	for _, context := range cfg.Contexts {
 		if context.Name == c {
@@ -168,6 +165,29 @@ func CurrentContext(f *pflag.FlagSet) (*Context, error) {
 	}
 
 	return nil, fmt.Errorf("unable to set current context. Have you ran `sitectl config use-context`?")
+}
+
+func ResolveCurrentContextName(f *pflag.FlagSet) (string, error) {
+	if f != nil && f.Lookup("context") != nil && f.Changed("context") {
+		c, err := f.GetString("context")
+		if err != nil {
+			return "", fmt.Errorf("error getting context flag: %v", err)
+		}
+		if c == "default" {
+			cfg, err := Load()
+			if err != nil {
+				return "", fmt.Errorf("unable to load sitectl config. Have you ran `sitectl config set-context`?")
+			}
+			return cfg.CurrentContext, nil
+		}
+		return c, nil
+	}
+
+	c, err := Current()
+	if err != nil {
+		return "", fmt.Errorf("unable to load sitectl config. Have you ran `sitectl config set-context`?")
+	}
+	return c, nil
 }
 
 func (c *Context) ReadSmallFile(filename string) string {

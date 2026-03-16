@@ -16,26 +16,42 @@ import (
 )
 
 func (c *Context) RunCommand(cmd *exec.Cmd) (string, error) {
+	return c.runCommand(cmd, true)
+}
+
+func (c *Context) RunQuietCommand(cmd *exec.Cmd) (string, error) {
+	return c.runCommand(cmd, false)
+}
+
+func (c *Context) runCommand(cmd *exec.Cmd, printOutput bool) (string, error) {
 	var output string
 	if c.DockerHostType == ContextLocal {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 		cmd.Env = os.Environ()
-		cmd.Stdin = os.Stdin
+		if printOutput {
+			cmd.Stdin = os.Stdin
+		}
 		cmd.Dir = c.ProjectDir
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
 			return "", fmt.Errorf("error creating stdout pipe for command %s: %v", cmd.String(), err)
 		}
-		cmd.Stderr = os.Stderr
+		if printOutput {
+			cmd.Stderr = os.Stderr
+		} else {
+			cmd.Stderr = io.Discard
+		}
 		if err := cmd.Start(); err != nil {
 			return "", fmt.Errorf("error starting command %s: %v", cmd.String(), err)
 		}
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
-			fmt.Println(line)
+			if printOutput {
+				fmt.Println(line)
+			}
 			output = strings.TrimSpace(line)
 		}
 		if err := scanner.Err(); err != nil {
@@ -53,14 +69,11 @@ func (c *Context) RunCommand(cmd *exec.Cmd) (string, error) {
 	}
 	defer sshClient.Close()
 
-	remoteCmd := fmt.Sprintf("cd %s &&", c.ProjectDir)
+	remoteCmd := fmt.Sprintf("cd %s && ", shellquote.Join(c.ProjectDir))
 	if c.RunSudo {
-		remoteCmd += " sudo"
+		remoteCmd += "sudo "
 	}
-	remoteCmd += " " + cmd.Args[0]
-	if len(cmd.Args) > 1 {
-		remoteCmd += " " + shellquote.Join(cmd.Args[1:]...)
-	}
+	remoteCmd += shellquote.Join(cmd.Args...)
 
 	slog.Info("Running remote command", "host", c.SSHHostname, "cmd", remoteCmd)
 	session, err := sshClient.NewSession()
@@ -85,7 +98,7 @@ func (c *Context) RunCommand(cmd *exec.Cmd) (string, error) {
 
 	// set terminal to raw for easier stdin/out/err handling
 	// between the os and ssh session
-	if term.IsTerminal(int(os.Stdin.Fd())) {
+	if printOutput && term.IsTerminal(int(os.Stdin.Fd())) {
 		oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 		if err != nil {
 			return "", fmt.Errorf("failed to set terminal to raw mode: %v", err)
@@ -98,7 +111,9 @@ func (c *Context) RunCommand(cmd *exec.Cmd) (string, error) {
 	}
 
 	// setup some stdout/err pipes so we can capture output
-	session.Stdin = os.Stdin
+	if printOutput {
+		session.Stdin = os.Stdin
+	}
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {
 		return "", fmt.Errorf("error obtaining stdout pipe: %v", err)
@@ -120,7 +135,9 @@ func (c *Context) RunCommand(cmd *exec.Cmd) (string, error) {
 		n, err := combined.Read(buf)
 		if n > 0 {
 			chunk := string(buf[:n])
-			fmt.Print(chunk)
+			if printOutput {
+				fmt.Print(chunk)
+			}
 			output = chunk
 		}
 		if err != nil {

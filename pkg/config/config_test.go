@@ -68,3 +68,90 @@ func TestConfigFilePath(t *testing.T) {
 		t.Errorf("expected config file path %s, got %s", expected, path)
 	}
 }
+
+func TestCurrentPrefersAutodiscoveredLocalContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", oldHome)
+	os.Setenv("HOME", tmpDir)
+
+	projectDir := filepath.Join(tmpDir, "site")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Chdir(projectDir) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWd)
+	})
+
+	cfg := &Config{
+		CurrentContext: "other",
+		Contexts: []Context{
+			{Name: "other", DockerHostType: ContextLocal, ProjectDir: filepath.Join(tmpDir, "other")},
+			{Name: "site-local", DockerHostType: ContextLocal, ProjectDir: projectDir},
+		},
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save(cfg) error = %v", err)
+	}
+
+	current, err := Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if current != "site-local" {
+		t.Fatalf("expected autodiscovered current context site-local, got %q", current)
+	}
+}
+
+func TestCurrentFallsBackToConfiguredDefaultWhenCWDDoesNotMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", oldHome)
+	os.Setenv("HOME", tmpDir)
+
+	projectDir := filepath.Join(tmpDir, "site")
+	otherDir := filepath.Join(tmpDir, "other")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(otherDir) error = %v", err)
+	}
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("Chdir(otherDir) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWd)
+	})
+
+	cfg := &Config{
+		CurrentContext: "site-local",
+		Contexts: []Context{
+			{Name: "site-local", DockerHostType: ContextLocal, ProjectDir: projectDir},
+		},
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save(cfg) error = %v", err)
+	}
+
+	current, err := Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if current != "site-local" {
+		t.Fatalf("expected configured default current context site-local, got %q", current)
+	}
+}

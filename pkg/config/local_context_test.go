@@ -42,6 +42,12 @@ func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
 	if ctx.Name != "isle-local" {
 		t.Fatalf("expected name isle-local, got %q", ctx.Name)
 	}
+	if ctx.Site != "docker-compose" {
+		t.Fatalf("expected default site docker-compose, got %q", ctx.Site)
+	}
+	if ctx.Plugin != "core" {
+		t.Fatalf("expected default plugin core, got %q", ctx.Plugin)
+	}
 	if ctx.DockerHostType != ContextLocal {
 		t.Fatalf("expected local context, got %q", ctx.DockerHostType)
 	}
@@ -50,6 +56,9 @@ func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
 	}
 	if ctx.ProjectName != "docker-compose" {
 		t.Fatalf("expected default project name docker-compose, got %q", ctx.ProjectName)
+	}
+	if ctx.Environment != "local" {
+		t.Fatalf("expected default environment local, got %q", ctx.Environment)
 	}
 }
 
@@ -83,6 +92,12 @@ func TestPromptAndSaveLocalContextPromptsForMissingValues(t *testing.T) {
 
 	if ctx.Name != "site-a" {
 		t.Fatalf("expected defaulted name site-a, got %q", ctx.Name)
+	}
+	if ctx.Site != "docker-compose" {
+		t.Fatalf("expected default site docker-compose, got %q", ctx.Site)
+	}
+	if ctx.Plugin != "core" {
+		t.Fatalf("expected default plugin core, got %q", ctx.Plugin)
 	}
 	if ctx.ProjectDir != filepath.Join(tempHome, "site-a") {
 		t.Fatalf("expected prompted project dir, got %q", ctx.ProjectDir)
@@ -281,5 +296,16 @@ func TestPromptAndSaveLocalContextRepromptsForInvalidProjectDir(t *testing.T) {
 	}
 	if len(prompts[1]) < 1 || !strings.HasPrefix(prompts[1][0], "Directory validation failed:") {
 		t.Fatalf("expected validation message before retry, got %#v", prompts[1])
+	}
+}
+
+func TestValidateExistingComposeProjectDirAcceptsComposeProject(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+
+	if err := ValidateExistingComposeProjectDir(projectDir); err != nil {
+		t.Fatalf("ValidateExistingComposeProjectDir() error = %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,8 @@ func TestContextExistsAndGetContext(t *testing.T) {
 	// Save a context and test retrieval
 	ctx := Context{
 		Name:           "foo",
+		Site:           "museum",
+		Plugin:         "isle",
 		DockerHostType: ContextLocal,
 		DockerSocket:   "/var/run/docker.sock",
 		ProjectName:    "myproject",
@@ -72,9 +75,31 @@ func TestContextExistsAndGetContext(t *testing.T) {
 	}
 }
 
+func TestGetContextReturnsNotFoundError(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &Config{
+		CurrentContext: "",
+		Contexts:       []Context{},
+	}
+	writeConfig(cfg, t)
+
+	ctx, err := GetContext("missing")
+	if !errors.Is(err, ErrContextNotFound) {
+		t.Fatalf("expected ErrContextNotFound, got %v", err)
+	}
+	if ctx.Name != "missing" {
+		t.Fatalf("expected placeholder context name missing, got %q", ctx.Name)
+	}
+}
+
 func contextsEqual(a, b Context) bool {
 	return a.Name == b.Name &&
+		a.Site == b.Site &&
+		a.Plugin == b.Plugin &&
 		a.DockerHostType == b.DockerHostType &&
+		a.Environment == b.Environment &&
 		a.DockerSocket == b.DockerSocket &&
 		a.ProjectName == b.ProjectName &&
 		a.ProjectDir == b.ProjectDir &&
@@ -94,6 +119,8 @@ func contextsEqual(a, b Context) bool {
 func TestContextString(t *testing.T) {
 	ctx := Context{
 		Name:           "test",
+		Site:           "museum",
+		Plugin:         "isle",
 		DockerHostType: ContextLocal,
 		DockerSocket:   "/var/run/docker.sock",
 		ProjectName:    "project",
@@ -104,7 +131,7 @@ func TestContextString(t *testing.T) {
 		t.Fatalf("Context.String error: %v", err)
 	}
 	// check that YAML output contains expected fields
-	if !strings.Contains(s, "test") || !strings.Contains(s, "local") {
+	if !strings.Contains(s, "test") || !strings.Contains(s, "local") || !strings.Contains(s, "museum") || !strings.Contains(s, "isle") {
 		t.Fatalf("unexpected context string: %s", s)
 	}
 }
@@ -122,6 +149,8 @@ func TestSaveContext(t *testing.T) {
 
 	ctx := Context{
 		Name:           "myctx",
+		Site:           "museum",
+		Plugin:         "core",
 		DockerHostType: ContextLocal,
 		ProjectDir:     tempHome,
 	}
@@ -192,6 +221,53 @@ func TestCurrentContext(t *testing.T) {
 	_, err = CurrentContext(fs)
 	if err == nil {
 		t.Fatalf("expected error for non-existent context")
+	}
+}
+
+func TestCurrentContextPrefersExplicitFlagOverAutodiscovery(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	projectDir := filepath.Join(tempHome, "site")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Chdir(projectDir) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWd)
+	})
+
+	cfg := &Config{
+		CurrentContext: "default-site",
+		Contexts: []Context{
+			{Name: "default-site", DockerHostType: ContextLocal, ProjectDir: filepath.Join(tempHome, "default")},
+			{Name: "cwd-site", DockerHostType: ContextLocal, ProjectDir: projectDir},
+			{Name: "flag-site", DockerHostType: ContextLocal, ProjectDir: filepath.Join(tempHome, "flag")},
+		},
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save(cfg) error = %v", err)
+	}
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.String("context", "", "")
+	if err := fs.Set("context", "flag-site"); err != nil {
+		t.Fatalf("Set(context) error = %v", err)
+	}
+
+	ctx, err := CurrentContext(fs)
+	if err != nil {
+		t.Fatalf("CurrentContext() error = %v", err)
+	}
+	if ctx.Name != "flag-site" {
+		t.Fatalf("expected explicit flag-site context, got %q", ctx.Name)
 	}
 }
 

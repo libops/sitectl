@@ -37,7 +37,7 @@ func GetInput(question ...string) (string, error) {
 
 func LoadFromFlags(f *pflag.FlagSet, context Context) (*Context, error) {
 	t := reflect.TypeOf(Context{})
-	exists := context.DockerSocket != ""
+	exists := contextHasStoredValues(context)
 	slog.Debug("Loading context from flags", "exists", exists)
 	m := make(map[string]interface{}, t.NumField())
 	for i := range t.NumField() {
@@ -107,6 +107,28 @@ func LoadFromFlags(f *pflag.FlagSet, context Context) (*Context, error) {
 	return &cc, nil
 }
 
+func contextHasStoredValues(context Context) bool {
+	return context.Site != "" ||
+		context.Plugin != "" ||
+		context.DockerHostType != "" ||
+		context.Environment != "" ||
+		context.DockerSocket != "" ||
+		context.ProjectName != "" ||
+		context.ProjectDir != "" ||
+		context.SSHUser != "" ||
+		context.SSHHostname != "" ||
+		context.SSHPort != 0 ||
+		context.SSHKeyPath != "" ||
+		len(context.EnvFile) > 0 ||
+		len(context.ComposeFile) > 0 ||
+		context.RunSudo ||
+		context.DatabaseService != "" ||
+		context.DatabaseUser != "" ||
+		context.DatabasePasswordSecret != "" ||
+		context.DatabaseName != "" ||
+		len(context.Extra) > 0
+}
+
 // for local contexts, try a bunch of common paths grab the docker socket
 // this is mostly needed for Mac OS
 func GetDefaultLocalDockerSocket(dockerSocket string) string {
@@ -161,7 +183,10 @@ func SetCommandFlags(flags *pflag.FlagSet) {
 	flags.String("ssh-user", "", "SSH user for remote context")
 	flags.String("ssh-key", "", "Path to SSH private key for remote context. e.g. "+key)
 	flags.String("project-dir", "", "Path to docker compose project directory")
+	flags.String("site", "", "Logical site name this context belongs to")
+	flags.String("plugin", "core", "Owning plugin identifier for this context, such as core, isle, or drupal")
 	flags.String("project-name", "docker-compose", "Name of the docker compose project")
+	flags.String("environment", "", "Environment name for this context, such as local, dev, staging, or prod")
 	flags.Bool("sudo", false, "for remote contexts, run docker commands as sudo")
 	flags.StringSlice("env-file", []string{}, "when running remote docker commands, the --env-file paths to pass to docker compose")
 	flags.StringSliceP("compose-file", "f", []string{}, "docker compose file paths to use (equivalent to docker compose -f flag). Multiple files can be specified.")

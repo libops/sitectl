@@ -55,16 +55,17 @@ type Dependencies struct {
 }
 
 type FollowUpSpec struct {
-	Name           string
-	Label          string
-	FlagName       string
-	FlagUsage      string
-	Question       string
-	Choices        []Choice
-	DefaultValue   string
-	PromptOnCreate bool
-	AppliesTo      State
-	CustomPrompt   string
+	Name                 string
+	Label                string
+	FlagName             string
+	FlagUsage            string
+	Question             string
+	Choices              []Choice
+	DefaultValue         string
+	PromptOnCreate       bool
+	AppliesTo            State
+	AppliesToDisposition Disposition
+	CustomPrompt         string
 }
 
 type DataMigrationRequirement string
@@ -92,16 +93,18 @@ type DomainSpec struct {
 }
 
 type Definition struct {
-	Name           string
-	DefaultState   State
-	Guidance       StateGuidance
-	PromptOnCreate bool
-	FollowUps      []FollowUpSpec
-	Gates          GateSpec
-	Dependencies   Dependencies
-	Behavior       Behavior
-	On             DomainSpec
-	Off            DomainSpec
+	Name                string
+	DefaultState        State
+	DefaultDisposition  Disposition
+	AllowedDispositions []Disposition
+	Guidance            StateGuidance
+	PromptOnCreate      bool
+	FollowUps           []FollowUpSpec
+	Gates               GateSpec
+	Dependencies        Dependencies
+	Behavior            Behavior
+	On                  DomainSpec
+	Off                 DomainSpec
 }
 
 func (d Definition) DrupalModulesForEnable() []DrupalModuleDependency {
@@ -122,15 +125,21 @@ func (d Definition) StrictComposerPackages() []string {
 
 func (d Definition) CreateOption() CreateOption {
 	return CreateOption{
-		Name:           d.Name,
-		Default:        d.DefaultState,
-		Guidance:       d.Guidance,
-		PromptOnCreate: d.PromptOnCreate,
-		FollowUps:      d.FollowUps,
+		Name:                d.Name,
+		Default:             d.DefaultState,
+		DefaultDisposition:  d.DefaultDisposition,
+		AllowedDispositions: append([]Disposition{}, d.AllowedDispositions...),
+		Guidance:            d.Guidance,
+		PromptOnCreate:      d.PromptOnCreate,
+		FollowUps:           d.FollowUps,
 	}
 }
 
 func (d Definition) FollowUpsForState(state State) []FollowUpSpec {
+	return d.FollowUpsForDisposition(StateToDisposition(state))
+}
+
+func (d Definition) FollowUpsForDisposition(disposition Disposition) []FollowUpSpec {
 	if len(d.FollowUps) == 0 {
 		return nil
 	}
@@ -139,7 +148,10 @@ func (d Definition) FollowUpsForState(state State) []FollowUpSpec {
 		if spec.Name == "" {
 			continue
 		}
-		if spec.AppliesTo != "" && normalizeState(spec.AppliesTo) != normalizeState(state) {
+		if spec.AppliesToDisposition != "" && normalizeDisposition(spec.AppliesToDisposition) != normalizeDisposition(disposition) {
+			continue
+		}
+		if spec.AppliesToDisposition == "" && spec.AppliesTo != "" && normalizeState(spec.AppliesTo) != normalizeState(DispositionToState(disposition)) {
 			continue
 		}
 		out = append(out, spec)

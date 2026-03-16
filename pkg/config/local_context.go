@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,19 +11,25 @@ import (
 type InputFunc func(question ...string) (string, error)
 
 type LocalContextCreateOptions struct {
-	Name               string
-	DefaultName        string
-	ProjectDir         string
-	DefaultProjectDir  string
-	ProjectName        string
-	DefaultProjectName string
-	DockerSocket       string
-	SetDefault         bool
-	ConfirmOverwrite   bool
-	Input              InputFunc
-	ContextNamePrompt  []string
-	ProjectDirPrompt   []string
-	OverwritePrompt    []string
+	Name                string
+	DefaultName         string
+	Site                string
+	DefaultSite         string
+	Plugin              string
+	DefaultPlugin       string
+	ProjectDir          string
+	DefaultProjectDir   string
+	ProjectName         string
+	DefaultProjectName  string
+	Environment         string
+	DockerSocket        string
+	SetDefault          bool
+	ConfirmOverwrite    bool
+	Input               InputFunc
+	ProjectDirValidator func(string) error
+	ContextNamePrompt   []string
+	ProjectDirPrompt    []string
+	OverwritePrompt     []string
 }
 
 func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error) {
@@ -33,7 +40,10 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 
 	existing, err := GetContext(opts.Name)
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, ErrContextNotFound) {
+			return nil, err
+		}
+		existing = Context{}
 	}
 
 	name, err := resolveLocalContextName(existing, opts, input)
@@ -46,7 +56,10 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 
 	existing, err = GetContext(name)
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, ErrContextNotFound) {
+			return nil, err
+		}
+		existing = Context{}
 	}
 	if existing.DockerSocket != "" && opts.ConfirmOverwrite {
 		prompt := opts.OverwritePrompt
@@ -71,11 +84,17 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 	}
 
 	projectName := firstNonEmpty(opts.ProjectName, existing.ProjectName, opts.DefaultProjectName, "docker-compose")
+	site := firstNonEmpty(opts.Site, existing.Site, opts.DefaultSite, projectName, name)
+	plugin := firstNonEmpty(opts.Plugin, existing.Plugin, opts.DefaultPlugin, "core")
+	environment := firstNonEmpty(opts.Environment, existing.Environment, "local")
 	dockerSocket := GetDefaultLocalDockerSocket(firstNonEmpty(opts.DockerSocket, existing.DockerSocket, "/var/run/docker.sock"))
 
 	ctx := &Context{
 		Name:           name,
+		Site:           site,
+		Plugin:         plugin,
 		DockerHostType: ContextLocal,
+		Environment:    environment,
 		DockerSocket:   dockerSocket,
 		ProjectName:    projectName,
 		ProjectDir:     projectDir,
@@ -159,7 +178,7 @@ func resolveLocalProjectDir(existing Context, opts LocalContextCreateOptions, in
 		if err != nil {
 			return "", err
 		}
-		if err := validateLocalProjectDir(projectDir); err != nil {
+		if err := localProjectDirValidator(opts)(projectDir); err != nil {
 			return "", err
 		}
 		return projectDir, nil
@@ -192,12 +211,19 @@ func resolveLocalProjectDir(existing Context, opts LocalContextCreateOptions, in
 		if err != nil {
 			return "", err
 		}
-		if err := validateLocalProjectDir(projectDir); err != nil {
+		if err := localProjectDirValidator(opts)(projectDir); err != nil {
 			prompt = append([]string{fmt.Sprintf("Directory validation failed: %v", err), ""}, prompt...)
 			continue
 		}
 		return projectDir, nil
 	}
+}
+
+func localProjectDirValidator(opts LocalContextCreateOptions) func(string) error {
+	if opts.ProjectDirValidator != nil {
+		return opts.ProjectDirValidator
+	}
+	return validateLocalProjectDir
 }
 
 func expandAndCleanProjectDir(value string) (string, error) {
@@ -240,6 +266,23 @@ func validateLocalProjectDir(projectDir string) error {
 	}
 	if len(entries) > 0 {
 		return fmt.Errorf("project directory %q must not exist or must be empty", projectDir)
+	}
+	return nil
+}
+
+func ValidateExistingComposeProjectDir(projectDir string) error {
+	info, err := os.Stat(projectDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("project directory %q does not exist", projectDir)
+		}
+		return fmt.Errorf("stat project directory %q: %w", projectDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("project directory %q exists and is not a directory", projectDir)
+	}
+	if !LooksLikeComposeProject(projectDir) {
+		return fmt.Errorf("project directory %q does not look like a docker compose project", projectDir)
 	}
 	return nil
 }

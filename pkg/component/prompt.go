@@ -13,10 +13,14 @@ import (
 type InputFunc func(question ...string) (string, error)
 
 type StateGuidance struct {
-	Question     string
-	OnHelp       string
-	OffHelp      string
-	DefaultState State
+	Question        string
+	OnHelp          string
+	OffHelp         string
+	DefaultState    State
+	EnabledHelp     string
+	DisabledHelp    string
+	SupersededHelp  string
+	DistributedHelp string
 }
 
 type Choice struct {
@@ -83,6 +87,28 @@ func PromptState(name string, guidance StateGuidance, input InputFunc) (State, e
 	return state, nil
 }
 
+func PromptDisposition(name string, guidance StateGuidance, allowed []Disposition, defaultDisposition Disposition, input InputFunc) (Disposition, error) {
+	if input == nil {
+		input = config.GetInput
+	}
+	if len(allowed) == 0 {
+		allowed = []Disposition{DispositionEnabled, DispositionDisabled}
+	}
+	sections := []string{}
+	title := strings.TrimSpace(name)
+	if guidance.Question != "" {
+		sections = append(sections, strings.Split(RenderSection(title, guidance.Question), "\n")...)
+	} else if title != "" {
+		sections = append(sections, sectionTitleStyle.Render(title))
+	}
+	choices := renderDispositionChoices(guidance, allowed)
+	choice, err := PromptChoice(name, choices, string(normalizeDisposition(defaultDisposition)), input, sections...)
+	if err != nil {
+		return "", err
+	}
+	return ParseDisposition(choice)
+}
+
 func PromptChoice(name string, choices []Choice, defaultValue string, input InputFunc, sections ...string) (string, error) {
 	if interactiveValue, ok, err := promptChoiceInteractive(name, choices, defaultValue, sections); ok {
 		return interactiveValue, err
@@ -145,13 +171,14 @@ func promptChoiceInteractive(name string, choices []Choice, defaultValue string,
 	staticLines := []string{}
 	staticLines = append(staticLines, hint, "")
 	fmt.Fprint(os.Stdout, "\r\n"+strings.Join(staticLines, "\r\n")+"\r\n")
-	fmt.Fprint(os.Stdout, strings.Join(lines, "\r\n"))
+	fmt.Fprint(os.Stdout, strings.Join(lines, "\r\n")+"\r\n")
 	renderedLineCount := len(lines)
 
 	for {
 		var buf [3]byte
 		n, err := os.Stdin.Read(buf[:])
 		if err != nil {
+			fmt.Fprintln(os.Stdout)
 			fmt.Fprintln(os.Stdout)
 			return "", true, err
 		}
@@ -161,7 +188,7 @@ func promptChoiceInteractive(name string, choices []Choice, defaultValue string,
 
 		switch {
 		case n == 1 && (buf[0] == '\r' || buf[0] == '\n'):
-			fmt.Fprint(os.Stdout, "\r\n")
+			fmt.Fprint(os.Stdout, "\r\n\r\n")
 			if choices[selected].AllowCustomInput {
 				value := strings.TrimSpace(customInput)
 				if value != "" {
@@ -170,7 +197,7 @@ func promptChoiceInteractive(name string, choices []Choice, defaultValue string,
 			}
 			return choices[selected].Value, true, nil
 		case n == 1 && buf[0] == 3:
-			fmt.Fprint(os.Stdout, "\r\n")
+			fmt.Fprint(os.Stdout, "\r\n\r\n")
 			return "", true, fmt.Errorf("prompt cancelled")
 		case n == 1 && (buf[0] == 127 || buf[0] == 8):
 			if choices[selected].AllowCustomInput && len(customInput) > 0 {
@@ -209,7 +236,7 @@ func redrawInteractiveChoiceLines(lines []string, previousLineCount int) {
 	} else {
 		fmt.Fprint(os.Stdout, "\r")
 	}
-	fmt.Fprint(os.Stdout, strings.Join(lines, "\r\n"))
+	fmt.Fprint(os.Stdout, strings.Join(lines, "\r\n")+"\r\n")
 }
 
 func RenderSection(title, body string) string {
@@ -281,6 +308,43 @@ func renderStateChoices(guidance StateGuidance) []Choice {
 			Help:    strings.TrimSpace(guidance.OffHelp),
 			Aliases: []string{"n", "no", "2"},
 		},
+	}
+}
+
+func renderDispositionChoices(guidance StateGuidance, allowed []Disposition) []Choice {
+	choices := make([]Choice, 0, len(allowed))
+	for i, disposition := range allowed {
+		label := string(disposition)
+		help := dispositionHelp(guidance, disposition)
+		aliases := []string{fmt.Sprintf("%d", i+1)}
+		choices = append(choices, Choice{
+			Value:   string(disposition),
+			Label:   label,
+			Help:    help,
+			Aliases: aliases,
+		})
+	}
+	return choices
+}
+
+func dispositionHelp(guidance StateGuidance, disposition Disposition) string {
+	switch normalizeDisposition(disposition) {
+	case DispositionEnabled:
+		if strings.TrimSpace(guidance.EnabledHelp) != "" {
+			return guidance.EnabledHelp
+		}
+		return guidance.OnHelp
+	case DispositionDisabled:
+		if strings.TrimSpace(guidance.DisabledHelp) != "" {
+			return guidance.DisabledHelp
+		}
+		return guidance.OffHelp
+	case DispositionSuperseded:
+		return guidance.SupersededHelp
+	case DispositionDistributed:
+		return guidance.DistributedHelp
+	default:
+		return ""
 	}
 }
 

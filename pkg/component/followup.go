@@ -11,13 +11,16 @@ type FollowUpValue struct {
 	Value string
 }
 
-func followUpsForState(specs []FollowUpSpec, state State) []FollowUpSpec {
+func followUpsForDisposition(specs []FollowUpSpec, disposition Disposition, state State) []FollowUpSpec {
 	if len(specs) == 0 {
 		return nil
 	}
 	out := make([]FollowUpSpec, 0, len(specs))
 	for _, spec := range specs {
 		if spec.Name == "" {
+			continue
+		}
+		if spec.AppliesToDisposition != "" && normalizeDisposition(spec.AppliesToDisposition) != normalizeDisposition(disposition) {
 			continue
 		}
 		if spec.AppliesTo != "" && normalizeState(spec.AppliesTo) != normalizeState(state) {
@@ -137,7 +140,10 @@ func RenderConfiguredFollowUps(view ReviewView) []string {
 		if value == "" {
 			continue
 		}
-		if view.State != StateDrifted && spec.AppliesTo != "" && normalizeState(spec.AppliesTo) != normalizeState(State(view.State)) {
+		if view.State != StateDrifted && spec.AppliesToDisposition != "" && normalizeDisposition(spec.AppliesToDisposition) != normalizeDisposition(view.Disposition) {
+			continue
+		}
+		if view.State != StateDrifted && spec.AppliesToDisposition == "" && spec.AppliesTo != "" && normalizeState(spec.AppliesTo) != normalizeState(State(view.State)) {
 			continue
 		}
 		label := strings.TrimSpace(spec.Label)
@@ -156,7 +162,7 @@ func PromptDeclaredReviewFollowUps(view ReviewView, decision *ReviewDecision, in
 	if decision.Options == nil {
 		decision.Options = map[string]string{}
 	}
-	for _, spec := range view.Definition.FollowUpsForState(decision.State) {
+	for _, spec := range view.Definition.FollowUpsForDisposition(decision.Disposition) {
 		defaultValue := strings.TrimSpace(view.FollowUpValues[spec.Name])
 		if defaultValue == "" {
 			defaultValue = strings.TrimSpace(spec.DefaultValue)
@@ -172,7 +178,7 @@ func PromptDeclaredReviewFollowUps(view ReviewView, decision *ReviewDecision, in
 
 func RenderDecisionFollowUps(def Definition, decision ReviewDecision) string {
 	parts := []string{}
-	for _, spec := range def.FollowUpsForState(decision.State) {
+	for _, spec := range def.FollowUpsForDisposition(decision.Disposition) {
 		value := strings.TrimSpace(decision.Options[spec.Name])
 		if value == "" {
 			continue
@@ -196,7 +202,10 @@ func buildReportFollowUps(view ReviewView) map[string]string {
 		if value == "" {
 			continue
 		}
-		if view.State != StateDrifted && spec.AppliesTo != "" && normalizeState(spec.AppliesTo) != normalizeState(State(view.State)) {
+		if view.State != StateDrifted && spec.AppliesToDisposition != "" && normalizeDisposition(spec.AppliesToDisposition) != normalizeDisposition(view.Disposition) {
+			continue
+		}
+		if view.State != StateDrifted && spec.AppliesToDisposition == "" && spec.AppliesTo != "" && normalizeState(spec.AppliesTo) != normalizeState(State(view.State)) {
 			continue
 		}
 		out[spec.Name] = value

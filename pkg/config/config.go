@@ -56,9 +56,17 @@ func Current() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if cfg.CurrentContext == "" {
+	current := cfg.CurrentContext
+
+	if discovered, err := DiscoverCurrentContext(); err == nil && discovered != nil {
+		return discovered.Name, nil
+	} else if err != nil {
+		return "", err
+	}
+
+	if current == "" {
 		return "", nil
 	}
 
-	return cfg.CurrentContext, nil
+	return current, nil
 }
