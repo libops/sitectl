@@ -107,3 +107,63 @@ func TestResolveCreateStatesRejectsInvalidFlagValue(t *testing.T) {
 		t.Fatal("expected invalid flag error")
 	}
 }
+
+func TestResolveCreateDecisionsPromptsForFollowUps(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{Use: "create"}
+	AddCreateFlags(cmd,
+		CreateOption{
+			Name:           "fcrepo",
+			Default:        StateOn,
+			PromptOnCreate: true,
+			FollowUps: []FollowUpSpec{
+				{
+					Name:           "isle-file-system-uri",
+					FlagName:       "isle-file-system-uri",
+					PromptOnCreate: true,
+					AppliesTo:      StateOff,
+					Choices: []Choice{
+						{Value: "public", Label: "public", Aliases: []string{"1"}},
+						{Value: "private", Label: "private", Aliases: []string{"2"}},
+					},
+					DefaultValue: "private",
+				},
+			},
+		},
+	)
+
+	inputs := []string{"2", "1"}
+	decisions, err := ResolveCreateDecisions(cmd, func(question ...string) (string, error) {
+		value := inputs[0]
+		inputs = inputs[1:]
+		return value, nil
+	}, CreateOption{
+		Name:           "fcrepo",
+		Default:        StateOn,
+		PromptOnCreate: true,
+		FollowUps: []FollowUpSpec{
+			{
+				Name:           "isle-file-system-uri",
+				FlagName:       "isle-file-system-uri",
+				PromptOnCreate: true,
+				AppliesTo:      StateOff,
+				Choices: []Choice{
+					{Value: "public", Label: "public", Aliases: []string{"1"}},
+					{Value: "private", Label: "private", Aliases: []string{"2"}},
+				},
+				DefaultValue: "private",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResolveCreateDecisions() error = %v", err)
+	}
+
+	if decisions["fcrepo"].State != StateOff {
+		t.Fatalf("expected fcrepo off, got %q", decisions["fcrepo"].State)
+	}
+	if decisions["fcrepo"].Options["isle-file-system-uri"] != "public" {
+		t.Fatalf("expected public filesystem uri, got %q", decisions["fcrepo"].Options["isle-file-system-uri"])
+	}
+}

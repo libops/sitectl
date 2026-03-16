@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -13,13 +14,14 @@ import (
 )
 
 type ReviewView struct {
-	Definition  Definition
-	Name        string
-	State       DetectedState
-	Detail      string
-	DriftDetail string
-	SDKStatus   *ComponentStatus
-	Extra       any
+	Definition     Definition
+	Name           string
+	State          DetectedState
+	Detail         string
+	DriftDetail    string
+	SDKStatus      *ComponentStatus
+	FollowUpValues map[string]string
+	Extra          any
 }
 
 type ReviewDecision struct {
@@ -28,16 +30,18 @@ type ReviewDecision struct {
 }
 
 type PromptStateFunc func(name string, guidance StateGuidance, input InputFunc) (State, error)
+type PromptChoiceFunc func(name string, choices []Choice, defaultValue string, input InputFunc, sections ...string) (string, error)
 type SummaryLineFunc func(view ReviewView, decision ReviewDecision) (string, error)
 type ReviewPromptExtraFunc func(view ReviewView, decision *ReviewDecision) error
 type ReviewConfirmFunc func(prompt string) (bool, error)
 
 type ReviewOptions struct {
-	Input       InputFunc
-	PromptState PromptStateFunc
-	PromptExtra ReviewPromptExtraFunc
-	SummaryLine SummaryLineFunc
-	Confirm     ReviewConfirmFunc
+	Input        InputFunc
+	PromptState  PromptStateFunc
+	PromptChoice PromptChoiceFunc
+	PromptExtra  ReviewPromptExtraFunc
+	SummaryLine  SummaryLineFunc
+	Confirm      ReviewConfirmFunc
 }
 
 type ReviewMode struct {
@@ -53,14 +57,15 @@ const (
 )
 
 type ReportRow struct {
-	Name            string   `json:"name" yaml:"name"`
-	State           string   `json:"state" yaml:"state"`
-	DetectedMode    string   `json:"detected_mode,omitempty" yaml:"detected_mode,omitempty"`
-	CurrentGuidance string   `json:"current_guidance,omitempty" yaml:"current_guidance,omitempty"`
-	IfEnabled       string   `json:"if_enabled" yaml:"if_enabled"`
-	IfDisabled      string   `json:"if_disabled" yaml:"if_disabled"`
-	DriftDetail     string   `json:"drift_detail,omitempty" yaml:"drift_detail,omitempty"`
-	DriftChecks     []string `json:"drift_checks,omitempty" yaml:"drift_checks,omitempty"`
+	Name            string            `json:"name" yaml:"name"`
+	State           string            `json:"state" yaml:"state"`
+	DetectedMode    string            `json:"detected_mode,omitempty" yaml:"detected_mode,omitempty"`
+	FollowUps       map[string]string `json:"follow_ups,omitempty" yaml:"follow_ups,omitempty"`
+	CurrentGuidance string            `json:"current_guidance,omitempty" yaml:"current_guidance,omitempty"`
+	IfEnabled       string            `json:"if_enabled" yaml:"if_enabled"`
+	IfDisabled      string            `json:"if_disabled" yaml:"if_disabled"`
+	DriftDetail     string            `json:"drift_detail,omitempty" yaml:"drift_detail,omitempty"`
+	DriftChecks     []string          `json:"drift_checks,omitempty" yaml:"drift_checks,omitempty"`
 }
 
 func AddReviewFlags(cmd *cobra.Command, reportTarget, verboseTarget *bool, formatTarget *string) {
@@ -89,6 +94,10 @@ func RenderComponentStatus(view ReviewView) string {
 	if guidance := RenderCurrentGuidance(view); guidance != "" {
 		lines = append(lines, "", guidance)
 	}
+	if followUps := RenderConfiguredFollowUps(view); len(followUps) > 0 {
+		lines = append(lines, "", "Configured follow-ups:")
+		lines = append(lines, followUps...)
+	}
 	lines = append(lines,
 		"",
 		fmt.Sprintf("If enabled: %s", RenderTransitionSummary(view.Definition.Behavior.Enable)),
@@ -112,6 +121,10 @@ func BuildReviewQuestion(view ReviewView) string {
 	}
 	if strings.TrimSpace(view.Definition.Guidance.Question) != "" {
 		lines = append(lines, "", strings.TrimSpace(view.Definition.Guidance.Question))
+	}
+	if followUps := RenderConfiguredFollowUps(view); len(followUps) > 0 {
+		lines = append(lines, "", "Configured follow-ups:")
+		lines = append(lines, followUps...)
 	}
 	lines = append(lines,
 		"",
@@ -199,6 +212,9 @@ func RunReview(views []ReviewView, opts ReviewOptions) (map[string]ReviewDecisio
 		}
 
 		decision := ReviewDecision{State: state, Options: map[string]string{}}
+		if err := PromptDeclaredReviewFollowUps(view, &decision, input, opts.PromptChoice); err != nil {
+			return nil, err
+		}
 		if opts.PromptExtra != nil {
 			if err := opts.PromptExtra(view, &decision); err != nil {
 				return nil, err
@@ -236,6 +252,9 @@ func RenderReviewSummary(views []ReviewView, decisions map[string]ReviewDecision
 			return "", fmt.Errorf("missing review decision for %q", view.Name)
 		}
 		line := fmt.Sprintf("Set `%s` to `%s`.", view.Name, decision.State)
+		if rendered := RenderDecisionFollowUps(view.Definition, decision); rendered != "" {
+			line = fmt.Sprintf("%s %s", line, rendered)
+		}
 		var err error
 		if summaryLine != nil {
 			line, err = summaryLine(view, decision)
@@ -308,6 +327,7 @@ func BuildComponentStatusRows(views []ReviewView, verbose bool) []ReportRow {
 			Name:            view.Name,
 			State:           string(view.State),
 			DetectedMode:    strings.TrimSpace(view.Detail),
+			FollowUps:       buildReportFollowUps(view),
 			CurrentGuidance: RenderCurrentGuidance(view),
 			IfEnabled:       RenderTransitionSummary(view.Definition.Behavior.Enable),
 			IfDisabled:      RenderTransitionSummary(view.Definition.Behavior.Disable),
@@ -346,7 +366,7 @@ func writeComponentStatusTable(out io.Writer, rows []ReportRow) error {
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			row.Name,
 			row.State,
-			fallbackReportValue(row.DetectedMode),
+			fallbackReportValue(renderReportMode(row)),
 			fallbackReportValue(row.CurrentGuidance),
 			fallbackReportValue(row.IfEnabled),
 			fallbackReportValue(row.IfDisabled),
@@ -412,4 +432,26 @@ func fallbackReportValue(value string) string {
 		return "-"
 	}
 	return strings.TrimSpace(value)
+}
+
+func renderReportMode(row ReportRow) string {
+	parts := []string{}
+	if strings.TrimSpace(row.DetectedMode) != "" {
+		parts = append(parts, strings.TrimSpace(row.DetectedMode))
+	}
+	if len(row.FollowUps) > 0 {
+		keys := make([]string, 0, len(row.FollowUps))
+		for key := range row.FollowUps {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			value := strings.TrimSpace(row.FollowUps[key])
+			if value == "" {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
