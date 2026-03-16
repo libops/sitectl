@@ -148,6 +148,9 @@ func TestDefinitionCreateOptionIncludesPromptOnCreate(t *testing.T) {
 		DefaultState:   StateOn,
 		Guidance:       StateGuidance{Question: "fcrepo?"},
 		PromptOnCreate: true,
+		FollowUps: []FollowUpSpec{
+			{Name: "isle-file-system-uri", PromptOnCreate: true, AppliesTo: StateOff},
+		},
 	}
 
 	option := def.CreateOption()
@@ -162,6 +165,9 @@ func TestDefinitionCreateOptionIncludesPromptOnCreate(t *testing.T) {
 	}
 	if option.Guidance.Question != "fcrepo?" {
 		t.Fatalf("expected guidance question preserved, got %q", option.Guidance.Question)
+	}
+	if len(option.FollowUps) != 1 || option.FollowUps[0].Name != "isle-file-system-uri" {
+		t.Fatalf("expected follow-up metadata preserved, got %#v", option.FollowUps)
 	}
 }
 

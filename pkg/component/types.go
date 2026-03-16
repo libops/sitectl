@@ -54,6 +54,19 @@ type Dependencies struct {
 	DrupalModules []DrupalModuleDependency
 }
 
+type FollowUpSpec struct {
+	Name           string
+	Label          string
+	FlagName       string
+	FlagUsage      string
+	Question       string
+	Choices        []Choice
+	DefaultValue   string
+	PromptOnCreate bool
+	AppliesTo      State
+	CustomPrompt   string
+}
+
 type DataMigrationRequirement string
 
 const (
@@ -83,6 +96,7 @@ type Definition struct {
 	DefaultState   State
 	Guidance       StateGuidance
 	PromptOnCreate bool
+	FollowUps      []FollowUpSpec
 	Gates          GateSpec
 	Dependencies   Dependencies
 	Behavior       Behavior
@@ -112,7 +126,25 @@ func (d Definition) CreateOption() CreateOption {
 		Default:        d.DefaultState,
 		Guidance:       d.Guidance,
 		PromptOnCreate: d.PromptOnCreate,
+		FollowUps:      d.FollowUps,
 	}
+}
+
+func (d Definition) FollowUpsForState(state State) []FollowUpSpec {
+	if len(d.FollowUps) == 0 {
+		return nil
+	}
+	out := make([]FollowUpSpec, 0, len(d.FollowUps))
+	for _, spec := range d.FollowUps {
+		if spec.Name == "" {
+			continue
+		}
+		if spec.AppliesTo != "" && normalizeState(spec.AppliesTo) != normalizeState(state) {
+			continue
+		}
+		out = append(out, spec)
+	}
+	return out
 }
 
 func ParseStateOverrides(values map[string]string) (map[string]State, error) {

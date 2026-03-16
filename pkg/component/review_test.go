@@ -41,9 +41,22 @@ func TestRenderComponentStatusIncludesTransitionBehavior(t *testing.T) {
 func TestRunReviewCapturesExtraOptionsAndSummary(t *testing.T) {
 	views := []ReviewView{
 		{
-			Definition: Definition{Name: "isle-tls"},
-			Name:       "isle-tls",
-			State:      DetectedState(StateOff),
+			Definition: Definition{
+				Name: "isle-tls",
+				FollowUps: []FollowUpSpec{
+					{
+						Name:      "tls-mode",
+						Label:     "TLS mode",
+						AppliesTo: StateOn,
+						Choices: []Choice{
+							{Value: "mkcert", Label: "mkcert", Aliases: []string{"1"}},
+						},
+					},
+				},
+			},
+			Name:           "isle-tls",
+			State:          DetectedState(StateOff),
+			FollowUpValues: map[string]string{"tls-mode": "mkcert"},
 		},
 	}
 
@@ -53,12 +66,8 @@ func TestRunReviewCapturesExtraOptionsAndSummary(t *testing.T) {
 		PromptState: func(name string, guidance StateGuidance, input InputFunc) (State, error) {
 			return StateOn, nil
 		},
-		PromptExtra: func(view ReviewView, decision *ReviewDecision) error {
-			decision.Options["tls-mode"] = "mkcert"
-			return nil
-		},
-		SummaryLine: func(view ReviewView, decision ReviewDecision) (string, error) {
-			return "Set `" + view.Name + "` to `" + string(decision.State) + "`. Requested mode: `" + decision.Options["tls-mode"] + "`.", nil
+		PromptChoice: func(name string, choices []Choice, defaultValue string, input InputFunc, sections ...string) (string, error) {
+			return "mkcert", nil
 		},
 		Confirm: func(prompt string) (bool, error) {
 			confirmedPrompt = prompt
@@ -75,7 +84,7 @@ func TestRunReviewCapturesExtraOptionsAndSummary(t *testing.T) {
 	if decisions["isle-tls"].Options["tls-mode"] != "mkcert" {
 		t.Fatalf("expected tls-mode mkcert, got %q", decisions["isle-tls"].Options["tls-mode"])
 	}
-	if !strings.Contains(confirmedPrompt, "Requested mode: `mkcert`.") {
+	if !strings.Contains(confirmedPrompt, "TLS mode: `mkcert`.") {
 		t.Fatalf("expected summary prompt to include extra option, got:\n%s", confirmedPrompt)
 	}
 }
@@ -145,6 +154,25 @@ func TestWriteComponentStatusReportWithFormatJSON(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "\"name\": \"fcrepo\"") {
 		t.Fatalf("expected json output, got:\n%s", out.String())
+	}
+}
+
+func TestBuildComponentStatusRowsIncludesFollowUps(t *testing.T) {
+	view := ReviewView{
+		Definition: Definition{
+			Name: "fcrepo",
+			FollowUps: []FollowUpSpec{
+				{Name: "isle-file-system-uri", Label: "Drupal filesystem URI", AppliesTo: StateOff},
+			},
+		},
+		Name:           "fcrepo",
+		State:          DetectedState(StateOff),
+		FollowUpValues: map[string]string{"isle-file-system-uri": "public"},
+	}
+
+	rows := BuildComponentStatusRows([]ReviewView{view}, false)
+	if rows[0].FollowUps["isle-file-system-uri"] != "public" {
+		t.Fatalf("expected follow-up in report rows, got %#v", rows[0].FollowUps)
 	}
 }
 

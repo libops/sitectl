@@ -48,6 +48,7 @@ func TestAddDrupalRootfsFlagUsesDefault(t *testing.T) {
 	flag := cmd.Flags().Lookup("drupal-rootfs")
 	if flag == nil {
 		t.Fatal("expected drupal-rootfs flag")
+		return
 	}
 	if flag.DefValue != DefaultDrupalRootfs {
 		t.Fatalf("expected default %q, got %q", DefaultDrupalRootfs, flag.DefValue)
