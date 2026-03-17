@@ -22,12 +22,101 @@ func LoadComposeFile(path string) (*ComposeFile, error) {
 	}, nil
 }
 
+func LoadComposeFileOptional(path string) (*ComposeFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &ComposeFile{
+				path:  path,
+				lines: nil,
+			}, nil
+		}
+		return nil, fmt.Errorf("read compose file: %w", err)
+	}
+	return &ComposeFile{
+		path:  path,
+		lines: strings.Split(string(data), "\n"),
+	}, nil
+}
+
 func (c *ComposeFile) Save() error {
+	if len(composeContentLines(c.lines)) == 0 {
+		if err := os.Remove(c.path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
 	return os.WriteFile(c.path, []byte(strings.Join(c.lines, "\n")), 0o644)
 }
 
 func (c *ComposeFile) DeleteService(name string) error {
 	return c.deleteSectionEntry("services", name)
+}
+
+func (c *ComposeFile) HasService(name string) bool {
+	_, ok := c.findService(name)
+	return ok
+}
+
+func (c *ComposeFile) ServiceBlock(name string) (string, bool) {
+	serviceIdx, ok := c.findService(name)
+	if !ok {
+		return "", false
+	}
+	end := findBlockEnd(c.lines, serviceIdx, 2)
+	return strings.Join(c.lines[serviceIdx:end], "\n"), true
+}
+
+func (c *ComposeFile) AddServiceBlock(name, block string) error {
+	if strings.TrimSpace(block) == "" {
+		return fmt.Errorf("service block for %q is empty", name)
+	}
+	if c.HasService(name) {
+		return nil
+	}
+
+	servicesIdx, ok := findMapKey(c.lines, 0, "services", 0)
+	if !ok {
+		c.lines = append(c.lines, "services:")
+		servicesIdx = len(c.lines) - 1
+	}
+	insertAt := findBlockEnd(c.lines, servicesIdx, 0)
+	c.lines = insertLines(c.lines, insertAt, strings.Split(strings.TrimRight(block, "\n"), "\n"))
+	return nil
+}
+
+func (c *ComposeFile) SetServiceStringList(service, key string, values []string) error {
+	serviceIdx, ok := c.findService(service)
+	if !ok {
+		return fmt.Errorf("service %q not found in compose file", service)
+	}
+	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
+	listBlock := []string{"    " + key + ":"}
+	for _, value := range values {
+		listBlock = append(listBlock, fmt.Sprintf("      - %s", value))
+	}
+	if ok {
+		end := findBlockEnd(c.lines, keyIdx, 4)
+		c.lines = append(c.lines[:keyIdx], append(listBlock, c.lines[end:]...)...)
+		return nil
+	}
+	insertAt := findBlockEnd(c.lines, serviceIdx, 2)
+	c.lines = insertLines(c.lines, insertAt, listBlock)
+	return nil
+}
+
+func (c *ComposeFile) DeleteServiceKey(service, key string) error {
+	serviceIdx, ok := c.findService(service)
+	if !ok {
+		return nil
+	}
+	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
+	if !ok {
+		return nil
+	}
+	end := findBlockEnd(c.lines, keyIdx, 4)
+	c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
+	return nil
 }
 
 func (c *ComposeFile) DeleteVolume(name string) error {
@@ -175,4 +264,15 @@ func insertLines(lines []string, index int, inserted []string) []string {
 
 func leadingSpaces(line string) int {
 	return len(line) - len(strings.TrimLeft(line, " "))
+}
+
+func composeContentLines(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
 }
