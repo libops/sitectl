@@ -53,34 +53,50 @@ func (c *ComposeFile) DeleteService(name string) error {
 	return c.deleteSectionEntry("services", name)
 }
 
+func (c *ComposeFile) DeleteVolume(name string) error {
+	return c.deleteSectionEntry("volumes", name)
+}
+
 func (c *ComposeFile) HasService(name string) bool {
 	_, ok := c.findService(name)
 	return ok
 }
 
+func (c *ComposeFile) HasVolume(name string) bool {
+	_, ok := c.findSectionEntry("volumes", name)
+	return ok
+}
+
 func (c *ComposeFile) ServiceBlock(name string) (string, bool) {
-	serviceIdx, ok := c.findService(name)
-	if !ok {
-		return "", false
-	}
-	end := findBlockEnd(c.lines, serviceIdx, 2)
-	return strings.Join(c.lines[serviceIdx:end], "\n"), true
+	return c.sectionEntryBlock("services", name)
+}
+
+func (c *ComposeFile) VolumeBlock(name string) (string, bool) {
+	return c.sectionEntryBlock("volumes", name)
 }
 
 func (c *ComposeFile) AddServiceBlock(name, block string) error {
+	return c.addSectionEntryBlock("services", name, block)
+}
+
+func (c *ComposeFile) AddVolumeBlock(name, block string) error {
+	return c.addSectionEntryBlock("volumes", name, block)
+}
+
+func (c *ComposeFile) addSectionEntryBlock(section, name, block string) error {
 	if strings.TrimSpace(block) == "" {
-		return fmt.Errorf("service block for %q is empty", name)
+		return fmt.Errorf("%s block for %q is empty", section, name)
 	}
-	if c.HasService(name) {
+	if _, ok := c.findSectionEntry(section, name); ok {
 		return nil
 	}
 
-	servicesIdx, ok := findMapKey(c.lines, 0, "services", 0)
+	sectionIdx, ok := findMapKey(c.lines, 0, section, 0)
 	if !ok {
-		c.lines = append(c.lines, "services:")
-		servicesIdx = len(c.lines) - 1
+		c.lines = append(c.lines, section+":")
+		sectionIdx = len(c.lines) - 1
 	}
-	insertAt := findBlockEnd(c.lines, servicesIdx, 0)
+	insertAt := findBlockEnd(c.lines, sectionIdx, 0)
 	c.lines = insertLines(c.lines, insertAt, strings.Split(strings.TrimRight(block, "\n"), "\n"))
 	return nil
 }
@@ -117,10 +133,6 @@ func (c *ComposeFile) DeleteServiceKey(service, key string) error {
 	end := findBlockEnd(c.lines, keyIdx, 4)
 	c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
 	return nil
-}
-
-func (c *ComposeFile) DeleteVolume(name string) error {
-	return c.deleteSectionEntry("volumes", name)
 }
 
 func (c *ComposeFile) DeleteSectionEntry(section, key string) error {
@@ -199,6 +211,23 @@ func (c *ComposeFile) findService(service string) (int, bool) {
 		return 0, false
 	}
 	return findMapKey(c.lines, servicesIdx+1, service, 2)
+}
+
+func (c *ComposeFile) findSectionEntry(section, key string) (int, bool) {
+	sectionIdx, ok := findMapKey(c.lines, 0, section, 0)
+	if !ok {
+		return 0, false
+	}
+	return findMapKey(c.lines, sectionIdx+1, key, 2)
+}
+
+func (c *ComposeFile) sectionEntryBlock(section, key string) (string, bool) {
+	entryIdx, ok := c.findSectionEntry(section, key)
+	if !ok {
+		return "", false
+	}
+	end := findBlockEnd(c.lines, entryIdx, 2)
+	return strings.Join(c.lines[entryIdx:end], "\n"), true
 }
 
 type envBlockStyle int
