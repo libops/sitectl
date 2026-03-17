@@ -220,8 +220,8 @@ func promptChoiceInteractive(name string, choices []Choice, defaultValue string,
 }
 
 func redrawInteractiveChoiceLines(lines []string, previousLineCount int) {
-	if previousLineCount > 1 {
-		fmt.Fprintf(os.Stdout, "\r\x1b[%dA", previousLineCount-1)
+	if previousLineCount > 0 {
+		fmt.Fprintf(os.Stdout, "\r\x1b[%dA", previousLineCount)
 	} else {
 		fmt.Fprint(os.Stdout, "\r")
 	}
@@ -231,7 +231,7 @@ func redrawInteractiveChoiceLines(lines []string, previousLineCount int) {
 			fmt.Fprint(os.Stdout, "\x1b[1B\r")
 		}
 	}
-	if previousLineCount > 1 {
+	if previousLineCount > 0 {
 		fmt.Fprintf(os.Stdout, "\x1b[%dA\r", previousLineCount-1)
 	} else {
 		fmt.Fprint(os.Stdout, "\r")
