@@ -21,6 +21,8 @@ type LocalContextCreateOptions struct {
 	DefaultProjectDir   string
 	ProjectName         string
 	DefaultProjectName  string
+	ComposeProjectName  string
+	ComposeNetwork      string
 	Environment         string
 	DockerSocket        string
 	SetDefault          bool
@@ -84,20 +86,24 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 	}
 
 	projectName := firstNonEmpty(opts.ProjectName, existing.ProjectName, opts.DefaultProjectName, "docker-compose")
+	composeProjectName := firstNonEmpty(opts.ComposeProjectName, existing.ComposeProjectName, DetectComposeProjectName(projectDir), projectName)
+	composeNetwork := firstNonEmpty(opts.ComposeNetwork, existing.ComposeNetwork, DetectComposeNetworkName(projectDir, composeProjectName))
 	site := firstNonEmpty(opts.Site, existing.Site, opts.DefaultSite, projectName, name)
 	plugin := firstNonEmpty(opts.Plugin, existing.Plugin, opts.DefaultPlugin, "core")
 	environment := firstNonEmpty(opts.Environment, existing.Environment, "local")
 	dockerSocket := GetDefaultLocalDockerSocket(firstNonEmpty(opts.DockerSocket, existing.DockerSocket, "/var/run/docker.sock"))
 
 	ctx := &Context{
-		Name:           name,
-		Site:           site,
-		Plugin:         plugin,
-		DockerHostType: ContextLocal,
-		Environment:    environment,
-		DockerSocket:   dockerSocket,
-		ProjectName:    projectName,
-		ProjectDir:     projectDir,
+		Name:               name,
+		Site:               site,
+		Plugin:             plugin,
+		DockerHostType:     ContextLocal,
+		Environment:        environment,
+		DockerSocket:       dockerSocket,
+		ProjectName:        projectName,
+		ComposeProjectName: composeProjectName,
+		ComposeNetwork:     composeNetwork,
+		ProjectDir:         projectDir,
 	}
 
 	if err := SaveContext(ctx, opts.SetDefault); err != nil {

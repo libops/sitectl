@@ -19,6 +19,12 @@ func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(projectDir) error = %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte("COMPOSE_PROJECT_NAME=isle-local\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(.env) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "compose.yaml"), []byte("services:\n  web:\n    image: nginx\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(compose.yaml) error = %v", err)
+	}
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Chdir(projectDir) error = %v", err)
 	}
@@ -27,9 +33,10 @@ func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
 	})
 
 	ctx, err := PromptAndSaveLocalContext(LocalContextCreateOptions{
-		Name:       "isle-local",
-		ProjectDir: projectDir,
-		SetDefault: true,
+		Name:                "isle-local",
+		ProjectDir:          projectDir,
+		SetDefault:          true,
+		ProjectDirValidator: func(string) error { return nil },
 		Input: func(question ...string) (string, error) {
 			t.Fatal("did not expect prompt")
 			return "", nil
@@ -56,6 +63,12 @@ func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
 	}
 	if ctx.ProjectName != "docker-compose" {
 		t.Fatalf("expected default project name docker-compose, got %q", ctx.ProjectName)
+	}
+	if ctx.ComposeProjectName != "isle-local" {
+		t.Fatalf("expected detected compose project name isle-local, got %q", ctx.ComposeProjectName)
+	}
+	if ctx.ComposeNetwork != "isle-local_default" {
+		t.Fatalf("expected detected compose network isle-local_default, got %q", ctx.ComposeNetwork)
 	}
 	if ctx.Environment != "local" {
 		t.Fatalf("expected default environment local, got %q", ctx.Environment)

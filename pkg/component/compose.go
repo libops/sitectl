@@ -78,6 +78,67 @@ func (c *ComposeProject) AddDefinitions(defs *ComposeDefinitions) {
 	mergeIntoSection(c.root, "configs", defs.Configs)
 }
 
+func (c *ComposeProject) SetDefinition(section, name string, value any) {
+	if c == nil || strings.TrimSpace(section) == "" || strings.TrimSpace(name) == "" {
+		return
+	}
+	target := nestedMap(c.root[section])
+	if target == nil {
+		target = map[string]any{}
+	}
+	target[name] = value
+	c.root[section] = target
+}
+
+func (c *ComposeProject) DeleteDefinition(section, name string) bool {
+	if c == nil || strings.TrimSpace(section) == "" || strings.TrimSpace(name) == "" {
+		return false
+	}
+	target := nestedMap(c.root[section])
+	if target == nil {
+		return false
+	}
+	if _, ok := target[name]; !ok {
+		return false
+	}
+	delete(target, name)
+	if len(target) == 0 {
+		delete(c.root, section)
+	} else {
+		c.root[section] = target
+	}
+	return true
+}
+
+func (d *ComposeDefinitions) Definition(section, name string) (any, bool) {
+	if d == nil {
+		return nil, false
+	}
+	entries := d.section(section)
+	if entries == nil {
+		return nil, false
+	}
+	value, ok := entries[name]
+	return value, ok
+}
+
+func (d *ComposeDefinitions) section(section string) map[string]any {
+	switch section {
+	case "services":
+		return d.Services
+	case "networks":
+		return d.Networks
+	case "volumes":
+		return d.Volumes
+	case "secrets":
+		return d.Secrets
+	case "configs":
+		return d.Configs
+	default:
+		return nil
+	}
+}
+
 func (c *ComposeProject) PruneUnusedResources() {
 	for _, section := range []string{"volumes", "networks", "secrets", "configs"} {
 		entries := nestedMap(c.root[section])

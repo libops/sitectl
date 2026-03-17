@@ -18,10 +18,11 @@ import (
 
 // Metadata contains information about a plugin
 type Metadata struct {
-	Name        string
-	Version     string
-	Description string
-	Author      string
+	Name         string
+	Version      string
+	Description  string
+	Author       string
+	TemplateRepo string
 }
 
 var builtinPluginIncludes = map[string][]string{
@@ -153,6 +154,9 @@ func (s *SDK) GetMetadataCommand() *cobra.Command {
 			fmt.Printf("Description: %s\n", s.Metadata.Description)
 			if s.Metadata.Author != "" {
 				fmt.Printf("Author: %s\n", s.Metadata.Author)
+			}
+			if s.Metadata.TemplateRepo != "" {
+				fmt.Printf("Template-Repo: %s\n", s.Metadata.TemplateRepo)
 			}
 		},
 	}

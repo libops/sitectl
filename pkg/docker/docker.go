@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
@@ -117,12 +118,21 @@ func (d *DockerClient) GetServiceIp(ctx context.Context, c *config.Context, cont
 	if err != nil {
 		return "", fmt.Errorf("error inspecting container %q: %v", containerName, err)
 	}
-	networkName := fmt.Sprintf("%s_default", c.ProjectName)
-	network, ok := containerJSON.NetworkSettings.Networks[networkName]
-	if !ok {
-		return "", fmt.Errorf("network %q not found in container %q", networkName, containerName)
+	networkName := c.EffectiveComposeNetwork()
+	if network, ok := containerJSON.NetworkSettings.Networks[networkName]; ok {
+		return network.IPAddress, nil
 	}
-	return network.IPAddress, nil
+	if len(containerJSON.NetworkSettings.Networks) == 1 {
+		for _, network := range containerJSON.NetworkSettings.Networks {
+			return network.IPAddress, nil
+		}
+	}
+	available := make([]string, 0, len(containerJSON.NetworkSettings.Networks))
+	for name := range containerJSON.NetworkSettings.Networks {
+		available = append(available, name)
+	}
+	sort.Strings(available)
+	return "", fmt.Errorf("network %q not found in container %q (available: %s)", networkName, containerName, strings.Join(available, ", "))
 }
 
 func (d *DockerClient) GetContainerName(c *config.Context, service string) (string, error) {
@@ -130,7 +140,7 @@ func (d *DockerClient) GetContainerName(c *config.Context, service string) (stri
 
 	// Define the filters based on the Docker Compose labels.
 	filterArgs := filters.NewArgs()
-	filterArgs.Add("label", "com.docker.compose.project="+c.ProjectName)
+	filterArgs.Add("label", "com.docker.compose.project="+c.EffectiveComposeProjectName())
 	filterArgs.Add("label", "com.docker.compose.service="+service)
 
 	slog.Debug("Querying docker", "filters", filterArgs)

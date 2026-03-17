@@ -70,7 +70,12 @@ While [Docker's native context feature](https://docs.docker.com/engine/manage-re
 - [islandora](https://github.com/libops/sitectl-isle)
 - [drupal](https://github.com/libops/sitectl-drupal)
 
+## Contributing
+
+Contributor guidance, including the TUI and command UI architecture rules, lives in [CONTRIBUTING.md](./CONTRIBUTING.md).
+
 
 ## Attribution
 
 - The `config` commands for setting contexts were heavily inspired by `kubectl`
+- Adding a TUI was inspired by 37signals' [once](https://github.com/basecamp/once) CLI

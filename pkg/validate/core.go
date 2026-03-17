@@ -32,6 +32,8 @@ func requiredFieldsValidator(ctx *config.Context) ([]Result, error) {
 		requiredStringResult("type", string(ctx.DockerHostType)),
 		requiredStringResult("project-dir", ctx.ProjectDir),
 		requiredStringResult("project-name", ctx.ProjectName),
+		requiredStringResult("compose-project-name", ctx.EffectiveComposeProjectName()),
+		requiredStringResult("compose-network", ctx.EffectiveComposeNetwork()),
 	}
 	if ctx.DockerHostType == config.ContextRemote {
 		results = append(results,

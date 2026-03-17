@@ -7,6 +7,7 @@ import (
 
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/ui"
 	"golang.org/x/term"
 )
 
@@ -49,7 +50,6 @@ var (
 	okStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
 	failStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
 	infoStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
-	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229"))
 	commandStyle  = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("238")).
@@ -147,96 +147,21 @@ func promptChoiceInteractive(name string, choices []Choice, defaultValue string,
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return "", false, nil
 	}
-	if len(choices) == 0 {
-		return "", false, fmt.Errorf("no choices configured for %s", name)
+	uiChoices := make([]ui.Choice, 0, len(choices))
+	for _, choice := range choices {
+		uiChoices = append(uiChoices, ui.Choice{
+			Value:            choice.Value,
+			Label:            choice.Label,
+			Help:             choice.Help,
+			AllowCustomInput: choice.AllowCustomInput,
+		})
 	}
-
-	fd := int(os.Stdin.Fd())
-	oldState, err := term.MakeRaw(fd)
-	if err != nil {
-		return "", false, nil
-	}
-	defer func() {
-		_ = term.Restore(fd, oldState)
-	}()
-
-	selected := defaultChoiceIndex(choices, defaultValue)
-	customInput := defaultCustomInput(choices, defaultValue)
-	lines := renderInteractiveChoiceLines(choices, selected, customInput)
-	hint := truncateStyledLine(mutedStyle.Render("Use up/down to select, Enter to confirm"), promptRenderWidth())
-
-	if len(sections) > 0 {
-		fmt.Fprint(os.Stdout, strings.Join(sections, "\r\n")+"\r\n")
-	}
-	staticLines := []string{}
-	staticLines = append(staticLines, hint, "")
-	fmt.Fprint(os.Stdout, "\r\n"+strings.Join(staticLines, "\r\n")+"\r\n")
-	fmt.Fprint(os.Stdout, strings.Join(lines, "\r\n")+"\r\n")
-	renderedLineCount := len(lines)
-
-	for {
-		var buf [3]byte
-		n, err := os.Stdin.Read(buf[:])
-		if err != nil {
-			fmt.Fprintln(os.Stdout)
-			fmt.Fprintln(os.Stdout)
-			return "", true, err
-		}
-		if n == 0 {
-			continue
-		}
-
-		switch {
-		case n == 1 && (buf[0] == '\r' || buf[0] == '\n'):
-			fmt.Fprint(os.Stdout, "\r\n\r\n")
-			if choices[selected].AllowCustomInput {
-				value := strings.TrimSpace(customInput)
-				if value != "" {
-					return value, true, nil
-				}
-			}
-			return choices[selected].Value, true, nil
-		case n == 1 && buf[0] == 3:
-			fmt.Fprint(os.Stdout, "\r\n\r\n")
-			return "", true, fmt.Errorf("prompt cancelled")
-		case n == 1 && (buf[0] == 127 || buf[0] == 8):
-			if choices[selected].AllowCustomInput && len(customInput) > 0 {
-				customInput = customInput[:len(customInput)-1]
-			}
-		case n >= 3 && buf[0] == 27 && buf[1] == 91 && buf[2] == 65:
-			selected = (selected - 1 + len(choices)) % len(choices)
-		case n >= 3 && buf[0] == 27 && buf[1] == 91 && buf[2] == 66:
-			selected = (selected + 1) % len(choices)
-		default:
-			if choices[selected].AllowCustomInput && isPrintableInput(buf[:n]) {
-				customInput += string(buf[:n])
-			}
-		}
-
-		lines = renderInteractiveChoiceLines(choices, selected, customInput)
-		redrawInteractiveChoiceLines(lines, renderedLineCount)
-		renderedLineCount = len(lines)
-	}
-}
-
-func redrawInteractiveChoiceLines(lines []string, previousLineCount int) {
-	if previousLineCount > 0 {
-		fmt.Fprintf(os.Stdout, "\r\x1b[%dA", previousLineCount)
-	} else {
-		fmt.Fprint(os.Stdout, "\r")
-	}
-	for i := 0; i < previousLineCount; i++ {
-		fmt.Fprint(os.Stdout, "\x1b[2K")
-		if i < previousLineCount-1 {
-			fmt.Fprint(os.Stdout, "\x1b[1B\r")
-		}
-	}
-	if previousLineCount > 0 {
-		fmt.Fprintf(os.Stdout, "\x1b[%dA\r", previousLineCount-1)
-	} else {
-		fmt.Fprint(os.Stdout, "\r")
-	}
-	fmt.Fprint(os.Stdout, strings.Join(lines, "\r\n")+"\r\n")
+	return ui.PromptChoice(ui.ChoicePromptOptions{
+		Name:         name,
+		Sections:     sections,
+		Choices:      uiChoices,
+		DefaultValue: defaultValue,
+	})
 }
 
 func RenderSection(title, body string) string {
@@ -389,41 +314,6 @@ func renderChoiceLines(name string, choices []Choice, defaultValue string) []str
 	return lines
 }
 
-func renderInteractiveChoiceLines(choices []Choice, selected int, customInput string) []string {
-	lines := []string{}
-	width := promptRenderWidth()
-	for index, choice := range choices {
-		labelStyle := infoStyle
-		switch choice.Value {
-		case string(StateOn):
-			labelStyle = onLabelStyle
-		case string(StateOff):
-			labelStyle = offLabelStyle
-		}
-
-		prefix := "  "
-		if index == selected {
-			prefix = selectedStyle.Render("> ")
-		}
-
-		help := strings.TrimSpace(choice.Help)
-		if choice.AllowCustomInput {
-			help = strings.TrimSpace(customInput)
-			if index == selected && help == "" {
-				help = mutedStyle.Render("|")
-			}
-		} else if help == "" {
-			help = choice.Label
-		}
-		lines = append(lines, strings.Split(wrapPrefixedText(
-			prefix+labelStyle.Render(choice.Label)+"  ",
-			help,
-			width,
-		), "\n")...)
-	}
-	return lines
-}
-
 func matchChoice(choices []Choice, value string) (Choice, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	for _, choice := range choices {
@@ -437,15 +327,6 @@ func matchChoice(choices []Choice, value string) (Choice, bool) {
 	return Choice{}, false
 }
 
-func defaultChoiceIndex(choices []Choice, defaultValue string) int {
-	for index, choice := range choices {
-		if choice.Value == defaultValue {
-			return index
-		}
-	}
-	return 0
-}
-
 func customChoice(choices []Choice) *Choice {
 	for i := range choices {
 		if choices[i].AllowCustomInput {
@@ -453,35 +334,6 @@ func customChoice(choices []Choice) *Choice {
 		}
 	}
 	return nil
-}
-
-func defaultCustomInput(choices []Choice, defaultValue string) string {
-	custom := customChoice(choices)
-	if custom == nil {
-		return ""
-	}
-	trimmed := strings.TrimSpace(defaultValue)
-	if trimmed == "" || trimmed == custom.Value {
-		return ""
-	}
-	for _, choice := range choices {
-		if !choice.AllowCustomInput && trimmed == choice.Value {
-			return ""
-		}
-	}
-	return trimmed
-}
-
-func isPrintableInput(value []byte) bool {
-	if len(value) == 0 {
-		return false
-	}
-	for _, b := range value {
-		if b < 32 || b == 127 {
-			return false
-		}
-	}
-	return true
 }
 
 func stateChoiceValue(state State) string {
@@ -505,43 +357,6 @@ func promptRenderWidth() int {
 		return 100
 	}
 	return width
-}
-
-func truncateStyledLine(value string, width int) string {
-	if width <= 0 {
-		return value
-	}
-	if visibleWidth(value) <= width {
-		return value
-	}
-
-	plain := stripANSIEscape(value)
-	if len(plain) <= width {
-		return plain
-	}
-	if width <= 1 {
-		return plain[:width]
-	}
-	return plain[:width-1] + "…"
-}
-
-func stripANSIEscape(value string) string {
-	var out strings.Builder
-	out.Grow(len(value))
-
-	inEscape := false
-	for i := 0; i < len(value); i++ {
-		ch := value[i]
-		switch {
-		case ch == '\x1b':
-			inEscape = true
-		case inEscape && ch == 'm':
-			inEscape = false
-		case !inEscape:
-			out.WriteByte(ch)
-		}
-	}
-	return out.String()
 }
 
 func wrapText(text string, width int) string {

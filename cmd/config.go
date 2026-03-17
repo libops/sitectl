@@ -657,6 +657,16 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 	sshKey := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.SSHKeyPath }), defaultKey)
 	dockerSocket := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.DockerSocket }), "/var/run/docker.sock")
 	projectName := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ProjectName }), localCtx.ProjectName, "docker-compose")
+	composeProjectName := firstNonEmptyString(
+		remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ComposeProjectName }),
+		localCtx.EffectiveComposeProjectName(),
+		projectName,
+	)
+	composeNetwork := firstNonEmptyString(
+		remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ComposeNetwork }),
+		localCtx.ComposeNetwork,
+		localCtx.EffectiveComposeNetwork(),
+	)
 	runSudo := remoteContextBool(previousRemote, func(ctx *config.Context) bool { return ctx.RunSudo }, localCtx.RunSudo)
 
 	for {
@@ -685,6 +695,8 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 			Environment:            environment,
 			ProjectDir:             strings.TrimSpace(projectDir),
 			ProjectName:            firstNonEmptyString(localCtx.ProjectName, "docker-compose"),
+			ComposeProjectName:     composeProjectName,
+			ComposeNetwork:         composeNetwork,
 			SSHHostname:            strings.TrimSpace(hostname),
 			SSHUser:                sshUser,
 			SSHPort:                sshPort,
@@ -699,7 +711,12 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 			DatabaseName:           localCtx.DatabaseName,
 		}
 		remoteCtx.ProjectName = projectName
+		remoteCtx.ComposeProjectName = composeProjectName
+		remoteCtx.ComposeNetwork = composeNetwork
 		remoteCtx.RunSudo = runSudo
+		if detected := config.DetectContextComposeNetwork(remoteCtx); detected != "" {
+			remoteCtx.ComposeNetwork = detected
+		}
 
 		if err := createConfigVerifyRemote(remoteCtx); err != nil {
 			retry, retryErr := createConfigPromptChoice(
@@ -856,7 +873,7 @@ func validateRemoteDockerAccess(ctx *config.Context) error {
 			if promptErr != nil {
 				return promptErr
 			}
-			projectName, promptErr := promptRequiredValueWithDefault("Docker Compose project name", firstNonEmptyString(ctx.ProjectName, "docker-compose"))
+			projectName, promptErr := promptRequiredValueWithDefault("Logical project name", firstNonEmptyString(ctx.ProjectName, "docker-compose"))
 			if promptErr != nil {
 				return promptErr
 			}
@@ -870,6 +887,8 @@ func validateRemoteDockerAccess(ctx *config.Context) error {
 			}
 			ctx.ProjectDir = projectDir
 			ctx.ProjectName = projectName
+			ctx.ComposeProjectName = firstNonEmptyString(ctx.ComposeProjectName, projectName)
+			ctx.ComposeNetwork = firstNonEmptyString(config.DetectContextComposeNetwork(ctx), ctx.ComposeNetwork, ctx.EffectiveComposeNetwork())
 			ctx.DockerSocket = dockerSocket
 			ctx.RunSudo = runSudo
 			continue
@@ -1046,6 +1065,12 @@ func inheritNewContextDefaultsFromActive(target, active *config.Context, flags *
 	}
 	if !flags.Changed("project-name") && active.ProjectName != "" && target.ProjectName == "docker-compose" {
 		target.ProjectName = active.ProjectName
+	}
+	if !flags.Changed("compose-project-name") && active.ComposeProjectName != "" && target.ComposeProjectName == "" {
+		target.ComposeProjectName = active.ComposeProjectName
+	}
+	if !flags.Changed("compose-network") && active.ComposeNetwork != "" && target.ComposeNetwork == "" {
+		target.ComposeNetwork = active.ComposeNetwork
 	}
 	if !flags.Changed("compose-file") && len(target.ComposeFile) == 0 && len(active.ComposeFile) > 0 {
 		target.ComposeFile = append([]string{}, active.ComposeFile...)

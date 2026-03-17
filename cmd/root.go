@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 
 	"charm.land/fang/v2"
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/plugin"
+	"github.com/libops/sitectl/pkg/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -41,6 +41,9 @@ var RootCmd = &cobra.Command{
 		slog.SetDefault(handler)
 
 		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return tui.Run()
 	},
 }
 
@@ -76,52 +79,24 @@ func init() {
 }
 
 func discoverAndRegisterPlugins() {
-	path := os.Getenv("PATH")
-	paths := strings.SplitSeq(path, string(os.PathListSeparator))
+	for _, discovered := range plugin.DiscoverInstalled() {
+		pluginName := discovered.Name
+		pluginPath := discovered.Path
+		binaryName := discovered.BinaryName
+		description := discovered.Description
 
-	for p := range paths {
-		files, err := os.ReadDir(p)
-		if err != nil {
-			continue // Ignore directories that can't be read
-		}
-
-		for _, f := range files {
-			if !f.IsDir() && strings.HasPrefix(f.Name(), "sitectl-") && f.Name() != "sitectl" {
-				pluginName := strings.TrimPrefix(f.Name(), "sitectl-")
-				pluginPath := filepath.Join(p, f.Name())
-
-				// Try to get plugin description from metadata
-				description := getPluginDescription(pluginPath, pluginName)
-
-				pluginCmd := &cobra.Command{
-					Use:   pluginName,
-					Short: description,
-					RunE: func(cmd *cobra.Command, args []string) error {
-						err := syscall.Exec(pluginPath, append([]string{f.Name()}, args...), os.Environ())
-						if err != nil {
-							return fmt.Errorf("failed to execute plugin %q: %w", pluginName, err)
-						}
-						return nil
-					},
-					DisableFlagParsing: true,
+		pluginCmd := &cobra.Command{
+			Use:   pluginName,
+			Short: description,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				err := syscall.Exec(pluginPath, append([]string{binaryName}, args...), os.Environ())
+				if err != nil {
+					return fmt.Errorf("failed to execute plugin %q: %w", pluginName, err)
 				}
-				RootCmd.AddCommand(pluginCmd)
-			}
+				return nil
+			},
+			DisableFlagParsing: true,
 		}
+		RootCmd.AddCommand(pluginCmd)
 	}
-}
-
-// getPluginDescription attempts to fetch plugin metadata
-func getPluginDescription(pluginPath, pluginName string) string {
-	// Try to execute plugin with plugin-info command to get description
-	cmd := exec.Command(pluginPath, "plugin-info")
-	_, err := cmd.Output()
-
-	// If we can't get metadata, use a default description
-	if err != nil {
-		return fmt.Sprintf("the %s plugin", pluginName)
-	}
-
-	// For now, return default - a more complete implementation would parse the output
-	return fmt.Sprintf("the %s plugin", pluginName)
 }
