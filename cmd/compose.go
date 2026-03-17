@@ -95,6 +95,9 @@ Examples:
 			if err != nil {
 				helpers.ExitOnError(fmt.Errorf("docker-compose.yml not found at %s: %v", path, err))
 			}
+			if err := context.EnsureTrackedComposeOverrideSymlink(); err != nil {
+				return err
+			}
 		}
 
 		// consider adding a flag to not do this

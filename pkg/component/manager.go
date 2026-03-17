@@ -22,6 +22,15 @@ const (
 	StateOff State = "off"
 )
 
+type Disposition string
+
+const (
+	DispositionDisabled    Disposition = "disabled"
+	DispositionSuperseded  Disposition = "superceded"
+	DispositionEnabled     Disposition = "enabled"
+	DispositionDistributed Disposition = "distributed"
+)
+
 type ComposeSpec struct {
 	Definitions         *ComposeDefinitions
 	RemoveServices      []string
@@ -479,6 +488,56 @@ func ParseState(value string) (State, error) {
 
 func normalizeState(state State) State {
 	return State(strings.ToLower(strings.TrimSpace(string(state))))
+}
+
+func ParseDisposition(value string) (Disposition, error) {
+	disposition := normalizeDisposition(Disposition(value))
+	switch disposition {
+	case DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed:
+		return disposition, nil
+	default:
+		return "", fmt.Errorf("invalid component disposition %q: expected one of %s, %s, %s, %s", value, DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed)
+	}
+}
+
+func normalizeDisposition(disposition Disposition) Disposition {
+	switch strings.ToLower(strings.TrimSpace(string(disposition))) {
+	case "", "on":
+		if strings.TrimSpace(string(disposition)) == "" {
+			return ""
+		}
+		return DispositionEnabled
+	case "off":
+		return DispositionDisabled
+	case string(DispositionDisabled):
+		return DispositionDisabled
+	case string(DispositionSuperseded):
+		return DispositionSuperseded
+	case string(DispositionEnabled):
+		return DispositionEnabled
+	case string(DispositionDistributed):
+		return DispositionDistributed
+	default:
+		return Disposition(strings.ToLower(strings.TrimSpace(string(disposition))))
+	}
+}
+
+func DispositionToState(disposition Disposition) State {
+	switch normalizeDisposition(disposition) {
+	case DispositionEnabled:
+		return StateOn
+	default:
+		return StateOff
+	}
+}
+
+func StateToDisposition(state State) Disposition {
+	switch normalizeState(state) {
+	case StateOn:
+		return DispositionEnabled
+	default:
+		return DispositionDisabled
+	}
 }
 
 func resolveComponentSpecName(current, fallback string) string {

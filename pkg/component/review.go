@@ -17,6 +17,7 @@ type ReviewView struct {
 	Definition     Definition
 	Name           string
 	State          DetectedState
+	Disposition    Disposition
 	Detail         string
 	DriftDetail    string
 	SDKStatus      *ComponentStatus
@@ -25,23 +26,26 @@ type ReviewView struct {
 }
 
 type ReviewDecision struct {
-	State   State
-	Options map[string]string
+	Disposition Disposition
+	State       State
+	Options     map[string]string
 }
 
 type PromptStateFunc func(name string, guidance StateGuidance, input InputFunc) (State, error)
+type PromptDispositionFunc func(name string, guidance StateGuidance, allowed []Disposition, defaultDisposition Disposition, input InputFunc) (Disposition, error)
 type PromptChoiceFunc func(name string, choices []Choice, defaultValue string, input InputFunc, sections ...string) (string, error)
 type SummaryLineFunc func(view ReviewView, decision ReviewDecision) (string, error)
 type ReviewPromptExtraFunc func(view ReviewView, decision *ReviewDecision) error
 type ReviewConfirmFunc func(prompt string) (bool, error)
 
 type ReviewOptions struct {
-	Input        InputFunc
-	PromptState  PromptStateFunc
-	PromptChoice PromptChoiceFunc
-	PromptExtra  ReviewPromptExtraFunc
-	SummaryLine  SummaryLineFunc
-	Confirm      ReviewConfirmFunc
+	Input             InputFunc
+	PromptState       PromptStateFunc
+	PromptDisposition PromptDispositionFunc
+	PromptChoice      PromptChoiceFunc
+	PromptExtra       ReviewPromptExtraFunc
+	SummaryLine       SummaryLineFunc
+	Confirm           ReviewConfirmFunc
 }
 
 type ReviewMode struct {
@@ -86,7 +90,7 @@ func AddReportFlags(cmd *cobra.Command, verboseTarget *bool, formatTarget *strin
 
 func RenderComponentStatus(view ReviewView) string {
 	lines := []string{
-		fmt.Sprintf("Current state: `%s`", view.State),
+		fmt.Sprintf("Current disposition: `%s`", displayDisposition(view)),
 	}
 	if strings.TrimSpace(view.Detail) != "" {
 		lines = append(lines, fmt.Sprintf("Detected mode: %s", view.Detail))
@@ -108,7 +112,7 @@ func RenderComponentStatus(view ReviewView) string {
 
 func BuildReviewQuestion(view ReviewView) string {
 	lines := []string{
-		fmt.Sprintf("Current state: `%s`", view.State),
+		fmt.Sprintf("Current disposition: `%s`", displayDisposition(view)),
 	}
 	if strings.TrimSpace(view.Detail) != "" {
 		lines = append(lines, fmt.Sprintf("Detected mode: %s", view.Detail))
@@ -135,6 +139,9 @@ func BuildReviewQuestion(view ReviewView) string {
 }
 
 func ReviewDefaultState(view ReviewView) State {
+	if disposition := normalizeDisposition(view.Disposition); disposition != "" && disposition != DispositionSuperseded && disposition != DispositionDistributed {
+		return DispositionToState(disposition)
+	}
 	switch view.State {
 	case DetectedState(StateOn):
 		return StateOn
@@ -144,11 +151,34 @@ func ReviewDefaultState(view ReviewView) State {
 		if view.Definition.DefaultState != "" {
 			return view.Definition.DefaultState
 		}
-		return StateOff
+		return DispositionToState(view.Definition.DefaultDisposition)
 	}
 }
 
+func ReviewDefaultDisposition(view ReviewView) Disposition {
+	if disposition := normalizeDisposition(view.Disposition); disposition != "" {
+		return disposition
+	}
+	if view.State == StateDrifted {
+		if view.Definition.DefaultDisposition != "" {
+			return normalizeDisposition(view.Definition.DefaultDisposition)
+		}
+		return StateToDisposition(view.Definition.DefaultState)
+	}
+	return StateToDisposition(State(view.State))
+}
+
 func RenderCurrentGuidance(view ReviewView) string {
+	switch normalizeDisposition(view.Disposition) {
+	case DispositionEnabled:
+		return strings.TrimSpace(dispositionHelp(view.Definition.Guidance, DispositionEnabled))
+	case DispositionDisabled:
+		return strings.TrimSpace(dispositionHelp(view.Definition.Guidance, DispositionDisabled))
+	case DispositionSuperseded:
+		return strings.TrimSpace(dispositionHelp(view.Definition.Guidance, DispositionSuperseded))
+	case DispositionDistributed:
+		return strings.TrimSpace(dispositionHelp(view.Definition.Guidance, DispositionDistributed))
+	}
 	switch view.State {
 	case DetectedState(StateOn):
 		return strings.TrimSpace(view.Definition.Guidance.OnHelp)
@@ -199,19 +229,43 @@ func RunReview(views []ReviewView, opts ReviewOptions) (map[string]ReviewDecisio
 	if promptState == nil {
 		promptState = PromptState
 	}
-
 	decisions := make(map[string]ReviewDecision, len(views))
 	for _, view := range views {
 		guidance := view.Definition.Guidance
 		guidance.DefaultState = ReviewDefaultState(view)
 		guidance.Question = BuildReviewQuestion(view)
 
-		state, err := promptState(view.Name, guidance, input)
-		if err != nil {
-			return nil, err
+		disposition := ReviewDefaultDisposition(view)
+		var state State
+		var err error
+		if len(view.Definition.AllowedDispositions) > 0 {
+			if opts.PromptDisposition != nil {
+				disposition, err = opts.PromptDisposition(view.Name, guidance, view.Definition.AllowedDispositions, disposition, input)
+				if err != nil {
+					return nil, err
+				}
+			} else if opts.PromptState != nil {
+				state, err = promptState(view.Name, guidance, input)
+				if err != nil {
+					return nil, err
+				}
+				disposition = LegacyDispositionForState(view.Definition.AllowedDispositions, state)
+			} else {
+				disposition, err = PromptDisposition(view.Name, guidance, view.Definition.AllowedDispositions, disposition, input)
+				if err != nil {
+					return nil, err
+				}
+			}
+			state = DispositionToState(disposition)
+		} else {
+			state, err = promptState(view.Name, guidance, input)
+			if err != nil {
+				return nil, err
+			}
+			disposition = StateToDisposition(state)
 		}
 
-		decision := ReviewDecision{State: state, Options: map[string]string{}}
+		decision := ReviewDecision{Disposition: disposition, State: state, Options: map[string]string{}}
 		if err := PromptDeclaredReviewFollowUps(view, &decision, input, opts.PromptChoice); err != nil {
 			return nil, err
 		}
@@ -244,6 +298,60 @@ func RunReview(views []ReviewView, opts ReviewOptions) (map[string]ReviewDecisio
 	return decisions, nil
 }
 
+func LegacyDispositionForState(allowed []Disposition, state State) Disposition {
+	if len(allowed) == 0 {
+		return StateToDisposition(state)
+	}
+	switch normalizeState(state) {
+	case StateOn:
+		for _, disposition := range allowed {
+			if disposition == DispositionEnabled {
+				return disposition
+			}
+		}
+		for _, disposition := range allowed {
+			if disposition != DispositionDisabled {
+				return disposition
+			}
+		}
+	case StateOff:
+		for _, disposition := range allowed {
+			if disposition == DispositionDisabled {
+				return disposition
+			}
+		}
+		for _, disposition := range allowed {
+			if disposition != DispositionEnabled {
+				return disposition
+			}
+		}
+	}
+	return allowed[0]
+}
+
+func ResolveAllowedDisposition(allowed []Disposition, disposition Disposition) (Disposition, error) {
+	disposition = normalizeDisposition(disposition)
+	if len(allowed) == 0 {
+		if disposition == "" {
+			return DispositionEnabled, nil
+		}
+		return disposition, nil
+	}
+	for _, candidate := range allowed {
+		if normalizeDisposition(candidate) == disposition {
+			return candidate, nil
+		}
+	}
+	switch disposition {
+	case DispositionEnabled:
+		return LegacyDispositionForState(allowed, StateOn), nil
+	case DispositionDisabled:
+		return LegacyDispositionForState(allowed, StateOff), nil
+	default:
+		return "", fmt.Errorf("disposition %q is not allowed; expected one of %v", disposition, allowed)
+	}
+}
+
 func RenderReviewSummary(views []ReviewView, decisions map[string]ReviewDecision, summaryLine SummaryLineFunc) (string, error) {
 	lines := []string{}
 	for _, view := range views {
@@ -251,7 +359,7 @@ func RenderReviewSummary(views []ReviewView, decisions map[string]ReviewDecision
 		if !ok {
 			return "", fmt.Errorf("missing review decision for %q", view.Name)
 		}
-		line := fmt.Sprintf("Set `%s` to `%s`.", view.Name, decision.State)
+		line := fmt.Sprintf("Set `%s` to `%s`.", view.Name, displayDecisionDisposition(decision))
 		if rendered := RenderDecisionFollowUps(view.Definition, decision); rendered != "" {
 			line = fmt.Sprintf("%s %s", line, rendered)
 		}
@@ -325,7 +433,7 @@ func BuildComponentStatusRows(views []ReviewView, verbose bool) []ReportRow {
 	for _, view := range views {
 		row := ReportRow{
 			Name:            view.Name,
-			State:           string(view.State),
+			State:           string(displayDisposition(view)),
 			DetectedMode:    strings.TrimSpace(view.Detail),
 			FollowUps:       buildReportFollowUps(view),
 			CurrentGuidance: RenderCurrentGuidance(view),
@@ -454,4 +562,21 @@ func renderReportMode(row ReportRow) string {
 		}
 	}
 	return strings.Join(parts, "; ")
+}
+
+func displayDisposition(view ReviewView) string {
+	if disposition := normalizeDisposition(view.Disposition); disposition != "" {
+		return string(disposition)
+	}
+	return string(view.State)
+}
+
+func displayDecisionDisposition(decision ReviewDecision) string {
+	if disposition := normalizeDisposition(decision.Disposition); disposition != "" {
+		return string(disposition)
+	}
+	if decision.State != "" {
+		return string(StateToDisposition(decision.State))
+	}
+	return ""
 }

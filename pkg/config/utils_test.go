@@ -21,7 +21,10 @@ func TestLoadFromFlags(t *testing.T) {
 	flags.String("ssh-user", "user", "SSH user for remote context")
 	flags.String("ssh-key", "/path/to/ssh-key", "Path to SSH private key for remote context")
 	flags.String("project-dir", "/path/to/project", "Project directory")
+	flags.String("site", "", "Site")
+	flags.String("plugin", "core", "Plugin")
 	flags.String("project-name", "foo", "Composer Project Name")
+	flags.String("environment", "", "Environment name")
 	flags.Bool("sudo", false, "Run commands on remote hosts as sudo")
 	flags.StringSlice("env-file", []string{}, "path to env files to pass to docker compose")
 	flags.StringSliceP("compose-file", "f", []string{}, "docker compose file paths to use")
@@ -39,7 +42,10 @@ func TestLoadFromFlags(t *testing.T) {
 		"--ssh-user", "remoteuser",
 		"--ssh-key", "/custom/ssh-key",
 		"--project-dir", "/custom/project",
+		"--site", "museum",
+		"--plugin", "isle",
 		"--project-name", "bar",
+		"--environment", "staging",
 		"--sudo", "true",
 		"--env-file", ".env",
 		"--env-file", "/tmp/.env",
@@ -78,8 +84,17 @@ func TestLoadFromFlags(t *testing.T) {
 	if ctx.ProjectDir != "/custom/project" {
 		t.Errorf("Expected project-dir '/custom/project', got %q", ctx.ProjectDir)
 	}
+	if ctx.Site != "museum" {
+		t.Errorf("Expected site 'museum', got %q", ctx.Site)
+	}
+	if ctx.Plugin != "isle" {
+		t.Errorf("Expected plugin 'isle', got %q", ctx.Plugin)
+	}
 	if ctx.ProjectName != "bar" {
 		t.Errorf("Expected project-name 'bar', got %q", ctx.ProjectName)
+	}
+	if ctx.Environment != "staging" {
+		t.Errorf("Expected environment 'staging', got %q", ctx.Environment)
 	}
 	if ctx.RunSudo != true {
 		t.Errorf("Expected site 'true', got %t", ctx.RunSudo)

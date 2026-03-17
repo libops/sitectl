@@ -8,15 +8,20 @@ import (
 )
 
 type CreateOption struct {
-	Name           string
-	Default        State
-	Guidance       StateGuidance
-	Shorthand      string
-	PromptOnCreate bool
-	FollowUps      []FollowUpSpec
+	Name                string
+	Default             State
+	DefaultDisposition  Disposition
+	AllowedDispositions []Disposition
+	Guidance            StateGuidance
+	Shorthand           string
+	PromptOnCreate      bool
+	FollowUps           []FollowUpSpec
 }
 
 func (o CreateOption) normalizedDefault() State {
+	if disposition := o.normalizedDispositionDefault(); disposition != "" {
+		return DispositionToState(disposition)
+	}
 	if state := normalizeState(o.Default); state != "" {
 		return state
 	}
@@ -26,6 +31,19 @@ func (o CreateOption) normalizedDefault() State {
 	return StateOn
 }
 
+func (o CreateOption) normalizedDispositionDefault() Disposition {
+	if disposition := normalizeDisposition(o.DefaultDisposition); disposition != "" {
+		return disposition
+	}
+	if disposition := normalizeDisposition(StateToDisposition(o.Default)); disposition != "" {
+		return disposition
+	}
+	if disposition := normalizeDisposition(StateToDisposition(o.Guidance.DefaultState)); disposition != "" {
+		return disposition
+	}
+	return DispositionEnabled
+}
+
 func (o CreateOption) shouldPromptOnCreate() bool {
 	return o.PromptOnCreate
 }
@@ -33,12 +51,19 @@ func (o CreateOption) shouldPromptOnCreate() bool {
 func AddCreateFlags(cmd *cobra.Command, options ...CreateOption) {
 	seenFollowUpFlags := map[string]bool{}
 	for _, option := range options {
-		defaultState := option.normalizedDefault()
-		usage := fmt.Sprintf("%s state: %s or %s", option.Name, StateOn, StateOff)
+		defaultDisposition := option.normalizedDispositionDefault()
+		usage := fmt.Sprintf("%s disposition", option.Name)
+		if len(option.AllowedDispositions) > 0 {
+			allowed := []string{}
+			for _, disposition := range option.AllowedDispositions {
+				allowed = append(allowed, string(disposition))
+			}
+			usage = fmt.Sprintf("%s disposition: %s", option.Name, strings.Join(allowed, ", "))
+		}
 		if option.Shorthand != "" {
-			cmd.Flags().StringP(option.Name, option.Shorthand, string(defaultState), usage)
+			cmd.Flags().StringP(option.Name, option.Shorthand, string(defaultDisposition), usage)
 		} else {
-			cmd.Flags().String(option.Name, string(defaultState), usage)
+			cmd.Flags().String(option.Name, string(defaultDisposition), usage)
 		}
 		for _, followUp := range option.FollowUps {
 			if !followUp.PromptOnCreate {
@@ -74,32 +99,49 @@ func ResolveCreateDecisions(cmd *cobra.Command, input InputFunc, options ...Crea
 		}
 
 		var state State
+		var disposition Disposition
 		if cmd.Flags().Changed(option.Name) {
 			value, err := cmd.Flags().GetString(option.Name)
 			if err != nil {
 				return nil, fmt.Errorf("get %s flag: %w", option.Name, err)
 			}
-			state, err = ParseState(value)
+			disposition, err = ParseDisposition(value)
 			if err != nil {
 				return nil, fmt.Errorf("invalid %s value %q: %w", option.Name, value, err)
 			}
-		} else if !option.shouldPromptOnCreate() {
-			state = option.normalizedDefault()
-		} else {
-			guidance := option.Guidance
-			if guidance.DefaultState == "" {
-				guidance.DefaultState = option.normalizedDefault()
-			}
-			var err error
-			state, err = PromptState(option.Name, guidance, input)
+			disposition, err = ResolveAllowedDisposition(option.AllowedDispositions, disposition)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("invalid %s value %q: %w", option.Name, value, err)
+			}
+			state = DispositionToState(disposition)
+		} else if !option.shouldPromptOnCreate() {
+			disposition = option.normalizedDispositionDefault()
+			state = DispositionToState(disposition)
+		} else {
+			var err error
+			if len(option.AllowedDispositions) > 0 {
+				disposition, err = PromptDisposition(option.Name, option.Guidance, option.AllowedDispositions, option.normalizedDispositionDefault(), input)
+				if err != nil {
+					return nil, err
+				}
+				state = DispositionToState(disposition)
+			} else {
+				guidance := option.Guidance
+				if guidance.DefaultState == "" {
+					guidance.DefaultState = option.normalizedDefault()
+				}
+				state, err = PromptState(option.Name, guidance, input)
+				if err != nil {
+					return nil, err
+				}
+				disposition = StateToDisposition(state)
 			}
 		}
 
 		decision := ReviewDecision{
-			State:   state,
-			Options: map[string]string{},
+			Disposition: disposition,
+			State:       state,
+			Options:     map[string]string{},
 		}
 		if err := PromptCreateFollowUps(cmd, option, &decision, input); err != nil {
 			return nil, err
@@ -118,7 +160,7 @@ func PromptCreateFollowUps(cmd *cobra.Command, option CreateOption, decision *Re
 		decision.Options = map[string]string{}
 	}
 
-	for _, followUp := range followUpsForState(option.FollowUps, decision.State) {
+	for _, followUp := range followUpsForDisposition(option.FollowUps, decision.Disposition, decision.State) {
 		flagName := followUpFlagName(option.Name, followUp)
 		if flagName != "" && cmd != nil && cmd.Flags().Lookup(flagName) != nil && cmd.Flags().Changed(flagName) {
 			value, err := cmd.Flags().GetString(flagName)

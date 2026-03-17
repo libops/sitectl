@@ -12,6 +12,7 @@ import (
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
 	"github.com/libops/sitectl/pkg/helpers"
+	"github.com/libops/sitectl/pkg/validate"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +22,10 @@ type Metadata struct {
 	Version     string
 	Description string
 	Author      string
+}
+
+var builtinPluginIncludes = map[string][]string{
+	"isle": {"drupal"},
 }
 
 // Config holds common plugin configuration
@@ -33,9 +38,10 @@ type Config struct {
 
 // SDK provides common functionality for plugins
 type SDK struct {
-	Metadata Metadata
-	Config   Config
-	RootCmd  *cobra.Command
+	Metadata          Metadata
+	Config            Config
+	RootCmd           *cobra.Command
+	contextValidators []validate.Validator
 }
 
 // NewSDK creates a new plugin SDK instance
@@ -87,7 +93,11 @@ func (s *SDK) setupLogging(cmd *cobra.Command) error {
 	// Store config for plugin use
 	s.Config.LogLevel = ll
 	if s.RootCmd.PersistentFlags().Lookup("context") != nil {
-		s.Config.Context, _ = cmd.Flags().GetString("context")
+		if cmd.Flags().Changed("context") {
+			s.Config.Context, _ = cmd.Flags().GetString("context")
+		} else {
+			s.Config.Context = ""
+		}
 	}
 
 	return nil
@@ -131,11 +141,6 @@ func (s *SDK) SetVersionInfo(version, commit, date string) {
 	s.RootCmd.Version = formatted
 }
 
-// AddGlobalFlags adds common libops-specific flags
-func (s *SDK) AddGlobalFlags(currentContext string) {
-	s.RootCmd.PersistentFlags().String("context", currentContext, "The sitectl context to use. See sitectl config --help for more info")
-}
-
 // GetMetadataCommand returns a command that displays plugin metadata
 func (s *SDK) GetMetadataCommand() *cobra.Command {
 	return &cobra.Command{
@@ -175,10 +180,13 @@ func (s *SDK) GetContext() (*config.Context, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Use specified context or current context
+	// Use explicit --context if provided, otherwise resolve current context
 	contextName := s.Config.Context
 	if contextName == "" {
-		contextName = cfg.CurrentContext
+		contextName, err = config.Current()
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve current context: %w", err)
+		}
 	}
 
 	if contextName == "" {
@@ -188,11 +196,53 @@ func (s *SDK) GetContext() (*config.Context, error) {
 	// Find the context
 	for _, ctx := range cfg.Contexts {
 		if ctx.Name == contextName {
+			if err := validateContextPlugin(ctx.Plugin, s.Metadata.Name); err != nil {
+				return nil, fmt.Errorf("context %q is not supported by plugin %q: %w", ctx.Name, s.Metadata.Name, err)
+			}
 			return &ctx, nil
 		}
 	}
 
 	return nil, fmt.Errorf("context %q not found", contextName)
+}
+
+func validateContextPlugin(contextPlugin, requestedPlugin string) error {
+	contextPlugin = strings.TrimSpace(contextPlugin)
+	requestedPlugin = strings.TrimSpace(requestedPlugin)
+
+	if contextPlugin == "" {
+		return fmt.Errorf("context plugin is empty")
+	}
+	if requestedPlugin == "" {
+		return fmt.Errorf("requested plugin is empty")
+	}
+	if contextPluginSupports(contextPlugin, requestedPlugin) {
+		return nil
+	}
+	return fmt.Errorf("context plugin %q does not include %q", contextPlugin, requestedPlugin)
+}
+
+func contextPluginSupports(contextPlugin, requestedPlugin string) bool {
+	if contextPlugin == requestedPlugin {
+		return true
+	}
+
+	visited := map[string]bool{}
+	var walk func(string) bool
+	walk = func(plugin string) bool {
+		if visited[plugin] {
+			return false
+		}
+		visited[plugin] = true
+		for _, included := range builtinPluginIncludes[plugin] {
+			if included == requestedPlugin || walk(included) {
+				return true
+			}
+		}
+		return false
+	}
+
+	return walk(contextPlugin)
 }
 
 // GetComponentManager creates a component manager bound to the active sitectl context.
@@ -203,6 +253,19 @@ func (s *SDK) GetComponentManager() (*component.Manager, error) {
 	}
 
 	return component.NewManager(ctx), nil
+}
+
+func (s *SDK) RegisterContextValidator(validator validate.Validator) {
+	if validator == nil {
+		return
+	}
+	s.contextValidators = append(s.contextValidators, validator)
+}
+
+func (s *SDK) ContextValidators() []validate.Validator {
+	out := make([]validate.Validator, len(s.contextValidators))
+	copy(out, s.contextValidators)
+	return out
 }
 
 // PromptAndSaveLocalContext creates or updates a local sitectl context using
