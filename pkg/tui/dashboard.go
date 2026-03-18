@@ -17,9 +17,11 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/NimbleMarkets/ntcharts/v2/sparkline"
 	"github.com/kballard/go-shellquote"
+	"github.com/libops/sitectl/docs"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -37,6 +39,7 @@ type screenMode int
 const (
 	screenDashboard screenMode = iota
 	screenLogs
+	screenTour
 )
 
 type overlayMode int
@@ -73,6 +76,13 @@ type commandFinishedMsg struct {
 type commandExecFinishedMsg struct {
 	Command string
 	Err     error
+}
+
+type stateReloadedMsg struct {
+	Config         *config.Config
+	Plugins        []plugin.InstalledPlugin
+	CurrentContext string
+	Err            error
 }
 
 type menuItem struct {
@@ -135,6 +145,7 @@ type dashboardModel struct {
 	cfg            *config.Config
 	sites          []siteGroup
 	plugins        []plugin.InstalledPlugin
+	tourPanes      []docs.TourPane
 	currentContext string
 
 	siteIndex int
@@ -203,7 +214,8 @@ func newDashboardModel(cfg *config.Config, plugins []plugin.InstalledPlugin) *da
 	m := &dashboardModel{
 		cfg:            cfg,
 		sites:          groupContexts(cfg),
-		plugins:        pluginsWithTemplates(plugins),
+		plugins:        plugins,
+		tourPanes:      loadTourPanes(),
 		currentContext: current,
 		width:          120,
 		height:         36,
@@ -231,7 +243,7 @@ func newDashboardModel(cfg *config.Config, plugins []plugin.InstalledPlugin) *da
 		{title: "Context Details", desc: "Inspect context configuration for the selected environment", action: "context-info"},
 		{title: "Plugin Details", desc: "Inspect the selected plugin and template repo", action: "plugin-info"},
 	})
-	m.chooser = newMenuModel("Choose An App", pluginMenuItems(m.plugins))
+	m.chooser = newMenuModel(chooserTitle(m.sites), chooserItems(m.sites, m.plugins))
 	m.commands = newMenuModel("Commands", commandPaletteItems("", m.selectedContextName(), m.selectedSiteName(), m.selectedPluginName()))
 	m.commandInput = textinput.New()
 	m.commandInput.Prompt = "sitectl --context " + m.selectedContextName() + " "
@@ -335,6 +347,33 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastMessage = fmt.Sprintf("Terminal command finished: %s", msg.Command)
 		}
+		return m, reloadStateCmd()
+
+	case stateReloadedMsg:
+		if msg.Err != nil {
+			m.lastMessage = fmt.Sprintf("Failed to reload sitectl state: %v", msg.Err)
+			return m, nil
+		}
+		m.cfg = msg.Config
+		m.sites = groupContexts(msg.Config)
+		m.plugins = msg.Plugins
+		m.currentContext = msg.CurrentContext
+		m.siteIndex, m.envIndex = defaultSelection(m.sites, m.currentContext)
+		m.summary = docker.ProjectSummary{}
+		m.summaryErr = nil
+		m.loading = false
+		m.loadingLog = false
+		m.logsErr = nil
+		m.logsTitle = "Logs"
+		m.screen = screenDashboard
+		m.overlay = overlayNone
+		m.chooser = newMenuModel(chooserTitle(m.sites), chooserItems(m.sites, m.plugins))
+		m.refreshCommandSuggestions()
+		m.syncLayout()
+		if ctx, ok := m.selectedContext(); ok {
+			m.loading = true
+			return m, loadSummaryCmd(ctx)
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -380,6 +419,22 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if !m.hasContexts() {
+		if m.screen == screenTour {
+			return m.handleTourKey(msg)
+		}
+		switch {
+		case key.Matches(msg, m.keys.Quit):
+			return m, tea.Quit
+		case msg.String() == "enter":
+			return m.handleOnboardingSelection()
+		default:
+			var cmd tea.Cmd
+			m.chooser, cmd = m.chooser.Update(msg)
+			return m, cmd
+		}
+	}
+
 	if m.overlay == overlayNone && m.commandInput.Focused() {
 		switch {
 		case msg.String() == "ctrl+c":
@@ -659,10 +714,9 @@ func (m *dashboardModel) handleOverlaySelection() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	default:
-		if strings.HasPrefix(item.action, "plugin:") {
-			m.lastMessage = fmt.Sprintf("Bootstrap flow pending: %s", strings.TrimPrefix(item.action, "plugin:"))
+		if item.action == "config-create" || strings.HasPrefix(item.action, "plugin:") {
 			m.overlay = overlayNone
-			return m, nil
+			return m.executeChooserAction(item.action)
 		}
 		if strings.HasPrefix(item.action, "palette:") {
 			parent := strings.TrimPrefix(item.action, "palette:")
@@ -722,6 +776,12 @@ func (m *dashboardModel) View() tea.View {
 func (m *dashboardModel) render() string {
 	if m.width < 100 || m.height < 28 {
 		return docStyle.Render(panelStyle.Width(max(40, m.width-6)).Render("Terminal too small for the sitectl dashboard.\n\nResize to at least 100x28."))
+	}
+	if !m.hasContexts() && m.screen == screenTour {
+		return docStyle.Render(m.renderTourArea())
+	}
+	if !m.hasContexts() {
+		return docStyle.Render(m.renderOnboarding())
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
@@ -803,6 +863,8 @@ func (m *dashboardModel) renderMainArea() string {
 	switch m.screen {
 	case screenLogs:
 		return m.renderLogsArea()
+	case screenTour:
+		return m.renderTourArea()
 	default:
 		return m.renderDashboardArea()
 	}
@@ -828,7 +890,7 @@ func (m *dashboardModel) renderLogsArea() string {
 		fmt.Sprintf("Context: %s", ctx.Name),
 		hint,
 	}, "\n"))
-	body := panelStyle.Width(max(40, m.width-6)).Height(max(10, m.height-14)).Render(m.logs.View())
+	body := panelStyle.Width(max(40, m.width-6)).Height(max(10, m.height-14)).Render(renderViewportWithScrollbar(m.logs))
 	if m.loadingLog {
 		header = panelStyle.Width(max(40, m.width-6)).Render(m.spin.View() + " Loading logs...\nContext: " + ctx.Name)
 	}
@@ -894,7 +956,7 @@ func (m *dashboardModel) renderEnvironmentCards(width int) string {
 }
 
 func (m *dashboardModel) renderDetailsPanel(width int) string {
-	content := m.detail.View()
+	content := renderViewportWithScrollbar(m.detail)
 	if m.loading {
 		content = m.spin.View() + " Loading Docker Compose status..."
 	}
@@ -920,12 +982,44 @@ func (m *dashboardModel) renderOverlay() string {
 		content = m.chooser.View()
 	case overlayInfo:
 		title = m.infoTitle
-		content = m.detail.View()
+		content = renderViewportWithScrollbar(m.detail)
 	case overlayCommands:
 		title = commandPaletteTitle(m.commandParent)
 		content = m.commands.View()
 	}
 	return overlayPanelStyle.Width(min(72, max(48, m.width-12))).Render(sectionTitleStyle.Render(title) + "\n" + content)
+}
+
+func (m *dashboardModel) renderOnboarding() string {
+	width := max(56, min(88, m.width-10))
+	intro := panelStyle.Width(width).Render(strings.Join([]string{
+		titleStyle.Render("Sitectl | Get Started"),
+		"",
+		"No contexts are configured yet.",
+		"Set up an existing Docker Compose site with sitectl, or create a new site from an installed plugin.",
+		"",
+		"Use arrow keys to choose an option and press enter to launch it in your terminal.",
+	}, "\n"))
+
+	menu := panelStyle.Width(width).Render(m.chooser.View())
+	footer := footerStyle.Width(width).Render("enter: launch  up/down: choose  q: quit")
+	body := lipgloss.JoinVertical(lipgloss.Left, intro, menu, footer)
+	if strings.TrimSpace(m.lastMessage) != "" {
+		body = lipgloss.JoinVertical(lipgloss.Left, body, subtleStyle.Render(m.lastMessage))
+	}
+	return body
+}
+
+func (m *dashboardModel) renderTourArea() string {
+	width := max(56, m.width-6)
+	header := panelStyle.Width(width).Render(strings.Join([]string{
+		titleStyle.Render("Sitectl Tour"),
+		m.currentTourTitle(),
+		fmt.Sprintf("Pane %d of %d", m.currentTourIndex()+1, len(m.tourPanes)),
+		"left/right: next section  esc: back to setup/create",
+	}, "\n"))
+	body := panelStyle.Width(width).Height(max(12, m.height-12)).Render(renderViewportWithScrollbar(m.detail))
+	return lipgloss.JoinVertical(lipgloss.Left, header, body)
 }
 
 func (m *dashboardModel) renderCommandFooter() string {
@@ -946,6 +1040,9 @@ func (m *dashboardModel) syncLayout() {
 	m.help.SetWidth(max(20, m.width-hpad))
 
 	detailHeight := min(max(8, m.height-32), 14)
+	if m.screen == screenTour {
+		detailHeight = max(12, m.height-16)
+	}
 	m.detail.SetWidth(max(40, m.width-hpad-8))
 	m.detail.SetHeight(detailHeight)
 
@@ -966,6 +1063,9 @@ func (m *dashboardModel) syncLayout() {
 }
 
 func (m *dashboardModel) syncDetailContent() {
+	if m.screen == screenTour {
+		return
+	}
 	ctx, ok := m.selectedContext()
 	if !ok {
 		m.detail.SetContent("No context selected.")
@@ -1042,20 +1142,31 @@ func newMenuModel(title string, items []menuItem) list.Model {
 func pluginMenuItems(plugins []plugin.InstalledPlugin) []menuItem {
 	items := make([]menuItem, 0, len(plugins))
 	for _, p := range plugins {
+		if !p.CanCreate || strings.TrimSpace(p.TemplateRepo) == "" {
+			continue
+		}
 		items = append(items, menuItem{
-			title:  p.Name,
-			desc:   firstNonEmpty(p.TemplateRepo, p.Description, "No template repo configured"),
+			title:  fmt.Sprintf("Install the %s stack locally", p.Name),
+			desc:   p.TemplateRepo,
 			action: "plugin:" + p.Name,
 		})
 	}
 	if len(items) == 0 {
 		items = append(items, menuItem{
-			title:  "No plugins found",
-			desc:   "Install a sitectl-* plugin that exposes a template repo.",
+			title:  "No site-create plugins found",
+			desc:   "Install a sitectl-* plugin with a template repo and create command.",
 			action: "",
 		})
 	}
 	return items
+}
+
+func loadTourPanes() []docs.TourPane {
+	panes, err := docs.LoadTour()
+	if err != nil {
+		return nil
+	}
+	return panes
 }
 
 func loadSummaryCmd(ctx config.Context) tea.Cmd {
@@ -1164,20 +1275,6 @@ func groupContexts(cfg *config.Config) []siteGroup {
 	return sites
 }
 
-func pluginsWithTemplates(discovered []plugin.InstalledPlugin) []plugin.InstalledPlugin {
-	filtered := make([]plugin.InstalledPlugin, 0, len(discovered))
-	for _, installed := range discovered {
-		if strings.TrimSpace(installed.TemplateRepo) == "" {
-			continue
-		}
-		filtered = append(filtered, installed)
-	}
-	sort.Slice(filtered, func(i, j int) bool {
-		return filtered[i].Name < filtered[j].Name
-	})
-	return filtered
-}
-
 func defaultSelection(sites []siteGroup, current string) (int, int) {
 	for i, site := range sites {
 		for j, ctx := range site.Contexts {
@@ -1262,6 +1359,45 @@ func (m *dashboardModel) refreshCommandSuggestions() {
 	if m.commandParent != "" {
 		m.commands = newMenuModel(commandPaletteTitle(m.commandParent), commandPaletteItems(m.commandParent, m.selectedContextName(), m.selectedSiteName(), m.selectedPluginName()))
 	}
+}
+
+func (m *dashboardModel) hasContexts() bool {
+	return len(m.sites) > 0
+}
+
+func chooserTitle(sites []siteGroup) string {
+	if len(sites) == 0 {
+		return "Get Started"
+	}
+	return "Choose An App"
+}
+
+func chooserItems(sites []siteGroup, plugins []plugin.InstalledPlugin) []menuItem {
+	if len(sites) == 0 {
+		items := []menuItem{
+			{
+				title:  "Take the Tour",
+				desc:   "Overview of contexts, plugins, and components.",
+				action: "tour",
+			},
+			{
+				title:  "Set Up Existing Project",
+				desc:   "Register an existing Docker Compose site with sitectl.",
+				action: "config-create",
+			},
+		}
+		items = append(items, pluginMenuItems(plugins)...)
+		return items
+	}
+	return pluginMenuItems(plugins)
+}
+
+func (m *dashboardModel) handleOnboardingSelection() (tea.Model, tea.Cmd) {
+	selected, ok := m.chooser.SelectedItem().(menuItem)
+	if !ok || strings.TrimSpace(selected.action) == "" {
+		return m, nil
+	}
+	return m.executeChooserAction(selected.action)
 }
 
 func renderContextInfo(ctx config.Context) string {
@@ -1410,6 +1546,144 @@ func (m *dashboardModel) runCommand(interactive bool) (tea.Model, tea.Cmd) {
 	m.screen = screenLogs
 	m.commandInput.SetValue("")
 	return m, runSitectlCaptureCmd(display, args)
+}
+
+func (m *dashboardModel) executeChooserAction(action string) (tea.Model, tea.Cmd) {
+	switch {
+	case action == "tour":
+		if len(m.tourPanes) == 0 {
+			m.lastMessage = "No embedded tour content found."
+			return m, nil
+		}
+		m.screen = screenTour
+		m.envIndex = 0
+		m.syncLayout()
+		m.syncTourContent()
+		return m, nil
+	case action == "config-create":
+		m.commandRunning = true
+		return m, runSitectlInteractiveCmd("sitectl config create", []string{"config", "create"})
+	case strings.HasPrefix(action, "plugin:"):
+		pluginName := strings.TrimPrefix(action, "plugin:")
+		if strings.TrimSpace(pluginName) == "" {
+			return m, nil
+		}
+		m.commandRunning = true
+		return m, runSitectlInteractiveCmd("sitectl "+pluginName+" create", []string{pluginName, "create"})
+	default:
+		return m, nil
+	}
+}
+
+func (m *dashboardModel) handleTourKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Back):
+		m.screen = screenDashboard
+		m.syncLayout()
+		return m, nil
+	case key.Matches(msg, m.keys.Left), key.Matches(msg, m.keys.Up):
+		if m.envIndex > 0 {
+			m.envIndex--
+			m.syncTourContent()
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Right), key.Matches(msg, m.keys.Down):
+		if m.envIndex < len(m.tourPanes)-1 {
+			m.envIndex++
+			m.syncTourContent()
+		}
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.detail, cmd = m.detail.Update(msg)
+	return m, cmd
+}
+
+func (m *dashboardModel) currentTourIndex() int {
+	if len(m.tourPanes) == 0 {
+		return 0
+	}
+	if m.envIndex < 0 {
+		return 0
+	}
+	if m.envIndex >= len(m.tourPanes) {
+		return len(m.tourPanes) - 1
+	}
+	return m.envIndex
+}
+
+func (m *dashboardModel) currentTourTitle() string {
+	if len(m.tourPanes) == 0 {
+		return "-"
+	}
+	return m.tourPanes[m.currentTourIndex()].Title
+}
+
+func (m *dashboardModel) syncTourContent() {
+	if len(m.tourPanes) == 0 {
+		m.detail.SetContent("No embedded tour content found.")
+		return
+	}
+	rendered, err := glamour.Render(m.tourPanes[m.currentTourIndex()].Markdown, "dark")
+	if err != nil {
+		m.detail.SetContent(err.Error())
+		return
+	}
+	m.detail.SetContent(rendered)
+	m.detail.GotoTop()
+}
+
+func renderViewportWithScrollbar(v viewport.Model) string {
+	body := v.View()
+	total := v.TotalLineCount()
+	height := v.Height()
+	if total <= height || height <= 0 {
+		return body
+	}
+
+	lines := strings.Split(body, "\n")
+	if len(lines) < height {
+		lines = append(lines, make([]string, height-len(lines))...)
+	} else if len(lines) > height {
+		lines = lines[:height]
+	}
+
+	thumbHeight := max(1, (height*height)/max(total, 1))
+	maxOffset := max(total-height, 1)
+	offset := min(max(v.YOffset(), 0), maxOffset)
+	thumbTop := 0
+	if height > thumbHeight {
+		thumbTop = (offset * (height - thumbHeight)) / maxOffset
+	}
+
+	rows := make([]string, height)
+	for i := 0; i < height; i++ {
+		bar := subtleStyle.Render("│")
+		if i >= thumbTop && i < thumbTop+thumbHeight {
+			bar = accentStyle.Render("█")
+		}
+		rows[i] = lipgloss.JoinHorizontal(lipgloss.Top, lines[i], " ", bar)
+	}
+	return strings.Join(rows, "\n")
+}
+
+func reloadStateCmd() tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := config.Load()
+		if err != nil {
+			return stateReloadedMsg{Err: err}
+		}
+		current, err := config.Current()
+		if err != nil {
+			return stateReloadedMsg{Err: err}
+		}
+		return stateReloadedMsg{
+			Config:         cfg,
+			Plugins:        plugin.DiscoverInstalled(),
+			CurrentContext: current,
+		}
+	}
 }
 
 func normalizeSitectlCommand(raw, contextName string) (string, []string, error) {

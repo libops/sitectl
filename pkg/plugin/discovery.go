@@ -17,6 +17,7 @@ type InstalledPlugin struct {
 	Description  string
 	Author       string
 	TemplateRepo string
+	CanCreate    bool
 }
 
 var builtinTemplateRepos = map[string]string{
@@ -66,6 +67,7 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 		BinaryName:  binaryName,
 		Path:        pluginPath,
 		Description: fmt.Sprintf("the %s plugin", pluginName),
+		CanCreate:   pluginSupportsCreate(pluginPath),
 	}
 	if repo := builtinTemplateRepos[pluginName]; repo != "" {
 		info.TemplateRepo = repo
@@ -93,8 +95,21 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 	if parsed.TemplateRepo == "" {
 		parsed.TemplateRepo = info.TemplateRepo
 	}
+	if !parsed.CanCreate {
+		parsed.CanCreate = info.CanCreate
+	}
 
 	return parsed
+}
+
+func pluginSupportsCreate(pluginPath string) bool {
+	cmd := exec.Command(pluginPath, "create", "--help")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		return true
+	} else if strings.Contains(strings.ToLower(string(output)), "unknown command") {
+		return false
+	}
+	return false
 }
 
 func ParsePluginInfoOutput(output string) InstalledPlugin {

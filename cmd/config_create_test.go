@@ -10,6 +10,7 @@ import (
 
 	corecomponent "github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/plugin"
 	"github.com/spf13/cobra"
 )
 
@@ -38,20 +39,26 @@ func TestRunCreateConfigAutodetectsCurrentComposeProject(t *testing.T) {
 
 	oldInput := createConfigInput
 	oldPromptChoice := createConfigPromptChoice
+	oldDiscoverPlugins := createConfigDiscoverPlugins
 	oldVerifyRemote := createConfigVerifyRemote
 	oldProjectDirExists := createConfigProjectDirExists
 	oldRunComposePS := createConfigRunComposePS
 	t.Cleanup(func() {
 		createConfigInput = oldInput
 		createConfigPromptChoice = oldPromptChoice
+		createConfigDiscoverPlugins = oldDiscoverPlugins
 		createConfigVerifyRemote = oldVerifyRemote
 		createConfigProjectDirExists = oldProjectDirExists
 		createConfigRunComposePS = oldRunComposePS
 	})
+	createConfigDiscoverPlugins = func() []plugin.InstalledPlugin { return nil }
 	createConfigVerifyRemote = func(ctx *config.Context) error { return nil }
 	createConfigProjectDirExists = func(ctx *config.Context) (bool, error) { return true, nil }
 	createConfigRunComposePS = func(ctx *config.Context) error { return nil }
 	createConfigPromptChoice = func(name string, choices []corecomponent.Choice, defaultValue string, input corecomponent.InputFunc, sections ...string) (string, error) {
+		if name == "plugin" {
+			return "core", nil
+		}
 		if name == "add-environment" {
 			return "no", nil
 		}
@@ -125,22 +132,30 @@ func TestRunCreateConfigAutodetectsCurrentComposeProjectAndAddsRemoteEnvironment
 
 	oldInput := createConfigInput
 	oldPromptChoice := createConfigPromptChoice
+	oldDiscoverPlugins := createConfigDiscoverPlugins
 	oldVerifyRemote := createConfigVerifyRemote
 	oldProjectDirExists := createConfigProjectDirExists
 	oldRunComposePS := createConfigRunComposePS
 	t.Cleanup(func() {
 		createConfigInput = oldInput
 		createConfigPromptChoice = oldPromptChoice
+		createConfigDiscoverPlugins = oldDiscoverPlugins
 		createConfigVerifyRemote = oldVerifyRemote
 		createConfigProjectDirExists = oldProjectDirExists
 		createConfigRunComposePS = oldRunComposePS
 	})
 
+	createConfigDiscoverPlugins = func() []plugin.InstalledPlugin {
+		return []plugin.InstalledPlugin{{Name: "isle", Description: "Islandora utilities"}}
+	}
 	createConfigVerifyRemote = func(ctx *config.Context) error { return nil }
 	createConfigProjectDirExists = func(ctx *config.Context) (bool, error) { return true, nil }
 	createConfigRunComposePS = func(ctx *config.Context) error { return nil }
 	choiceCalls := 0
 	createConfigPromptChoice = func(name string, choices []corecomponent.Choice, defaultValue string, input corecomponent.InputFunc, sections ...string) (string, error) {
+		if name == "plugin" {
+			return "isle", nil
+		}
 		if name != "add-environment" {
 			t.Fatalf("unexpected choice prompt: %s", name)
 		}
@@ -207,6 +222,249 @@ func TestRunCreateConfigAutodetectsCurrentComposeProjectAndAddsRemoteEnvironment
 	if !strings.Contains(out.String(), "ENVIRONMENT CONTEXT CREATED SUCCESSFULLY") {
 		t.Fatalf("expected remote environment output, got:\n%s", out.String())
 	}
+	if localCtx.Plugin != "isle" {
+		t.Fatalf("expected local plugin isle, got %q", localCtx.Plugin)
+	}
+	if localCtx.Environment != "local" {
+		t.Fatalf("expected local environment local, got %q", localCtx.Environment)
+	}
+	if localCtx.ComposeProjectName == "" {
+		t.Fatalf("expected compose project name to be derived")
+	}
+}
+
+func TestRunCreateConfigPromptsForContextWhenCwdIsNotComposeProject(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	projectDir := filepath.Join(tempHome, "existing-site")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(tempHome); err != nil {
+		t.Fatalf("Chdir(tempHome) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWd)
+	})
+
+	oldInput := createConfigInput
+	oldPromptChoice := createConfigPromptChoice
+	oldDiscoverPlugins := createConfigDiscoverPlugins
+	oldVerifyRemote := createConfigVerifyRemote
+	oldProjectDirExists := createConfigProjectDirExists
+	oldRunComposePS := createConfigRunComposePS
+	t.Cleanup(func() {
+		createConfigInput = oldInput
+		createConfigPromptChoice = oldPromptChoice
+		createConfigDiscoverPlugins = oldDiscoverPlugins
+		createConfigVerifyRemote = oldVerifyRemote
+		createConfigProjectDirExists = oldProjectDirExists
+		createConfigRunComposePS = oldRunComposePS
+	})
+
+	createConfigDiscoverPlugins = func() []plugin.InstalledPlugin { return nil }
+	createConfigVerifyRemote = func(ctx *config.Context) error { return nil }
+	createConfigProjectDirExists = func(ctx *config.Context) (bool, error) { return true, nil }
+	createConfigRunComposePS = func(ctx *config.Context) error { return nil }
+	createConfigPromptChoice = func(name string, choices []corecomponent.Choice, defaultValue string, input corecomponent.InputFunc, sections ...string) (string, error) {
+		if name == "plugin" {
+			return "core", nil
+		}
+		if name == "add-environment" {
+			return "no", nil
+		}
+		t.Fatalf("unexpected choice prompt: %s", name)
+		return "", nil
+	}
+
+	prompts := []string{
+		"museum-dev",
+		"",
+		projectDir,
+	}
+	createConfigInput = func(question ...string) (string, error) {
+		if len(prompts) == 0 {
+			t.Fatalf("unexpected prompt: %v", question)
+		}
+		value := prompts[0]
+		prompts = prompts[1:]
+		return value, nil
+	}
+
+	cmd := &cobra.Command{Use: "create"}
+	config.SetCommandFlags(cmd.Flags())
+	cmd.Flags().Bool("default", true, "")
+
+	if err := runCreateConfig(cmd, nil); err != nil {
+		t.Fatalf("runCreateConfig() error = %v", err)
+	}
+
+	ctx, err := config.GetContext("museum-dev")
+	if err != nil {
+		t.Fatalf("GetContext(museum-dev) error = %v", err)
+	}
+	if ctx.ProjectDir != projectDir {
+		t.Fatalf("expected project dir %q, got %q", projectDir, ctx.ProjectDir)
+	}
+	if ctx.DockerHostType != config.ContextLocal {
+		t.Fatalf("expected local context, got %q", ctx.DockerHostType)
+	}
+}
+
+func TestRunCreateConfigSkipsTypeAndProjectDirPromptsWhenFlagsProvided(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	projectDir := filepath.Join(tempHome, "existing-site")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+
+	oldInput := createConfigInput
+	oldPromptChoice := createConfigPromptChoice
+	oldDiscoverPlugins := createConfigDiscoverPlugins
+	oldVerifyRemote := createConfigVerifyRemote
+	oldProjectDirExists := createConfigProjectDirExists
+	oldRunComposePS := createConfigRunComposePS
+	t.Cleanup(func() {
+		createConfigInput = oldInput
+		createConfigPromptChoice = oldPromptChoice
+		createConfigDiscoverPlugins = oldDiscoverPlugins
+		createConfigVerifyRemote = oldVerifyRemote
+		createConfigProjectDirExists = oldProjectDirExists
+		createConfigRunComposePS = oldRunComposePS
+	})
+
+	createConfigDiscoverPlugins = func() []plugin.InstalledPlugin { return nil }
+	createConfigVerifyRemote = func(ctx *config.Context) error { return nil }
+	createConfigProjectDirExists = func(ctx *config.Context) (bool, error) { return true, nil }
+	createConfigRunComposePS = func(ctx *config.Context) error { return nil }
+	createConfigPromptChoice = func(name string, choices []corecomponent.Choice, defaultValue string, input corecomponent.InputFunc, sections ...string) (string, error) {
+		if name == "plugin" {
+			return "core", nil
+		}
+		if name == "add-environment" {
+			return "no", nil
+		}
+		t.Fatalf("unexpected choice prompt: %s", name)
+		return "", nil
+	}
+
+	promptCount := 0
+	createConfigInput = func(question ...string) (string, error) {
+		promptCount++
+		t.Fatalf("did not expect text prompt when type and project-dir are provided: %v", question)
+		return "", nil
+	}
+
+	cmd := &cobra.Command{Use: "create"}
+	config.SetCommandFlags(cmd.Flags())
+	cmd.Flags().Bool("default", true, "")
+	if err := cmd.Flags().Set("type", "local"); err != nil {
+		t.Fatalf("Set(type) error = %v", err)
+	}
+	if err := cmd.Flags().Set("project-dir", projectDir); err != nil {
+		t.Fatalf("Set(project-dir) error = %v", err)
+	}
+
+	if err := runCreateConfig(cmd, []string{"museum-dev"}); err != nil {
+		t.Fatalf("runCreateConfig() error = %v", err)
+	}
+	if promptCount != 0 {
+		t.Fatalf("expected no prompts, got %d", promptCount)
+	}
+
+	ctx, err := config.GetContext("museum-dev")
+	if err != nil {
+		t.Fatalf("GetContext(museum-dev) error = %v", err)
+	}
+	if ctx.DockerHostType != config.ContextLocal {
+		t.Fatalf("expected local context, got %q", ctx.DockerHostType)
+	}
+	if ctx.ProjectDir != projectDir {
+		t.Fatalf("expected project dir %q, got %q", projectDir, ctx.ProjectDir)
+	}
+}
+
+func TestRunCreateConfigExpandsProjectDirFlag(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	projectDir := filepath.Join(tempHome, "existing-site")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+
+	oldInput := createConfigInput
+	oldPromptChoice := createConfigPromptChoice
+	oldDiscoverPlugins := createConfigDiscoverPlugins
+	oldVerifyRemote := createConfigVerifyRemote
+	oldProjectDirExists := createConfigProjectDirExists
+	oldRunComposePS := createConfigRunComposePS
+	t.Cleanup(func() {
+		createConfigInput = oldInput
+		createConfigPromptChoice = oldPromptChoice
+		createConfigDiscoverPlugins = oldDiscoverPlugins
+		createConfigVerifyRemote = oldVerifyRemote
+		createConfigProjectDirExists = oldProjectDirExists
+		createConfigRunComposePS = oldRunComposePS
+	})
+
+	createConfigDiscoverPlugins = func() []plugin.InstalledPlugin { return nil }
+	createConfigVerifyRemote = func(ctx *config.Context) error { return nil }
+	createConfigProjectDirExists = func(ctx *config.Context) (bool, error) { return true, nil }
+	createConfigRunComposePS = func(ctx *config.Context) error { return nil }
+	createConfigPromptChoice = func(name string, choices []corecomponent.Choice, defaultValue string, input corecomponent.InputFunc, sections ...string) (string, error) {
+		if name == "plugin" {
+			return "core", nil
+		}
+		if name == "add-environment" {
+			return "no", nil
+		}
+		t.Fatalf("unexpected choice prompt: %s", name)
+		return "", nil
+	}
+	createConfigInput = func(question ...string) (string, error) {
+		t.Fatalf("did not expect prompt: %v", question)
+		return "", nil
+	}
+
+	cmd := &cobra.Command{Use: "create"}
+	config.SetCommandFlags(cmd.Flags())
+	cmd.Flags().Bool("default", true, "")
+	if err := cmd.Flags().Set("type", "local"); err != nil {
+		t.Fatalf("Set(type) error = %v", err)
+	}
+	if err := cmd.Flags().Set("project-dir", "$HOME/existing-site"); err != nil {
+		t.Fatalf("Set(project-dir) error = %v", err)
+	}
+
+	if err := runCreateConfig(cmd, []string{"museum-dev"}); err != nil {
+		t.Fatalf("runCreateConfig() error = %v", err)
+	}
+
+	ctx, err := config.GetContext("museum-dev")
+	if err != nil {
+		t.Fatalf("GetContext(museum-dev) error = %v", err)
+	}
+	if ctx.ProjectDir != projectDir {
+		t.Fatalf("expected expanded project dir %q, got %q", projectDir, ctx.ProjectDir)
+	}
 }
 
 func TestRunCreateConfigRepromptsRemoteConnectionDetailsAfterVerificationFailure(t *testing.T) {
@@ -234,17 +492,20 @@ func TestRunCreateConfigRepromptsRemoteConnectionDetailsAfterVerificationFailure
 
 	oldInput := createConfigInput
 	oldPromptChoice := createConfigPromptChoice
+	oldDiscoverPlugins := createConfigDiscoverPlugins
 	oldVerifyRemote := createConfigVerifyRemote
 	oldProjectDirExists := createConfigProjectDirExists
 	oldRunComposePS := createConfigRunComposePS
 	t.Cleanup(func() {
 		createConfigInput = oldInput
 		createConfigPromptChoice = oldPromptChoice
+		createConfigDiscoverPlugins = oldDiscoverPlugins
 		createConfigVerifyRemote = oldVerifyRemote
 		createConfigProjectDirExists = oldProjectDirExists
 		createConfigRunComposePS = oldRunComposePS
 	})
 
+	createConfigDiscoverPlugins = func() []plugin.InstalledPlugin { return nil }
 	verifyCalls := 0
 	createConfigVerifyRemote = func(ctx *config.Context) error {
 		verifyCalls++
@@ -260,6 +521,8 @@ func TestRunCreateConfigRepromptsRemoteConnectionDetailsAfterVerificationFailure
 	createConfigPromptChoice = func(name string, choices []corecomponent.Choice, defaultValue string, input corecomponent.InputFunc, sections ...string) (string, error) {
 		choiceCalls[name]++
 		switch name {
+		case "plugin":
+			return "core", nil
 		case "add-environment":
 			if choiceCalls[name] == 1 {
 				return "yes", nil
@@ -347,17 +610,20 @@ func TestRunCreateConfigRepromptsDockerSettingsAfterComposePSFailure(t *testing.
 
 	oldInput := createConfigInput
 	oldPromptChoice := createConfigPromptChoice
+	oldDiscoverPlugins := createConfigDiscoverPlugins
 	oldVerifyRemote := createConfigVerifyRemote
 	oldProjectDirExists := createConfigProjectDirExists
 	oldRunComposePS := createConfigRunComposePS
 	t.Cleanup(func() {
 		createConfigInput = oldInput
 		createConfigPromptChoice = oldPromptChoice
+		createConfigDiscoverPlugins = oldDiscoverPlugins
 		createConfigVerifyRemote = oldVerifyRemote
 		createConfigProjectDirExists = oldProjectDirExists
 		createConfigRunComposePS = oldRunComposePS
 	})
 
+	createConfigDiscoverPlugins = func() []plugin.InstalledPlugin { return nil }
 	createConfigVerifyRemote = func(ctx *config.Context) error { return nil }
 	createConfigProjectDirExists = func(ctx *config.Context) (bool, error) { return true, nil }
 	composeCalls := 0
@@ -385,6 +651,8 @@ func TestRunCreateConfigRepromptsDockerSettingsAfterComposePSFailure(t *testing.
 	createConfigPromptChoice = func(name string, choices []corecomponent.Choice, defaultValue string, input corecomponent.InputFunc, sections ...string) (string, error) {
 		choiceCalls[name]++
 		switch name {
+		case "plugin":
+			return "core", nil
 		case "add-environment":
 			if choiceCalls[name] == 1 {
 				return "yes", nil

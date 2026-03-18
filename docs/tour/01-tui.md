@@ -1,0 +1,10 @@
+# The sitectl Terminal UI
+
+The `sitectl` Terminal UI is the main interface for managing a site and its environments.
+
+It gives you one place to:
+
+- inspect environments
+- run commands against a specific environment
+- install new sites
+- move between local and remote environments for the same site

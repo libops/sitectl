@@ -127,6 +127,37 @@ func (c *ComposeFile) DeleteSectionEntry(section, key string) error {
 	return c.deleteSectionEntry(section, key)
 }
 
+func (c *ComposeFile) SectionEntryBlock(section, key string) (string, bool) {
+	sectionIdx, ok := findMapKey(c.lines, 0, section, 0)
+	if !ok {
+		return "", false
+	}
+	entryIdx, ok := findMapKey(c.lines, sectionIdx+1, key, 2)
+	if !ok {
+		return "", false
+	}
+	end := findBlockEnd(c.lines, entryIdx, 2)
+	return strings.Join(c.lines[entryIdx:end], "\n"), true
+}
+
+func (c *ComposeFile) AddSectionEntryBlock(section, key, block string) error {
+	if strings.TrimSpace(block) == "" {
+		return fmt.Errorf("section block for %s.%s is empty", section, key)
+	}
+	if _, ok := c.SectionEntryBlock(section, key); ok {
+		return nil
+	}
+
+	sectionIdx, ok := findMapKey(c.lines, 0, section, 0)
+	if !ok {
+		c.lines = append(c.lines, section+":")
+		sectionIdx = len(c.lines) - 1
+	}
+	insertAt := findBlockEnd(c.lines, sectionIdx, 0)
+	c.lines = insertLines(c.lines, insertAt, strings.Split(strings.TrimRight(block, "\n"), "\n"))
+	return nil
+}
+
 func (c *ComposeFile) DeleteServiceEnv(service, key string) error {
 	serviceIdx, ok := c.findService(service)
 	if !ok {

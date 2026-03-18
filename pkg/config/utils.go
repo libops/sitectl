@@ -12,11 +12,24 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/libops/sitectl/pkg/ui"
 	"github.com/spf13/pflag"
+	"golang.org/x/term"
 	yaml "gopkg.in/yaml.v3"
 )
 
 func GetInput(question ...string) (string, error) {
+	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) && len(question) > 0 {
+		prompt := question[len(question)-1]
+		sections := append([]string{}, question[:len(question)-1]...)
+		if value, ok, err := ui.PromptText(ui.TextPromptOptions{
+			Sections: sections,
+			Prompt:   prompt,
+		}); ok {
+			return value, err
+		}
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 	lastItemIndex := len(question) - 1
 	for i := range question {

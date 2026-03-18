@@ -2,9 +2,7 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 
 	"github.com/libops/sitectl/pkg/config"
@@ -90,10 +88,12 @@ Examples:
 		}
 
 		if context.DockerHostType == config.ContextLocal {
-			path := filepath.Join(context.ProjectDir, "docker-compose.yml")
-			_, err = os.Stat(path)
+			hasComposeProject, err := context.HasComposeProject()
 			if err != nil {
-				helpers.ExitOnError(fmt.Errorf("docker-compose.yml not found at %s: %v", path, err))
+				helpers.ExitOnError(fmt.Errorf("failed to inspect compose project in %s: %v", context.ProjectDir, err))
+			}
+			if !hasComposeProject {
+				helpers.ExitOnError(fmt.Errorf("no compose project file found in %s (expected one of docker-compose.yml, docker-compose.yaml, compose.yml, compose.yaml)", context.ProjectDir))
 			}
 			if err := context.EnsureTrackedComposeOverrideSymlink(); err != nil {
 				return err

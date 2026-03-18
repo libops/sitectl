@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/plugin"
 )
 
 func TestGroupContextsBySite(t *testing.T) {
@@ -37,5 +38,25 @@ func TestDefaultSelectionUsesCurrentContext(t *testing.T) {
 	siteIndex, envIndex := defaultSelection(sites, "museum-prod")
 	if siteIndex != 1 || envIndex != 1 {
 		t.Fatalf("expected museum-prod selection at 1,1 got %d,%d", siteIndex, envIndex)
+	}
+}
+
+func TestChooserItemsForEmptyStateIncludesSetupAndCreatePlugins(t *testing.T) {
+	items := chooserItems(nil, []plugin.InstalledPlugin{
+		{Name: "drupal"},
+		{Name: "isle", CanCreate: true, TemplateRepo: "https://example.com/isle"},
+	})
+
+	if len(items) != 3 {
+		t.Fatalf("expected tour option, setup option, plus one create plugin, got %d items", len(items))
+	}
+	if items[0].action != "tour" {
+		t.Fatalf("expected first item to launch tour, got %q", items[0].action)
+	}
+	if items[1].action != "config-create" {
+		t.Fatalf("expected second item to launch config create, got %q", items[1].action)
+	}
+	if items[2].action != "plugin:isle" {
+		t.Fatalf("expected third item to launch isle create, got %q", items[2].action)
 	}
 }

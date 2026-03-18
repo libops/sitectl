@@ -251,7 +251,12 @@ func expandAndCleanProjectDir(value string) (string, error) {
 		}
 		value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
 	}
+	value = os.ExpandEnv(value)
 	return filepath.Clean(value), nil
+}
+
+func ExpandProjectDir(value string) (string, error) {
+	return expandAndCleanProjectDir(value)
 }
 
 func validateLocalProjectDir(projectDir string) error {
