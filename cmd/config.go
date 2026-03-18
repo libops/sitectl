@@ -17,6 +17,7 @@ import (
 	corecomponent "github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/helpers"
+	"github.com/libops/sitectl/pkg/plugin"
 	sitevalidate "github.com/libops/sitectl/pkg/validate"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -386,6 +387,7 @@ var deleteContextCmd = &cobra.Command{
 
 var createConfigInput = config.GetInput
 var createConfigPromptChoice = corecomponent.PromptChoice
+var createConfigDiscoverPlugins = plugin.DiscoverInstalled
 var createConfigVerifyRemote = func(ctx *config.Context) error {
 	return ctx.VerifyRemoteInput(true)
 }
@@ -464,7 +466,7 @@ func runCreateConfig(cmd *cobra.Command, args []string) error {
 				Input:               createConfigInput,
 				ProjectDirValidator: config.ValidateExistingComposeProjectDir,
 				ContextNamePrompt: append(
-					strings.Split(corecomponent.RenderSection("sitectl context name", "Enter the sitectl context name to save for this existing Docker Compose project."), "\n"),
+					strings.Split(corecomponent.RenderSection("sitectl context name", "This is the saved sitectl target for this project. A good pattern is <site>-<environment>, for example museum-local or museum-prod."), "\n"),
 					"",
 					corecomponent.RenderPromptLine("Context name [%s]: "),
 				),
@@ -477,13 +479,43 @@ func runCreateConfig(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return err
 			}
+			if !f.Changed("plugin") {
+				selectedPlugin, pluginErr := promptContextPlugin(ctx.Plugin)
+				if pluginErr != nil {
+					return pluginErr
+				}
+				if strings.TrimSpace(selectedPlugin) != "" && selectedPlugin != ctx.Plugin {
+					ctx.Plugin = selectedPlugin
+					if err := config.SaveContext(ctx, defaultContext); err != nil {
+						return err
+					}
+				}
+			}
 			writeCreatedContextSummary(cmd, "Context created successfully", ctx)
 			if err := promptAdditionalEnvironmentContexts(cmd, ctx); err != nil {
 				return err
 			}
 			return nil
 		}
-		return fmt.Errorf("no context name provided and current directory does not look like a docker compose project")
+
+		contextName, err := createConfigInput(
+			append(
+				strings.Split(corecomponent.RenderSection(
+					"sitectl context name",
+					"Provide a admin label for this site and environment. Only provide alpha numeric characters and dashes. A good pattern is <site>-<environment>, for example museum-local or museum-prod.",
+				), "\n"),
+				"",
+				corecomponent.RenderPromptLine("Context name: "),
+			)...,
+		)
+		if err != nil {
+			return err
+		}
+		contextName = strings.TrimSpace(contextName)
+		if contextName == "" {
+			return fmt.Errorf("context name cannot be empty")
+		}
+		args = []string{contextName}
 	}
 
 	cc, err := config.GetContext(args[0])
@@ -522,22 +554,54 @@ func runCreateConfig(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	t, err := createConfigInput(fmt.Sprintf("Is the context local (on this machine) or remote (on a VM)? [%s]: ", string(context.DockerHostType)))
-	if err != nil {
-		return err
-	}
-	if t != "" {
-		if t != "remote" && t != "local" {
-			return fmt.Errorf("unknown context type %q: valid values are local or remote", t)
+	if !f.Changed("type") {
+		t, err := createConfigInput(fmt.Sprintf("Is the context local (on this machine) or remote (on a VM)? [%s]: ", string(context.DockerHostType)))
+		if err != nil {
+			return err
 		}
-		context.DockerHostType = config.ContextType(t)
+		if t != "" {
+			if t != "remote" && t != "local" {
+				return fmt.Errorf("unknown context type %q: valid values are local or remote", t)
+			}
+			context.DockerHostType = config.ContextType(t)
+		}
 	}
-	dir, err := createConfigInput(fmt.Sprintf("Full directory path to the project (directory where docker-compose.yml is located) [%s]: ", context.ProjectDir))
+	if !f.Changed("project-dir") {
+		dir, err := createConfigInput(fmt.Sprintf("Full directory path to the project (directory where docker-compose.yml is located) [%s]: ", context.ProjectDir))
+		if err != nil {
+			return err
+		}
+		if dir != "" {
+			context.ProjectDir = dir
+		}
+	}
+	context.ProjectDir, err = config.ExpandProjectDir(context.ProjectDir)
 	if err != nil {
 		return err
 	}
-	if dir != "" {
-		context.ProjectDir = dir
+	if context.DockerHostType == config.ContextLocal && strings.TrimSpace(context.Environment) == "" {
+		context.Environment = "local"
+	}
+	if !f.Changed("plugin") && (strings.TrimSpace(context.Plugin) == "" || context.Plugin == "core") {
+		selectedPlugin, pluginErr := promptContextPlugin(context.Plugin)
+		if pluginErr != nil {
+			return pluginErr
+		}
+		if strings.TrimSpace(selectedPlugin) != "" {
+			context.Plugin = selectedPlugin
+		}
+	}
+	if strings.TrimSpace(context.ProjectName) == "" {
+		context.ProjectName = firstNonEmptyString(filepath.Base(context.ProjectDir), "docker-compose")
+	}
+	if !f.Changed("compose-project-name") && strings.TrimSpace(context.ComposeProjectName) == "" {
+		context.ComposeProjectName = firstNonEmptyString(config.DetectComposeProjectName(context.ProjectDir), context.ProjectName)
+	}
+	if !f.Changed("compose-network") && strings.TrimSpace(context.ComposeNetwork) == "" {
+		context.ComposeNetwork = config.DetectComposeNetworkName(context.ProjectDir, context.EffectiveComposeProjectName())
+	}
+	if strings.TrimSpace(context.Site) == "" {
+		context.Site = firstNonEmptyString(context.ProjectName, context.Name)
 	}
 
 	if context.DockerHostType == config.ContextRemote {
@@ -574,6 +638,41 @@ func runCreateConfig(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+func promptContextPlugin(defaultPlugin string) (string, error) {
+	choices := []corecomponent.Choice{{
+		Value:   "core",
+		Label:   "core",
+		Help:    "No stack-specific plugin. Use base sitectl behavior.",
+		Aliases: []string{"1"},
+	}}
+	for _, discovered := range createConfigDiscoverPlugins() {
+		name := strings.TrimSpace(discovered.Name)
+		if name == "" || name == "core" {
+			continue
+		}
+		choices = append(choices, corecomponent.Choice{
+			Value:   name,
+			Label:   name,
+			Help:    firstNonEmptyString(discovered.Description, "Use the "+name+" plugin for this site."),
+			Aliases: nil,
+		})
+	}
+	if len(choices) == 1 {
+		return firstNonEmptyString(defaultPlugin, "core"), nil
+	}
+	selected, err := createConfigPromptChoice(
+		"plugin",
+		choices,
+		firstNonEmptyString(strings.TrimSpace(defaultPlugin), "core"),
+		createConfigInput,
+		strings.Split(corecomponent.RenderSection("plugin", "If this project belongs to a known sitectl plugin, pick it here. For example, an Islandora stack would usually use the isle plugin."), "\n")...,
+	)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(selected), nil
 }
 
 func promptAdditionalEnvironmentContexts(cmd *cobra.Command, localCtx *config.Context) error {
@@ -657,6 +756,16 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 	sshKey := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.SSHKeyPath }), defaultKey)
 	dockerSocket := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.DockerSocket }), "/var/run/docker.sock")
 	projectName := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ProjectName }), localCtx.ProjectName, "docker-compose")
+	composeProjectName := firstNonEmptyString(
+		remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ComposeProjectName }),
+		localCtx.EffectiveComposeProjectName(),
+		projectName,
+	)
+	composeNetwork := firstNonEmptyString(
+		remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ComposeNetwork }),
+		localCtx.ComposeNetwork,
+		localCtx.EffectiveComposeNetwork(),
+	)
 	runSudo := remoteContextBool(previousRemote, func(ctx *config.Context) bool { return ctx.RunSudo }, localCtx.RunSudo)
 
 	for {
@@ -685,6 +794,8 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 			Environment:            environment,
 			ProjectDir:             strings.TrimSpace(projectDir),
 			ProjectName:            firstNonEmptyString(localCtx.ProjectName, "docker-compose"),
+			ComposeProjectName:     composeProjectName,
+			ComposeNetwork:         composeNetwork,
 			SSHHostname:            strings.TrimSpace(hostname),
 			SSHUser:                sshUser,
 			SSHPort:                sshPort,
@@ -699,7 +810,12 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 			DatabaseName:           localCtx.DatabaseName,
 		}
 		remoteCtx.ProjectName = projectName
+		remoteCtx.ComposeProjectName = composeProjectName
+		remoteCtx.ComposeNetwork = composeNetwork
 		remoteCtx.RunSudo = runSudo
+		if detected := config.DetectContextComposeNetwork(remoteCtx); detected != "" {
+			remoteCtx.ComposeNetwork = detected
+		}
 
 		if err := createConfigVerifyRemote(remoteCtx); err != nil {
 			retry, retryErr := createConfigPromptChoice(
@@ -856,7 +972,7 @@ func validateRemoteDockerAccess(ctx *config.Context) error {
 			if promptErr != nil {
 				return promptErr
 			}
-			projectName, promptErr := promptRequiredValueWithDefault("Docker Compose project name", firstNonEmptyString(ctx.ProjectName, "docker-compose"))
+			projectName, promptErr := promptRequiredValueWithDefault("Logical project name", firstNonEmptyString(ctx.ProjectName, "docker-compose"))
 			if promptErr != nil {
 				return promptErr
 			}
@@ -870,6 +986,8 @@ func validateRemoteDockerAccess(ctx *config.Context) error {
 			}
 			ctx.ProjectDir = projectDir
 			ctx.ProjectName = projectName
+			ctx.ComposeProjectName = firstNonEmptyString(ctx.ComposeProjectName, projectName)
+			ctx.ComposeNetwork = firstNonEmptyString(config.DetectContextComposeNetwork(ctx), ctx.ComposeNetwork, ctx.EffectiveComposeNetwork())
 			ctx.DockerSocket = dockerSocket
 			ctx.RunSudo = runSudo
 			continue
@@ -1046,6 +1164,12 @@ func inheritNewContextDefaultsFromActive(target, active *config.Context, flags *
 	}
 	if !flags.Changed("project-name") && active.ProjectName != "" && target.ProjectName == "docker-compose" {
 		target.ProjectName = active.ProjectName
+	}
+	if !flags.Changed("compose-project-name") && active.ComposeProjectName != "" && target.ComposeProjectName == "" {
+		target.ComposeProjectName = active.ComposeProjectName
+	}
+	if !flags.Changed("compose-network") && active.ComposeNetwork != "" && target.ComposeNetwork == "" {
+		target.ComposeNetwork = active.ComposeNetwork
 	}
 	if !flags.Changed("compose-file") && len(target.ComposeFile) == 0 && len(active.ComposeFile) > 0 {
 		target.ComposeFile = append([]string{}, active.ComposeFile...)

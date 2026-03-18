@@ -102,6 +102,8 @@ func contextsEqual(a, b Context) bool {
 		a.Environment == b.Environment &&
 		a.DockerSocket == b.DockerSocket &&
 		a.ProjectName == b.ProjectName &&
+		a.ComposeProjectName == b.ComposeProjectName &&
+		a.ComposeNetwork == b.ComposeNetwork &&
 		a.ProjectDir == b.ProjectDir &&
 		a.SSHUser == b.SSHUser &&
 		a.SSHHostname == b.SSHHostname &&
@@ -118,13 +120,14 @@ func contextsEqual(a, b Context) bool {
 
 func TestContextString(t *testing.T) {
 	ctx := Context{
-		Name:           "test",
-		Site:           "museum",
-		Plugin:         "isle",
-		DockerHostType: ContextLocal,
-		DockerSocket:   "/var/run/docker.sock",
-		ProjectName:    "project",
-		ProjectDir:     "/tmp",
+		Name:               "test",
+		Site:               "museum",
+		Plugin:             "isle",
+		DockerHostType:     ContextLocal,
+		DockerSocket:       "/var/run/docker.sock",
+		ProjectName:        "project",
+		ComposeProjectName: "project-compose",
+		ProjectDir:         "/tmp",
 	}
 	s, err := ctx.String()
 	if err != nil {
@@ -172,6 +175,7 @@ func TestSaveContext(t *testing.T) {
 
 	// Test updating context.
 	ctx.ProjectName = "updated-project"
+	ctx.ComposeProjectName = "updated-compose"
 	err = SaveContext(&ctx, false)
 	if err != nil {
 		t.Fatalf("SaveContext error: %v", err)
@@ -182,6 +186,9 @@ func TestSaveContext(t *testing.T) {
 	}
 	if loadedCfg.Contexts[0].ProjectName != "updated-project" {
 		t.Fatalf("expected updated project name, got %s", loadedCfg.Contexts[0].ProjectName)
+	}
+	if loadedCfg.Contexts[0].ComposeProjectName != "updated-compose" {
+		t.Fatalf("expected updated compose project name, got %s", loadedCfg.Contexts[0].ComposeProjectName)
 	}
 }
 

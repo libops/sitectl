@@ -29,21 +29,23 @@ const (
 )
 
 type Context struct {
-	Name           string      `yaml:"name"`
-	Site           string      `yaml:"site"`
-	Plugin         string      `yaml:"plugin"`
-	DockerHostType ContextType `mapstructure:"type" yaml:"type"`
-	Environment    string      `yaml:"environment,omitempty"`
-	DockerSocket   string      `yaml:"docker-socket"`
-	ProjectName    string      `yaml:"project-name"`
-	ProjectDir     string      `yaml:"project-dir"`
-	SSHUser        string      `yaml:"ssh-user"`
-	SSHHostname    string      `yaml:"ssh-hostname,omitempty"`
-	SSHPort        uint        `yaml:"ssh-port,omitempty"`
-	SSHKeyPath     string      `yaml:"ssh-key,omitempty"`
-	EnvFile        []string    `yaml:"env-file"`
-	ComposeFile    []string    `yaml:"compose-file,omitempty"`
-	RunSudo        bool        `yaml:"sudo"`
+	Name               string      `yaml:"name"`
+	Site               string      `yaml:"site"`
+	Plugin             string      `yaml:"plugin"`
+	DockerHostType     ContextType `mapstructure:"type" yaml:"type"`
+	Environment        string      `yaml:"environment,omitempty"`
+	DockerSocket       string      `yaml:"docker-socket"`
+	ProjectName        string      `yaml:"project-name"`
+	ComposeProjectName string      `yaml:"compose-project-name,omitempty"`
+	ComposeNetwork     string      `yaml:"compose-network,omitempty"`
+	ProjectDir         string      `yaml:"project-dir"`
+	SSHUser            string      `yaml:"ssh-user"`
+	SSHHostname        string      `yaml:"ssh-hostname,omitempty"`
+	SSHPort            uint        `yaml:"ssh-port,omitempty"`
+	SSHKeyPath         string      `yaml:"ssh-key,omitempty"`
+	EnvFile            []string    `yaml:"env-file"`
+	ComposeFile        []string    `yaml:"compose-file,omitempty"`
+	RunSudo            bool        `yaml:"sudo"`
 
 	// Database connection configuration
 	DatabaseService        string `yaml:"database-service,omitempty"`
@@ -233,6 +235,14 @@ func (c *Context) ReadSmallFile(filename string) string {
 	}
 
 	return string(data)
+}
+
+func (c Context) EffectiveComposeProjectName() string {
+	return firstNonEmpty(c.ComposeProjectName, c.ProjectName)
+}
+
+func (c Context) EffectiveComposeNetwork() string {
+	return firstNonEmpty(c.ComposeNetwork, c.EffectiveComposeProjectName()+"_default")
 }
 
 func (c *Context) DialSSH() (*ssh.Client, error) {
@@ -431,7 +441,7 @@ func (cc *Context) VerifyRemoteInput(existingSite bool) error {
 		fmt.Println("Tested SSH connection OK!")
 	}
 
-	if cc.ProjectName == "docker-compose" {
+	if cc.EffectiveComposeProjectName() == "docker-compose" || cc.EffectiveComposeProjectName() == "" {
 		question := []string{
 			"What is the docker compose project name (COMPOSE_PROJECT_NAME in your .env)? [docker-compose]: ",
 		}
@@ -440,7 +450,7 @@ func (cc *Context) VerifyRemoteInput(existingSite bool) error {
 			return fmt.Errorf("error reading input")
 		}
 		if pn != "" {
-			cc.ProjectName = pn
+			cc.ComposeProjectName = pn
 		}
 	}
 

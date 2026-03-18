@@ -24,6 +24,8 @@ func TestLoadFromFlags(t *testing.T) {
 	flags.String("site", "", "Site")
 	flags.String("plugin", "core", "Plugin")
 	flags.String("project-name", "foo", "Composer Project Name")
+	flags.String("compose-project-name", "", "Docker Compose project name")
+	flags.String("compose-network", "", "Docker Compose network name")
 	flags.String("environment", "", "Environment name")
 	flags.Bool("sudo", false, "Run commands on remote hosts as sudo")
 	flags.StringSlice("env-file", []string{}, "path to env files to pass to docker compose")
@@ -45,6 +47,8 @@ func TestLoadFromFlags(t *testing.T) {
 		"--site", "museum",
 		"--plugin", "isle",
 		"--project-name", "bar",
+		"--compose-project-name", "bar-compose",
+		"--compose-network", "bar-net",
 		"--environment", "staging",
 		"--sudo", "true",
 		"--env-file", ".env",
@@ -92,6 +96,12 @@ func TestLoadFromFlags(t *testing.T) {
 	}
 	if ctx.ProjectName != "bar" {
 		t.Errorf("Expected project-name 'bar', got %q", ctx.ProjectName)
+	}
+	if ctx.ComposeProjectName != "bar-compose" {
+		t.Errorf("Expected compose-project-name 'bar-compose', got %q", ctx.ComposeProjectName)
+	}
+	if ctx.ComposeNetwork != "bar-net" {
+		t.Errorf("Expected compose-network 'bar-net', got %q", ctx.ComposeNetwork)
 	}
 	if ctx.Environment != "staging" {
 		t.Errorf("Expected environment 'staging', got %q", ctx.Environment)

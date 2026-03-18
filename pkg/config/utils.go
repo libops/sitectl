@@ -12,11 +12,24 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/libops/sitectl/pkg/ui"
 	"github.com/spf13/pflag"
+	"golang.org/x/term"
 	yaml "gopkg.in/yaml.v3"
 )
 
 func GetInput(question ...string) (string, error) {
+	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) && len(question) > 0 {
+		prompt := question[len(question)-1]
+		sections := append([]string{}, question[:len(question)-1]...)
+		if value, ok, err := ui.PromptText(ui.TextPromptOptions{
+			Sections: sections,
+			Prompt:   prompt,
+		}); ok {
+			return value, err
+		}
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 	lastItemIndex := len(question) - 1
 	for i := range question {
@@ -114,6 +127,8 @@ func contextHasStoredValues(context Context) bool {
 		context.Environment != "" ||
 		context.DockerSocket != "" ||
 		context.ProjectName != "" ||
+		context.ComposeProjectName != "" ||
+		context.ComposeNetwork != "" ||
 		context.ProjectDir != "" ||
 		context.SSHUser != "" ||
 		context.SSHHostname != "" ||
@@ -185,7 +200,9 @@ func SetCommandFlags(flags *pflag.FlagSet) {
 	flags.String("project-dir", "", "Path to docker compose project directory")
 	flags.String("site", "", "Logical site name this context belongs to")
 	flags.String("plugin", "core", "Owning plugin identifier for this context, such as core, isle, or drupal")
-	flags.String("project-name", "docker-compose", "Name of the docker compose project")
+	flags.String("project-name", "docker-compose", "Logical project name for this context")
+	flags.String("compose-project-name", "", "Docker Compose project name, matching COMPOSE_PROJECT_NAME or compose name:")
+	flags.String("compose-network", "", "Primary Docker Compose network name for this environment")
 	flags.String("environment", "", "Environment name for this context, such as local, dev, staging, or prod")
 	flags.Bool("sudo", false, "for remote contexts, run docker commands as sudo")
 	flags.StringSlice("env-file", []string{}, "when running remote docker commands, the --env-file paths to pass to docker compose")

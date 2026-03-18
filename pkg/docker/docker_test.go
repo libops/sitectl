@@ -15,6 +15,7 @@ import (
 // FakeDockerClient implements the DockerAPI interface for testing.
 type FakeDockerClient struct {
 	InspectFunc func(ctx context.Context, container string) (dockercontainer.InspectResponse, error)
+	ListFunc    func(ctx context.Context, options dockercontainer.ListOptions) ([]dockercontainer.Summary, error)
 }
 
 var _ DockerAPI = (*FakeDockerClient)(nil)
@@ -24,6 +25,9 @@ func (f *FakeDockerClient) ContainerInspect(ctx context.Context, container strin
 }
 
 func (f *FakeDockerClient) ContainerList(ctx context.Context, options dockercontainer.ListOptions) ([]dockercontainer.Summary, error) {
+	if f.ListFunc != nil {
+		return f.ListFunc(ctx, options)
+	}
 	return nil, fmt.Errorf("Not implemented")
 }
 
@@ -151,7 +155,8 @@ func TestGetServiceIp(t *testing.T) {
 		},
 	}
 	fakeConfig := &config.Context{
-		ProjectName: "test",
+		ProjectName:    "test",
+		ComposeNetwork: "test_default",
 	}
 	dClient := &DockerClient{
 		CLI: fake,
@@ -162,5 +167,31 @@ func TestGetServiceIp(t *testing.T) {
 	}
 	if ip != "172.17.0.3" {
 		t.Errorf("expected %q, got %q", "172.17.0.3", ip)
+	}
+}
+
+func TestGetServiceIpFallsBackToSingleNetwork(t *testing.T) {
+	fake := &FakeDockerClient{
+		InspectFunc: func(ctx context.Context, container string) (dockercontainer.InspectResponse, error) {
+			return dockercontainer.InspectResponse{
+				NetworkSettings: &dockercontainer.NetworkSettings{
+					Networks: map[string]*network.EndpointSettings{
+						"shared-frontdoor": {IPAddress: "172.17.0.9"},
+					},
+				},
+			}, nil
+		},
+	}
+	fakeConfig := &config.Context{
+		ProjectName:    "test",
+		ComposeNetwork: "missing-network",
+	}
+	dClient := &DockerClient{CLI: fake}
+	ip, err := dClient.GetServiceIp(context.Background(), fakeConfig, "dummyContainer")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ip != "172.17.0.9" {
+		t.Errorf("expected %q, got %q", "172.17.0.9", ip)
 	}
 }
