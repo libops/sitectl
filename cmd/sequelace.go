@@ -37,9 +37,9 @@ var sequelAceCmd = &cobra.Command{
 		}
 		slog.Debug("uris", "mysql", mysql, "ssh", ssh)
 		cmdArgs := []string{
-			fmt.Sprintf("%s?%s", mysql, ssh),
 			"-a",
 			sequelAcePath,
+			fmt.Sprintf("%s?%s", mysql, ssh),
 		}
 		openCmd := exec.Command("open", cmdArgs...)
 		if err := openCmd.Run(); err != nil {

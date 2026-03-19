@@ -6,10 +6,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
@@ -306,6 +308,12 @@ func GetDatabaseUris(c *config.Context) (string, string, error) {
 	}
 	defer dockerCli.Close()
 
+	return getDatabaseURIsWithClient(ctx, dockerCli, c)
+}
+
+func getDatabaseURIsWithClient(ctx context.Context, dockerCli *DockerClient, c *config.Context) (string, string, error) {
+	dbHost := "127.0.0.1"
+
 	// Get the database container name
 	containerName, err := dockerCli.GetContainerName(c, c.DatabaseService)
 	if err != nil {
@@ -315,12 +323,28 @@ func GetDatabaseUris(c *config.Context) (string, string, error) {
 		return "", "", fmt.Errorf("%s container not found", c.DatabaseService)
 	}
 
+	if c.DockerHostType == config.ContextRemote {
+		dbHost, err = dockerCli.GetServiceIp(ctx, c, containerName)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to resolve %s service IP: %w", c.DatabaseService, err)
+		}
+		if dbHost == "" {
+			return "", "", fmt.Errorf("resolved empty IP for %s service", c.DatabaseService)
+		}
+	}
+
 	// Get database password from container environment
 	password, err := GetSecret(ctx, dockerCli.CLI, c, containerName, c.DatabasePasswordSecret)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get database password from %s: %w", c.DatabasePasswordSecret, err)
 	}
 
-	mysqlURI := fmt.Sprintf("mysql://%s:%s@127.0.0.1:3306/%s", c.DatabaseUser, password, c.DatabaseName)
-	return mysqlURI, c.GetSshUri(), nil
+	mysqlURI := url.URL{
+		Scheme: "mysql",
+		User:   url.UserPassword(c.DatabaseUser, password),
+		Host:   net.JoinHostPort(dbHost, strconv.Itoa(3306)),
+		Path:   "/" + c.DatabaseName,
+	}
+
+	return mysqlURI.String(), c.GetSshUri(), nil
 }

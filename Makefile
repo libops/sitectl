@@ -1,4 +1,4 @@
-.PHONY: build deps lint test docker integration-test docs plugins install-plugins
+.PHONY: build deps lint test docker integration-test docs plugins install-plugins publish-cloudsmith
 
 BINARY_NAME=sitectl
 
@@ -23,3 +23,5 @@ lint:
 test: build
 	go test -v -race ./...
 
+publish-cloudsmith:
+	bash ./scripts/publish-cloudsmith.sh

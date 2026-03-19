@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -193,5 +194,106 @@ func TestGetServiceIpFallsBackToSingleNetwork(t *testing.T) {
 	}
 	if ip != "172.17.0.9" {
 		t.Errorf("expected %q, got %q", "172.17.0.9", ip)
+	}
+}
+
+func TestGetDatabaseURIsWithClient_LocalContextUsesLoopback(t *testing.T) {
+	fake := &FakeDockerClient{
+		ListFunc: func(ctx context.Context, options dockercontainer.ListOptions) ([]dockercontainer.Summary, error) {
+			return []dockercontainer.Summary{{Names: []string{"/stack-mariadb-1"}}}, nil
+		},
+		InspectFunc: func(ctx context.Context, container string) (dockercontainer.InspectResponse, error) {
+			return dockercontainer.InspectResponse{
+				Config: &dockercontainer.Config{
+					Env: []string{"DB_ROOT_PASSWORD=secret"},
+				},
+			}, nil
+		},
+	}
+	ctxCfg := &config.Context{
+		DockerHostType:         config.ContextLocal,
+		ProjectName:            "stack",
+		DatabaseService:        "mariadb",
+		DatabaseUser:           "root",
+		DatabasePasswordSecret: "DB_ROOT_PASSWORD",
+		DatabaseName:           "drupal_default",
+	}
+
+	mysqlURI, sshURI, err := getDatabaseURIsWithClient(context.Background(), &DockerClient{CLI: fake}, ctxCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sshURI != "" {
+		t.Fatalf("expected empty ssh URI for local context, got %q", sshURI)
+	}
+	parsed, err := url.Parse(mysqlURI)
+	if err != nil {
+		t.Fatalf("failed to parse mysql URI %q: %v", mysqlURI, err)
+	}
+	if parsed.Host != "127.0.0.1:3306" {
+		t.Fatalf("expected loopback host, got %q", parsed.Host)
+	}
+	if parsed.User.Username() != "root" {
+		t.Fatalf("expected root user, got %q", parsed.User.Username())
+	}
+	password, ok := parsed.User.Password()
+	if !ok || password != "secret" {
+		t.Fatalf("expected password secret, got %q", password)
+	}
+	if parsed.Path != "/drupal_default" {
+		t.Fatalf("expected /drupal_default path, got %q", parsed.Path)
+	}
+}
+
+func TestGetDatabaseURIsWithClient_RemoteContextUsesContainerIP(t *testing.T) {
+	fake := &FakeDockerClient{
+		ListFunc: func(ctx context.Context, options dockercontainer.ListOptions) ([]dockercontainer.Summary, error) {
+			return []dockercontainer.Summary{{Names: []string{"/stack-mariadb-1"}}}, nil
+		},
+		InspectFunc: func(ctx context.Context, container string) (dockercontainer.InspectResponse, error) {
+			return dockercontainer.InspectResponse{
+				Config: &dockercontainer.Config{
+					Env: []string{"DB_ROOT_PASSWORD=p@ss word"},
+				},
+				NetworkSettings: &dockercontainer.NetworkSettings{
+					Networks: map[string]*network.EndpointSettings{
+						"stack_default": {IPAddress: "172.22.0.5"},
+					},
+				},
+			}, nil
+		},
+	}
+	ctxCfg := &config.Context{
+		DockerHostType:         config.ContextRemote,
+		ProjectName:            "stack",
+		ComposeNetwork:         "stack_default",
+		DatabaseService:        "mariadb",
+		DatabaseUser:           "root",
+		DatabasePasswordSecret: "DB_ROOT_PASSWORD",
+		DatabaseName:           "drupal_default",
+		SSHHostname:            "db.example.com",
+		SSHUser:                "deploy",
+		SSHPort:                2222,
+		SSHKeyPath:             "/Users/test/.ssh/id_ed25519",
+	}
+
+	mysqlURI, sshURI, err := getDatabaseURIsWithClient(context.Background(), &DockerClient{CLI: fake}, ctxCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	parsed, err := url.Parse(mysqlURI)
+	if err != nil {
+		t.Fatalf("failed to parse mysql URI %q: %v", mysqlURI, err)
+	}
+	if parsed.Host != "172.22.0.5:3306" {
+		t.Fatalf("expected container IP host, got %q", parsed.Host)
+	}
+	password, ok := parsed.User.Password()
+	if !ok || password != "p@ss word" {
+		t.Fatalf("expected decoded password, got %q", password)
+	}
+	expectedSSH := "ssh_host=db.example.com&ssh_keyLocation=%2FUsers%2Ftest%2F.ssh%2Fid_ed25519&ssh_keyLocationEnabled=1&ssh_port=2222&ssh_user=deploy"
+	if sshURI != expectedSSH {
+		t.Fatalf("expected ssh URI %q, got %q", expectedSSH, sshURI)
 	}
 }

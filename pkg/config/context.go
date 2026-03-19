@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -502,10 +503,14 @@ func (c *Context) GetSshUri() string {
 		sshPort = 22
 	}
 
-	sshParams := fmt.Sprintf("sshHost=%s&sshUser=%s&sshPort=%d", c.SSHHostname, c.SSHUser, sshPort)
+	values := url.Values{}
+	values.Set("ssh_host", c.SSHHostname)
+	values.Set("ssh_user", c.SSHUser)
+	values.Set("ssh_port", strconv.FormatUint(uint64(sshPort), 10))
 	if c.SSHKeyPath != "" {
-		sshParams += fmt.Sprintf("&sshKeyFile=%s", c.SSHKeyPath)
+		values.Set("ssh_keyLocation", c.SSHKeyPath)
+		values.Set("ssh_keyLocationEnabled", "1")
 	}
 
-	return sshParams
+	return values.Encode()
 }
