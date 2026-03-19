@@ -27,6 +27,10 @@ Releases also publish native Linux packages for:
 - Debian and Ubuntu (`.deb`)
 - Fedora and other RPM-based distributions (`.rpm`)
 
+[![OSS hosting by Cloudsmith](https://img.shields.io/badge/OSS%20hosting%20by-cloudsmith-blue?logo=cloudsmith&style=flat-square)](https://cloudsmith.com)
+
+Linux package repository hosting is graciously provided by [Cloudsmith](https://cloudsmith.com).
+
 ## Usage
 
 ```bash

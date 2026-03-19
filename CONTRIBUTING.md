@@ -67,3 +67,37 @@ That means a command UI should be structured so it can be:
 - pushed or mounted inside the dashboard TUI
 
 If a proposed command UI cannot be reused that way, it should be redesigned before being added.
+
+## Release Publishing
+
+GoReleaser builds the release artifacts, including Linux packages via `nfpms`.
+
+- GitHub release publishing runs from [`.github/workflows/goreleaser.yaml`](/workspace/sitectl/.github/workflows/goreleaser.yaml)
+- Cloudsmith publishing is handled by [`scripts/publish-cloudsmith.sh`](/workspace/sitectl/scripts/publish-cloudsmith.sh)
+- CI and local publishing should both use `make publish-cloudsmith`
+
+### Cloudsmith
+
+To enable Cloudsmith uploads in GitHub Actions, set:
+
+- secret `CLOUDSMITH_API_KEY`
+- variable `CLOUDSMITH_NAMESPACE` such as `libops`
+- variable `CLOUDSMITH_REPOSITORY` such as `sitectl`
+
+Optional target overrides:
+
+- `CLOUDSMITH_DEB_TARGETS` default: `debian/bookworm ubuntu/noble`
+- `CLOUDSMITH_RPM_TARGETS` default: `fedora/41`
+- `CLOUDSMITH_ALPINE_TARGETS` default: `alpine/any-version`
+
+To publish an already-built `dist/` directory locally:
+
+```bash
+CLOUDSMITH_API_KEY=... \
+CLOUDSMITH_NAMESPACE=libops \
+CLOUDSMITH_REPOSITORY=sitectl \
+CLOUDSMITH_DEB_TARGETS="debian/bookworm ubuntu/noble" \
+CLOUDSMITH_RPM_TARGETS="fedora/41" \
+CLOUDSMITH_ALPINE_TARGETS="alpine/any-version" \
+make publish-cloudsmith
+```
