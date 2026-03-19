@@ -430,7 +430,7 @@ func TestGetSshUri(t *testing.T) {
 				SSHUser:        "testuser",
 				SSHPort:        0, // Should default to 22
 			},
-			expected: "sshHost=example.com&sshUser=testuser&sshPort=22",
+			expected: "ssh_host=example.com&ssh_port=22&ssh_user=testuser",
 		},
 		{
 			name: "remote context with custom port",
@@ -440,7 +440,7 @@ func TestGetSshUri(t *testing.T) {
 				SSHUser:        "testuser",
 				SSHPort:        2222,
 			},
-			expected: "sshHost=example.com&sshUser=testuser&sshPort=2222",
+			expected: "ssh_host=example.com&ssh_port=2222&ssh_user=testuser",
 		},
 		{
 			name: "remote context with SSH key path",
@@ -451,7 +451,7 @@ func TestGetSshUri(t *testing.T) {
 				SSHPort:        22,
 				SSHKeyPath:     "/home/user/.ssh/id_rsa",
 			},
-			expected: "sshHost=example.com&sshUser=testuser&sshPort=22&sshKeyFile=/home/user/.ssh/id_rsa",
+			expected: "ssh_host=example.com&ssh_keyLocation=%2Fhome%2Fuser%2F.ssh%2Fid_rsa&ssh_keyLocationEnabled=1&ssh_port=22&ssh_user=testuser",
 		},
 		{
 			name: "remote context without SSH key path",
@@ -462,7 +462,7 @@ func TestGetSshUri(t *testing.T) {
 				SSHPort:        22,
 				SSHKeyPath:     "",
 			},
-			expected: "sshHost=server.example.com&sshUser=admin&sshPort=22",
+			expected: "ssh_host=server.example.com&ssh_port=22&ssh_user=admin",
 		},
 	}
 

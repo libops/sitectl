@@ -537,9 +537,6 @@ func runCreateConfig(cmd *cobra.Command, args []string) error {
 		}
 	}
 	context.Name = args[0]
-	if strings.TrimSpace(context.Site) == "" {
-		context.Site = firstNonEmptyString(context.ProjectName, context.Name)
-	}
 	if strings.TrimSpace(context.Plugin) == "" {
 		context.Plugin = "core"
 	}
@@ -591,6 +588,9 @@ func runCreateConfig(cmd *cobra.Command, args []string) error {
 			context.Plugin = selectedPlugin
 		}
 	}
+	if !f.Changed("project-name") && placeholderProjectName(context.ProjectName) {
+		context.ProjectName = firstNonEmptyString(filepath.Base(context.ProjectDir), "docker-compose")
+	}
 	if strings.TrimSpace(context.ProjectName) == "" {
 		context.ProjectName = firstNonEmptyString(filepath.Base(context.ProjectDir), "docker-compose")
 	}
@@ -600,8 +600,11 @@ func runCreateConfig(cmd *cobra.Command, args []string) error {
 	if !f.Changed("compose-network") && strings.TrimSpace(context.ComposeNetwork) == "" {
 		context.ComposeNetwork = config.DetectComposeNetworkName(context.ProjectDir, context.EffectiveComposeProjectName())
 	}
+	if !f.Changed("site") && placeholderProjectName(context.Site) {
+		context.Site = firstNonEmptyString(filepath.Base(context.ProjectDir), context.ProjectName, context.Name)
+	}
 	if strings.TrimSpace(context.Site) == "" {
-		context.Site = firstNonEmptyString(context.ProjectName, context.Name)
+		context.Site = firstNonEmptyString(filepath.Base(context.ProjectDir), context.ProjectName, context.Name)
 	}
 
 	if context.DockerHostType == config.ContextRemote {
@@ -638,6 +641,11 @@ func runCreateConfig(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+func placeholderProjectName(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || value == "docker-compose"
 }
 
 func promptContextPlugin(defaultPlugin string) (string, error) {
