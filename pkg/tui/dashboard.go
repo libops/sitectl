@@ -106,7 +106,6 @@ type keyMap struct {
 	Command  key.Binding
 	Palette  key.Binding
 	Terminal key.Binding
-	Logs     key.Binding
 	Refresh  key.Binding
 	Enter    key.Binding
 	Back     key.Binding
@@ -125,7 +124,6 @@ func defaultKeyMap() keyMap {
 		Command:  key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "command bar")),
 		Palette:  key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "palette")),
 		Terminal: key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "run in terminal")),
-		Logs:     key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "logs")),
 		Refresh:  key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "refresh")),
 		Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
 		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
@@ -134,11 +132,11 @@ func defaultKeyMap() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Left, k.Up, k.Command, k.Palette, k.Logs, k.Refresh, k.Terminal, k.Back, k.Quit}
+	return []key.Binding{k.Left, k.Up, k.Command, k.Palette, k.Refresh, k.Terminal, k.Back, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Left, k.Right, k.Up, k.Down}, {k.Command, k.Palette, k.Logs, k.Refresh}, {k.Actions, k.Settings, k.NewApp, k.Terminal, k.Enter, k.Back, k.Quit}}
+	return [][]key.Binding{{k.Left, k.Right, k.Up, k.Down}, {k.Command, k.Palette, k.Refresh}, {k.Actions, k.Settings, k.NewApp, k.Terminal, k.Enter, k.Back, k.Quit}}
 }
 
 type dashboardModel struct {
@@ -166,9 +164,14 @@ type dashboardModel struct {
 	infoTitle   string
 	infoBody    string
 	logsTitle   string
+	logTarget   string
+	detailBody  string
+	logsBody    string
 
 	historyCPU    map[string][]float64
 	historyMemory map[string][]float64
+	historyNet    map[string][]float64
+	lastNetSample map[string]networkSample
 
 	help          help.Model
 	keys          keyMap
@@ -184,6 +187,11 @@ type dashboardModel struct {
 	commandInput     textinput.Model
 	commandRunning   bool
 	commandQuitArmed bool
+}
+
+type networkSample struct {
+	totalBytes uint64
+	at         time.Time
 }
 
 func Run() error {
@@ -224,15 +232,19 @@ func newDashboardModel(cfg *config.Config, plugins []plugin.InstalledPlugin) *da
 		spin:           spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(spinnerStyle)),
 		historyCPU:     map[string][]float64{},
 		historyMemory:  map[string][]float64{},
+		historyNet:     map[string][]float64{},
+		lastNetSample:  map[string]networkSample{},
 	}
 	m.help.Styles = helpStyles()
 	m.siteIndex, m.envIndex = defaultSelection(m.sites, current)
 	m.detail = viewport.New(viewport.WithWidth(40), viewport.WithHeight(10))
 	m.detail.MouseWheelEnabled = true
-	m.detail.SetContent("Loading...")
+	m.detailBody = "Loading..."
+	m.detail.SetContent(m.detailBody)
 	m.logs = viewport.New(viewport.WithWidth(40), viewport.WithHeight(10))
 	m.logs.MouseWheelEnabled = true
-	m.logs.SetContent("No logs loaded.")
+	m.logsBody = "No logs loaded."
+	m.logs.SetContent(m.logsBody)
 	m.logsTitle = "Logs"
 	m.actions = newMenuModel("Actions", []menuItem{
 		{title: "Refresh", desc: "Reload summary for the selected environment", action: "refresh"},
@@ -282,6 +294,8 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, loadSummaryCmd(ctx))
 			if m.screen == screenLogs && strings.HasPrefix(m.logsTitle, "Logs") {
 				cmds = append(cmds, loadLogsCmd(ctx))
+			} else if m.screen == screenLogs && strings.TrimSpace(m.logTarget) != "" {
+				cmds = append(cmds, loadContainerLogsCmd(ctx, m.logTarget))
 			}
 		}
 		return m, tea.Batch(cmds...)
@@ -294,8 +308,7 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Err == nil {
 				m.pushHistory(
 					msg.ContextName,
-					msg.Summary.CPUPercent,
-					memoryPercent(msg.Summary),
+					msg.Summary,
 				)
 			}
 			m.syncDetailContent()
@@ -313,6 +326,7 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.TrimSpace(content) == "" {
 				content = "No logs returned."
 			}
+			m.logsBody = content
 			m.logs.SetContent(content)
 			m.logs.GotoBottom()
 		}
@@ -334,6 +348,7 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(content) == "" {
 			content = "Command completed with no output."
 		}
+		m.logsBody = content
 		m.logs.SetContent(content)
 		m.logs.GotoTop()
 		m.syncLayout()
@@ -385,14 +400,15 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.overlay != overlayNone {
 			return m.updateOverlay(msg)
 		}
+		if release, ok := msg.(tea.MouseReleaseMsg); ok {
+			return m.handleMouseRelease(release)
+		}
 		if m.screen == screenLogs {
 			var cmd tea.Cmd
 			m.logs, cmd = m.logs.Update(msg)
 			return m, cmd
 		}
 		switch msg := msg.(type) {
-		case tea.MouseReleaseMsg:
-			return m.handleMouseRelease(msg)
 		case tea.MouseWheelMsg:
 			var cmd tea.Cmd
 			m.detail, cmd = m.detail.Update(msg)
@@ -504,10 +520,6 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if ctx, ok := m.selectedContext(); ok && strings.HasPrefix(m.logsTitle, "Logs") {
 				return m, loadLogsCmd(ctx)
 			}
-		case key.Matches(msg, m.keys.Logs):
-			m.screen = screenDashboard
-			m.syncLayout()
-			return m, nil
 		case key.Matches(msg, m.keys.Terminal):
 			return m.runCommand(true)
 		case msg.String() == "enter":
@@ -562,8 +574,6 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.commands = newMenuModel("Commands", commandPaletteItems("", m.selectedContextName(), m.selectedSiteName(), m.selectedPluginName()))
 		m.overlay = overlayCommands
 		return m, nil
-	case key.Matches(msg, m.keys.Logs):
-		return m.openLogs()
 	case key.Matches(msg, m.keys.Refresh):
 		if ctx, ok := m.selectedContext(); ok {
 			m.loading = true
@@ -587,6 +597,17 @@ func (m *dashboardModel) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model,
 	if msg.Mouse().Button != tea.MouseLeft {
 		return m, nil
 	}
+	if m.screen == screenLogs {
+		if z := zone.Get("logs:back"); z != nil && z.InBounds(msg) {
+			m.screen = screenDashboard
+			m.logTarget = ""
+			m.syncLayout()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.logs, cmd = m.logs.Update(msg)
+		return m, cmd
+	}
 
 	for _, targetSite := range m.sites {
 		if z := zone.Get("tab:" + targetSite.Name); z != nil && z.InBounds(msg) {
@@ -606,6 +627,11 @@ func (m *dashboardModel) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model,
 			return m.reloadSelected()
 		}
 	}
+	for _, service := range m.summary.Services {
+		if z := zone.Get(containerZoneID(service.Name)); z != nil && z.InBounds(msg) {
+			return m.openContainerLogs(service.Name)
+		}
+	}
 
 	if z := zone.Get("chip:actions"); z != nil && z.InBounds(msg) {
 		m.overlay = overlayActions
@@ -615,9 +641,6 @@ func (m *dashboardModel) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model,
 	}
 	if z := zone.Get("chip:new"); z != nil && z.InBounds(msg) {
 		m.overlay = overlayChooser
-	}
-	if z := zone.Get("chip:logs"); z != nil && z.InBounds(msg) {
-		return m.openLogs()
 	}
 	if z := zone.Get("chip:refresh"); z != nil && z.InBounds(msg) {
 		if ctx, ok := m.selectedContext(); ok {
@@ -699,7 +722,8 @@ func (m *dashboardModel) handleOverlaySelection() (tea.Model, tea.Cmd) {
 		if ctx, ok := m.selectedContext(); ok {
 			m.infoTitle = "Context Details"
 			m.infoBody = renderContextInfo(ctx)
-			m.detail.SetContent(m.infoBody)
+			m.detailBody = m.infoBody
+			m.detail.SetContent(m.detailBody)
 			m.detail.GotoTop()
 			m.overlay = overlayInfo
 			return m, nil
@@ -741,11 +765,25 @@ func (m *dashboardModel) openLogs() (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	m.logTarget = ""
 	m.screen = screenLogs
 	m.loadingLog = true
 	m.logsTitle = "Logs | tail 20 | auto-refresh"
 	m.syncLayout()
 	return m, loadLogsCmd(ctx)
+}
+
+func (m *dashboardModel) openContainerLogs(containerName string) (tea.Model, tea.Cmd) {
+	ctx, ok := m.selectedContext()
+	if !ok {
+		return m, nil
+	}
+	m.logTarget = containerName
+	m.screen = screenLogs
+	m.loadingLog = true
+	m.logsTitle = "Container Logs"
+	m.syncLayout()
+	return m, loadContainerLogsCmd(ctx, containerName)
 }
 
 func (m *dashboardModel) reloadSelected() (tea.Model, tea.Cmd) {
@@ -825,7 +863,6 @@ func (m *dashboardModel) renderHeaderChips() string {
 		zone.Mark("chip:new", chipStyle.Render("[ctrl+n] Choose App")),
 		zone.Mark("chip:command", chipStyle.Render("[/] Command")),
 		zone.Mark("chip:palette", chipStyle.Render("[ctrl+p] Palette")),
-		zone.Mark("chip:logs", chipStyle.Render("[ctrl+g] Logs")),
 		zone.Mark("chip:refresh", chipStyle.Render("[ctrl+r] Refresh")),
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Left, chips...)
@@ -845,17 +882,31 @@ func (m *dashboardModel) renderTitle() string {
 func (m *dashboardModel) renderResourceHeader() string {
 	ctx, _ := m.selectedContext()
 	historyKey := ctx.Name
-	widths := splitWidth(max(m.width-8, 60), 2)
+	widths := splitWidth(max(m.width-8, 100), 5)
 	cpuDetail := fmt.Sprintf("%.1f%% total across %d containers", m.summary.CPUPercent, m.summary.Total)
 	memDetail := fmt.Sprintf("%s / %s", humanBytes(m.summary.MemoryBytes), humanBytes(m.summary.MemoryLimitBytes))
+	netDetail := networkDetail(m.historyNet[historyKey])
+	loadValue, loadDetail, loadColor := loadDisplay(m.summary)
+	diskValue, diskDetail, diskPercent, diskColor := diskDisplay(m.summary)
 	if m.loading {
 		cpuDetail = "Refreshing docker stats..."
 		memDetail = "Refreshing docker stats..."
+		netDetail = "Refreshing host stats..."
+		loadValue = "..."
+		loadDetail = "Refreshing host stats..."
+		loadColor = "#7F8C8D"
+		diskValue = "..."
+		diskDetail = "Refreshing host stats..."
+		diskPercent = 0
+		diskColor = "#7F8C8D"
 	}
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		renderChartBox("CPU", m.historyCPU[historyKey], cpuDetail, "#F4A261", widths[0]),
 		renderChartBox("Memory", m.historyMemory[historyKey], memDetail, "#98C1D9", widths[1]),
+		renderStatusBox("Load", loadValue, loadDetail, loadColor, widths[2]),
+		renderGaugeBox("Disk Free", diskValue, diskDetail, diskPercent, diskColor, widths[3]),
+		renderChartBox("Network", m.historyNet[historyKey], netDetail, "#5DADE2", widths[4]),
 	)
 }
 
@@ -881,16 +932,25 @@ func (m *dashboardModel) renderDashboardArea() string {
 
 func (m *dashboardModel) renderLogsArea() string {
 	ctx, _ := m.selectedContext()
-	hint := "Auto-refreshing the latest 20 log lines. Scroll with mouse wheel or j/k. Press esc or ctrl+g to return."
+	hint := "Auto-refreshing the latest 20 log lines. Scroll with mouse wheel or j/k. Press esc to return."
 	if m.logsTitle == "Command Output" {
 		hint = "Command output. Press esc to return to the dashboard and keep using the footer command bar."
+	} else if strings.TrimSpace(m.logTarget) != "" {
+		hint = "Auto-refreshing the latest 20 log lines for the selected container. Press esc to return."
 	}
-	header := panelStyle.Width(max(40, m.width-6)).Render(strings.Join([]string{
-		m.logsTitle,
+	back := zone.Mark("logs:back", chipStyle.Render("[Back]"))
+	headerLines := []string{
+		sectionTitleStyle.MarginBottom(0).Render(m.logsTitle),
 		fmt.Sprintf("Context: %s", ctx.Name),
-		hint,
-	}, "\n"))
-	body := panelStyle.Width(max(40, m.width-6)).Height(max(10, m.height-14)).Render(renderViewportWithScrollbar(m.logs))
+	}
+	if strings.TrimSpace(m.logTarget) != "" {
+		headerLines = append(headerLines, renderContainerHeader(m.summary, m.logTarget))
+	}
+	headerLines = append(headerLines, hint)
+	header := panelStyle.Width(max(40, m.width-6)).Render(strings.Join(headerLines, "\n"))
+	body := panelStyle.Width(max(40, m.width-6)).Height(max(10, m.height-14)).Render(
+		back + "\n" + renderViewportWithScrollbar(m.logs, m.logsBody, max(34, m.width-12)),
+	)
 	if m.loadingLog {
 		header = panelStyle.Width(max(40, m.width-6)).Render(m.spin.View() + " Loading logs...\nContext: " + ctx.Name)
 	}
@@ -928,16 +988,22 @@ func (m *dashboardModel) renderEnvironmentCards(width int) string {
 		lines := []string{strings.ToUpper(envLabel(ctx)), ctx.Name}
 		if selected {
 			cardWidth = selectedWidth
-			lines = append(lines,
-				fmt.Sprintf("plugin: %s", firstNonEmpty(ctx.Plugin, "core")),
-				fmt.Sprintf("compose: %s", firstNonEmpty(ctx.EffectiveComposeProjectName(), "-")),
-				fmt.Sprintf("network: %s", firstNonEmpty(ctx.EffectiveComposeNetwork(), "-")),
+			statusText := strings.ToUpper(firstNonEmpty(m.summary.Status, "unknown"))
+			containersText := fmt.Sprintf(
+				"containers: %d total, %d running, %d stopped",
+				m.summary.Total,
+				m.summary.Running,
+				m.summary.Stopped,
 			)
-			if ctx.DockerHostType == config.ContextRemote {
-				lines = append(lines, fmt.Sprintf("host: %s", firstNonEmpty(ctx.SSHHostname, "-")))
-			} else {
-				lines = append(lines, fmt.Sprintf("dir: %s", firstNonEmpty(ctx.ProjectDir, "-")))
+			if m.loading {
+				statusText = "REFRESHING"
+				containersText = "containers: loading..."
 			}
+			lines = append(lines,
+				fmt.Sprintf("status: %s", statusText),
+				containersText,
+				fmt.Sprintf("healthy: %d", m.summary.Healthy),
+			)
 		} else {
 			lines = append(lines, firstNonEmpty(ctx.Plugin, "core"))
 		}
@@ -956,13 +1022,14 @@ func (m *dashboardModel) renderEnvironmentCards(width int) string {
 }
 
 func (m *dashboardModel) renderDetailsPanel(width int) string {
-	content := renderViewportWithScrollbar(m.detail)
+	panelWidth := max(40, width-2)
+	content := renderViewportWithScrollbar(m.detail, m.detailBody, panelWidth-6)
 	if m.loading {
 		content = m.spin.View() + " Loading Docker Compose status..."
 	}
 
 	panelHeight := min(max(10, m.height-30), 16)
-	return panelStyle.Width(max(32, width-4)).Height(panelHeight).Render(
+	return panelStyle.Width(panelWidth).Height(panelHeight).Render(
 		sectionTitleStyle.MarginBottom(0).Render("Selected Environment Status") + "\n" + content,
 	)
 }
@@ -982,7 +1049,8 @@ func (m *dashboardModel) renderOverlay() string {
 		content = m.chooser.View()
 	case overlayInfo:
 		title = m.infoTitle
-		content = renderViewportWithScrollbar(m.detail)
+		overlayWidth := min(72, max(48, m.width-12))
+		content = renderViewportWithScrollbar(m.detail, m.detailBody, overlayWidth-6)
 	case overlayCommands:
 		title = commandPaletteTitle(m.commandParent)
 		content = m.commands.View()
@@ -1018,7 +1086,7 @@ func (m *dashboardModel) renderTourArea() string {
 		fmt.Sprintf("Pane %d of %d", m.currentTourIndex()+1, len(m.tourPanes)),
 		"left/right: next section  esc: back to setup/create",
 	}, "\n"))
-	body := panelStyle.Width(width).Height(max(12, m.height-12)).Render(renderViewportWithScrollbar(m.detail))
+	body := panelStyle.Width(width).Height(max(12, m.height-12)).Render(renderViewportWithScrollbar(m.detail, m.detailBody, width-6))
 	return lipgloss.JoinVertical(lipgloss.Left, header, body)
 }
 
@@ -1043,7 +1111,7 @@ func (m *dashboardModel) syncLayout() {
 	if m.screen == screenTour {
 		detailHeight = max(12, m.height-16)
 	}
-	m.detail.SetWidth(max(40, m.width-hpad-8))
+	m.detail.SetWidth(max(48, m.width-hpad-6))
 	m.detail.SetHeight(detailHeight)
 
 	logHeight := max(10, m.height-14)
@@ -1066,47 +1134,63 @@ func (m *dashboardModel) syncDetailContent() {
 	if m.screen == screenTour {
 		return
 	}
-	ctx, ok := m.selectedContext()
+	_, ok := m.selectedContext()
 	if !ok {
-		m.detail.SetContent("No context selected.")
+		m.detailBody = "No context selected."
+		m.detail.SetContent(m.detailBody)
 		return
 	}
 	if m.overlay == overlayInfo && strings.TrimSpace(m.infoBody) != "" {
-		m.detail.SetContent(m.infoBody)
+		m.detailBody = m.infoBody
+		m.detail.SetContent(m.detailBody)
 		return
 	}
 	if m.summaryErr != nil {
-		m.detail.SetContent(m.summaryErr.Error())
+		m.detailBody = m.summaryErr.Error()
+		m.detail.SetContent(m.detailBody)
 		return
 	}
 
 	lines := []string{
-		fmt.Sprintf("Status: %s", strings.ToUpper(firstNonEmpty(m.summary.Status, "unknown"))),
-		fmt.Sprintf("CPU: %.1f%%", m.summary.CPUPercent),
-		fmt.Sprintf("Memory: %s / %s", humanBytes(m.summary.MemoryBytes), humanBytes(m.summary.MemoryLimitBytes)),
-		fmt.Sprintf("Containers: %d total, %d running, %d healthy, %d stopped", m.summary.Total, m.summary.Running, m.summary.Healthy, m.summary.Stopped),
+		"Containers",
+		"Click a container to view its logs.",
 		"",
-		"Services:",
+		fmt.Sprintf("  %-36s  %7s  %-22s  %s", "NAME", "CPU", "MEMORY", "STATUS"),
+		"  " + strings.Repeat("─", 36) + "  " + strings.Repeat("─", 7) + "  " + strings.Repeat("─", 22) + "  " + strings.Repeat("─", 12),
 	}
 	if len(m.summary.Services) == 0 {
 		lines = append(lines, "  No Compose containers found for this context.")
 	} else {
 		for _, service := range m.summary.Services {
-			lines = append(lines, fmt.Sprintf("  %s  %s", service.Service, firstNonEmpty(service.Status, service.State)))
+			line := fmt.Sprintf(
+				"  %-36s  %6.1f%%  %-22s  %s",
+				truncateMetricText(firstNonEmpty(service.Name, service.Service), 36),
+				service.CPUPercent,
+				truncateMetricText(containerMemorySummary(service), 22),
+				truncateMetricText(firstNonEmpty(service.Status, service.State), 12),
+			)
+			lines = append(lines, zone.Mark(containerZoneID(service.Name), line))
 		}
 	}
-	lines = append(lines,
-		"",
-		fmt.Sprintf("Context directory: %s", firstNonEmpty(ctx.ProjectDir, "-")),
-		fmt.Sprintf("Compose project: %s", firstNonEmpty(ctx.EffectiveComposeProjectName(), "-")),
-		fmt.Sprintf("Compose network: %s", firstNonEmpty(ctx.EffectiveComposeNetwork(), "-")),
-	)
-	m.detail.SetContent(strings.Join(lines, "\n"))
+	m.detailBody = strings.Join(lines, "\n")
+	m.detail.SetContent(m.detailBody)
 }
 
-func (m *dashboardModel) pushHistory(contextName string, cpu, memory float64) {
-	m.historyCPU[contextName] = appendLimited(m.historyCPU[contextName], cpu, 24)
-	m.historyMemory[contextName] = appendLimited(m.historyMemory[contextName], memory, 24)
+func (m *dashboardModel) pushHistory(contextName string, summary docker.ProjectSummary) {
+	m.historyCPU[contextName] = appendLimited(m.historyCPU[contextName], summary.CPUPercent, 24)
+	m.historyMemory[contextName] = appendLimited(m.historyMemory[contextName], memoryPercent(summary), 24)
+	rate := 0.0
+	if !summary.CollectedAt.IsZero() {
+		currentTotal := summary.NetworkRXBytes + summary.NetworkTXBytes
+		if previous, ok := m.lastNetSample[contextName]; ok && !previous.at.IsZero() && currentTotal >= previous.totalBytes {
+			seconds := summary.CollectedAt.Sub(previous.at).Seconds()
+			if seconds > 0 {
+				rate = float64(currentTotal-previous.totalBytes) / seconds
+			}
+		}
+		m.lastNetSample[contextName] = networkSample{totalBytes: currentTotal, at: summary.CollectedAt}
+	}
+	m.historyNet[contextName] = appendLimited(m.historyNet[contextName], rate, 24)
 }
 
 func (m *dashboardModel) selectedSiteContexts() []config.Context {
@@ -1173,6 +1257,13 @@ func loadSummaryCmd(ctx config.Context) tea.Cmd {
 	return func() tea.Msg {
 		summary, err := docker.SummarizeProject(&ctx)
 		return summaryLoadedMsg{ContextName: ctx.Name, Summary: summary, Err: err}
+	}
+}
+
+func loadContainerLogsCmd(ctx config.Context, containerName string) tea.Cmd {
+	return func() tea.Msg {
+		logs, err := fetchContainerLogs(ctx, containerName)
+		return logsLoadedMsg{ContextName: ctx.Name, Logs: logs, Err: err}
 	}
 }
 
@@ -1542,7 +1633,8 @@ func (m *dashboardModel) runCommand(interactive bool) (tea.Model, tea.Cmd) {
 
 	m.commandRunning = true
 	m.logsTitle = "Command Output"
-	m.logs.SetContent("Running " + display + "...")
+	m.logsBody = "Running " + display + "..."
+	m.logs.SetContent(m.logsBody)
 	m.screen = screenLogs
 	m.commandInput.SetValue("")
 	return m, runSitectlCaptureCmd(display, args)
@@ -1622,50 +1714,73 @@ func (m *dashboardModel) currentTourTitle() string {
 
 func (m *dashboardModel) syncTourContent() {
 	if len(m.tourPanes) == 0 {
-		m.detail.SetContent("No embedded tour content found.")
+		m.detailBody = "No embedded tour content found."
+		m.detail.SetContent(m.detailBody)
 		return
 	}
 	rendered, err := glamour.Render(m.tourPanes[m.currentTourIndex()].Markdown, "dark")
 	if err != nil {
-		m.detail.SetContent(err.Error())
+		m.detailBody = err.Error()
+		m.detail.SetContent(m.detailBody)
 		return
 	}
-	m.detail.SetContent(rendered)
+	m.detailBody = rendered
+	m.detail.SetContent(m.detailBody)
 	m.detail.GotoTop()
 }
 
-func renderViewportWithScrollbar(v viewport.Model) string {
-	body := v.View()
+// renderViewportWithScrollbar renders the viewport content with a scrollbar on
+// the right side. availWidth is the available panel content width (panel outer
+// width minus its horizontal border and padding frame size); the scrollbar
+// occupies the last 2 columns (space + character) so content uses availWidth-2.
+func renderViewportWithScrollbar(v viewport.Model, raw string, availWidth int) string {
 	total := v.TotalLineCount()
 	height := v.Height()
 	if total <= height || height <= 0 {
-		return body
+		return raw
 	}
 
-	lines := strings.Split(body, "\n")
-	if len(lines) < height {
-		lines = append(lines, make([]string, height-len(lines))...)
-	} else if len(lines) > height {
-		lines = lines[:height]
+	allLines := strings.Split(raw, "\n")
+	offset := min(max(v.YOffset(), 0), max(len(allLines)-height, 0))
+	lines := make([]string, 0, height)
+	for i := 0; i < height; i++ {
+		idx := offset + i
+		if idx >= 0 && idx < len(allLines) {
+			lines = append(lines, allLines[idx])
+		} else {
+			lines = append(lines, "")
+		}
 	}
 
 	thumbHeight := max(1, (height*height)/max(total, 1))
 	maxOffset := max(total-height, 1)
-	offset := min(max(v.YOffset(), 0), maxOffset)
 	thumbTop := 0
 	if height > thumbHeight {
 		thumbTop = (offset * (height - thumbHeight)) / maxOffset
 	}
 
 	rows := make([]string, height)
+	contentWidth := max(1, availWidth-2)
 	for i := 0; i < height; i++ {
 		bar := subtleStyle.Render("│")
 		if i >= thumbTop && i < thumbTop+thumbHeight {
 			bar = accentStyle.Render("█")
 		}
-		rows[i] = lipgloss.JoinHorizontal(lipgloss.Top, lines[i], " ", bar)
+		padded := lipgloss.NewStyle().Width(contentWidth).Render(clipLine(lines[i], contentWidth))
+		rows[i] = padded + " " + bar
 	}
 	return strings.Join(rows, "\n")
+}
+
+func clipLine(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	return string(runes[:width])
 }
 
 func reloadStateCmd() tea.Cmd {
@@ -1810,10 +1925,183 @@ func renderChartBox(title string, values []float64, detail, border string, width
 	chart := sparkline.New(innerWidth, 4)
 	chart.PushAll(values)
 	chart.DrawBraille()
-	content := sectionTitleStyle.MarginBottom(0).Render(title) + "\n" + chart.View() + "\n" + detail
-	style := panelStyle.Width(width)
+	content := sectionTitleStyle.MarginBottom(0).Render(truncateMetricText(title, innerWidth)) + "\n" + chart.View() + "\n" + truncateMetricText(detail, innerWidth)
+	style := panelStyle.Width(width).Height(10).MaxHeight(10)
 	if strings.TrimSpace(border) != "" {
 		style = style.BorderForeground(lipgloss.Color(border))
 	}
 	return style.Render(content)
+}
+
+func renderStatusBox(title, value, detail, border string, width int) string {
+	innerWidth := max(8, width-6)
+	content := sectionTitleStyle.MarginBottom(0).Render(truncateMetricText(title, innerWidth)) + "\n" +
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(border)).Render(truncateMetricText(value, innerWidth)) + "\n" +
+		"\n" + "\n" + "\n" + "\n" +
+		truncateMetricText(detail, innerWidth)
+	style := panelStyle.Width(width).Height(10).MaxHeight(10)
+	if strings.TrimSpace(border) != "" {
+		style = style.BorderForeground(lipgloss.Color(border))
+	}
+	return style.Render(content)
+}
+
+func renderGaugeBox(title, value, detail string, percent float64, border string, width int) string {
+	innerWidth := max(8, width-6)
+	barWidth := max(8, innerWidth-2)
+	filled := int((clamp(percent, 0, 100) / 100) * float64(barWidth))
+	bar := lipgloss.NewStyle().Foreground(lipgloss.Color(border)).Render(strings.Repeat("█", filled)) +
+		subtleStyle.Render(strings.Repeat("░", max(0, barWidth-filled)))
+	content := sectionTitleStyle.MarginBottom(0).Render(truncateMetricText(title, innerWidth)) + "\n" +
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(border)).Render(truncateMetricText(value, innerWidth)) + "\n" +
+		"\n" + "\n" +
+		bar + "\n" + truncateMetricText(detail, innerWidth)
+	style := panelStyle.Width(width).Height(10).MaxHeight(10)
+	if strings.TrimSpace(border) != "" {
+		style = style.BorderForeground(lipgloss.Color(border))
+	}
+	return style.Render(content)
+}
+
+func networkDetail(values []float64) string {
+	if len(values) == 0 {
+		return "Sampling host bandwidth..."
+	}
+	latest := values[len(values)-1]
+	if latest <= 0 {
+		return "Sampling host bandwidth..."
+	}
+	return fmt.Sprintf("%s/s total host traffic", humanRate(latest))
+}
+
+func loadDisplay(summary docker.ProjectSummary) (string, string, string) {
+	if summary.HostLoad1 <= 0 {
+		return "n/a", "Host load unavailable", "#7F8C8D"
+	}
+	cpuCount := max(summary.HostCPUCount, 1)
+	ratio := summary.HostLoad1 / float64(cpuCount)
+	return fmt.Sprintf("%.2f", summary.HostLoad1), fmt.Sprintf("1m avg across %d cores", cpuCount), severityColor(ratio, 0.7, 1.0)
+}
+
+func diskDisplay(summary docker.ProjectSummary) (string, string, float64, string) {
+	if summary.DiskTotal == 0 {
+		return "n/a", "Filesystem availability unavailable", 0, "#7F8C8D"
+	}
+	percent := (float64(summary.DiskAvailable) / float64(summary.DiskTotal)) * 100
+	return humanBytes(summary.DiskAvailable), fmt.Sprintf("%s free of %s", humanBytes(summary.DiskAvailable), humanBytes(summary.DiskTotal)), percent, reverseSeverityColor(percent, 25, 10)
+}
+
+func humanRate(value float64) string {
+	if value <= 0 {
+		return "0B"
+	}
+	return humanBytes(uint64(value))
+}
+
+func severityColor(value, yellow, red float64) string {
+	switch {
+	case value >= red:
+		return "#E76F51"
+	case value >= yellow:
+		return "#E9C46A"
+	default:
+		return "#2A9D8F"
+	}
+}
+
+func reverseSeverityColor(value, green, yellow float64) string {
+	switch {
+	case value <= yellow:
+		return "#E76F51"
+	case value <= green:
+		return "#E9C46A"
+	default:
+		return "#2A9D8F"
+	}
+}
+
+func clamp(value, low, high float64) float64 {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
+}
+
+func truncateMetricText(value string, width int) string {
+	value = strings.TrimSpace(value)
+	if width <= 0 || lipgloss.Width(value) <= width {
+		return value
+	}
+	if width <= 1 {
+		return "…"
+	}
+	runes := []rune(value)
+	if len(runes) > width-1 {
+		runes = runes[:width-1]
+	}
+	return string(runes) + "…"
+}
+
+func containerZoneID(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "container:-"
+	}
+	return "container:" + name
+}
+
+func containerMemorySummary(service docker.ServiceSummary) string {
+	if service.MemoryLimitBytes == 0 {
+		return humanBytes(service.MemoryBytes)
+	}
+	return fmt.Sprintf("%s/%s", humanBytes(service.MemoryBytes), humanBytes(service.MemoryLimitBytes))
+}
+
+func renderContainerHeader(summary docker.ProjectSummary, containerName string) string {
+	for _, service := range summary.Services {
+		if service.Name != containerName {
+			continue
+		}
+		return fmt.Sprintf(
+			"Container: %s | CPU %.1f%% | Mem %s | %s",
+			firstNonEmpty(service.Name, service.Service),
+			service.CPUPercent,
+			containerMemorySummary(service),
+			firstNonEmpty(service.Status, service.State),
+		)
+	}
+	return "Container: " + containerName
+}
+
+func fetchContainerLogs(ctx config.Context, containerName string) (string, error) {
+	args := []string{"logs", "--tail", "20", containerName}
+	if ctx.DockerHostType == config.ContextLocal {
+		cmd := exec.Command("docker", args...)
+		cmd.Dir = ctx.ProjectDir
+		output, err := cmd.CombinedOutput()
+		return string(output), err
+	}
+
+	remoteCmd := fmt.Sprintf("cd %s && ", shellquote.Join(ctx.ProjectDir))
+	if ctx.RunSudo {
+		remoteCmd += "sudo "
+	}
+	remoteCmd += shellquote.Join(append([]string{"docker"}, args...)...)
+
+	client, err := ctx.DialSSH()
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+
+	output, err := session.CombinedOutput(remoteCmd)
+	return string(output), err
 }
