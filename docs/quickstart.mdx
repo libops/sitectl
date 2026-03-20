@@ -3,6 +3,7 @@ title: Quickstart
 description: Learn the sitectl command shape and the core areas to explore after installation.
 ---
 
+import { Compose } from "/docs/snippets/compose-tooltip.mdx";
 import { TUI } from "/docs/snippets/tui-tooltip.mdx";
 
 ## Setup
@@ -17,7 +18,7 @@ Running `sitectl` with no arguments opens the <TUI />, where you can:
 
 <Columns cols={2}>
   <Card title="Set up an existing site" icon="server">
-    Connect sitectl to a Compose project you already run locally or remotely.
+    Connect sitectl to a <Compose /> project you already run locally or remotely.
   </Card>
   <Card title="Create a new site" icon="square-plus">
     Use the guided flow to start a new site with the available stack-specific tooling.
@@ -43,7 +44,7 @@ The main areas to learn from there are:
     Describe a site and its environments so sitectl knows how to connect and operate.
   </Card>
   <Card title="Compose commands" icon="docker">
-    Run Docker Compose commands through sitectl against local and remote contexts.
+    Run <Compose /> commands through sitectl against local and remote contexts.
   </Card>
   <Card title="Plugins" icon="plug">
     Add stack-specific behavior for the technologies your sites use.
@@ -61,8 +62,17 @@ sitectl <command> [subcommand] [flags]
 
 Common top-level commands:
 
-- `compose`
-- `config`
-- `make`
-- `port-forward`
-- `sequelace`
+<Columns cols={2}>
+  <Card title="sitectl config" icon="file">
+    Manage your sitectl contexts.
+  </Card>
+  <Card title="sitectl compose" icon="docker">
+    Run  `docker compose` commands on any `sitectl` context
+  </Card>
+  <Card title="sitectl port-forward" icon="usb">
+    Use SSH port forwarding for one of your remote services to your local machine.
+  </Card>
+  <Card title="sitectl sequelace" icon="database">
+    For macOS open a connection to a mariadb/mysql database using SequelAce
+  </Card>
+</Columns>
