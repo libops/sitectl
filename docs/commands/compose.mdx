@@ -1,0 +1,18 @@
+---
+title: Compose command
+description: Run Docker Compose commands through the active sitectl context.
+---
+
+# Compose command
+
+The `compose` command runs Docker Compose commands against the active `sitectl` context.
+
+Use it when you want the same Compose operation to respect the site and environment wiring already stored in the context.
+
+Examples:
+
+```bash
+sitectl compose ps
+sitectl compose logs
+sitectl compose exec app bash
+```

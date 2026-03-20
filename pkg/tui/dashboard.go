@@ -21,7 +21,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/NimbleMarkets/ntcharts/v2/sparkline"
 	"github.com/kballard/go-shellquote"
-	"github.com/libops/sitectl/docs"
+	"github.com/libops/sitectl/internal/tuitour"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -145,7 +145,7 @@ type dashboardModel struct {
 	cfg            *config.Config
 	sites          []siteGroup
 	plugins        []plugin.InstalledPlugin
-	tourPanes      []docs.TourPane
+	tourPanes      []tuitour.Pane
 	currentContext string
 
 	siteIndex int
@@ -1161,8 +1161,8 @@ func pluginMenuItems(plugins []plugin.InstalledPlugin) []menuItem {
 	return items
 }
 
-func loadTourPanes() []docs.TourPane {
-	panes, err := docs.LoadTour()
+func loadTourPanes() []tuitour.Pane {
+	panes, err := tuitour.Load()
 	if err != nil {
 		return nil
 	}
