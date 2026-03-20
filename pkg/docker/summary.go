@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -17,11 +18,14 @@ import (
 )
 
 type ServiceSummary struct {
-	Service string
-	Name    string
-	State   string
-	Status  string
-	Healthy bool
+	Service          string
+	Name             string
+	State            string
+	Status           string
+	Healthy          bool
+	CPUPercent       float64
+	MemoryBytes      uint64
+	MemoryLimitBytes uint64
 }
 
 type ProjectSummary struct {
@@ -32,6 +36,13 @@ type ProjectSummary struct {
 	CPUPercent       float64
 	MemoryBytes      uint64
 	MemoryLimitBytes uint64
+	HostLoad1        float64
+	HostCPUCount     int
+	DiskAvailable    uint64
+	DiskTotal        uint64
+	NetworkRXBytes   uint64
+	NetworkTXBytes   uint64
+	CollectedAt      time.Time
 	Services         []ServiceSummary
 	Status           string
 }
@@ -50,6 +61,9 @@ func SummarizeProject(ctxCfg *config.Context) (ProjectSummary, error) {
 		if statsOutput, statsErr := runDockerStats(ctxCfg); statsErr == nil {
 			applyDockerStats(&summary, statsOutput)
 		}
+		if hostOutput, hostErr := runHostMetrics(ctxCfg); hostErr == nil {
+			applyHostMetrics(&summary, hostOutput)
+		}
 		return summary, nil
 	}
 
@@ -62,6 +76,9 @@ func SummarizeProject(ctxCfg *config.Context) (ProjectSummary, error) {
 	summary, fallbackErr := SummarizeProjectWithClient(context.Background(), cli.CLI, ctxCfg)
 	if fallbackErr != nil {
 		return ProjectSummary{}, err
+	}
+	if hostOutput, hostErr := runHostMetrics(ctxCfg); hostErr == nil {
+		applyHostMetrics(&summary, hostOutput)
 	}
 	return summary, nil
 }
@@ -185,6 +202,92 @@ func runDockerStats(ctxCfg *config.Context) (string, error) {
 	return string(output), nil
 }
 
+func runHostMetrics(ctxCfg *config.Context) (string, error) {
+	script := `
+load1=""
+if [ -r /proc/loadavg ]; then
+  load1=$(awk '{print $1}' /proc/loadavg 2>/dev/null)
+fi
+if [ -z "$load1" ] && command -v uptime >/dev/null 2>&1; then
+  load1=$(uptime 2>/dev/null | sed -E 's/.*load averages?: ([0-9.]+).*/\1/' | awk '{print $1}')
+  load1=${load1%%,*}
+fi
+
+cpu_count=""
+if command -v getconf >/dev/null 2>&1; then
+  cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+fi
+if [ -z "$cpu_count" ] && command -v nproc >/dev/null 2>&1; then
+  cpu_count=$(nproc 2>/dev/null || true)
+fi
+
+disk_total_kb=""
+disk_avail_kb=""
+if command -v df >/dev/null 2>&1; then
+  set -- $(df -kP . 2>/dev/null | awk 'NR==2 {print $2, $4}')
+  disk_total_kb=$1
+  disk_avail_kb=$2
+fi
+
+net_rx_bytes=0
+net_tx_bytes=0
+if [ -r /proc/net/dev ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      *:*)
+        iface=$(printf '%s\n' "$line" | cut -d: -f1 | tr -d ' ')
+        case "$iface" in
+          lo|docker*|veth*|br-*|virbr*|tailscale*|tun*|tap*)
+            continue
+            ;;
+        esac
+        data=$(printf '%s\n' "$line" | cut -d: -f2)
+        set -- $data
+        net_rx_bytes=$((net_rx_bytes + $1))
+        net_tx_bytes=$((net_tx_bytes + $9))
+        ;;
+    esac
+  done < /proc/net/dev
+fi
+
+printf '{"load1":"%s","cpu_count":"%s","disk_total_kb":"%s","disk_avail_kb":"%s","net_rx_bytes":"%s","net_tx_bytes":"%s"}\n' \
+  "$load1" "$cpu_count" "$disk_total_kb" "$disk_avail_kb" "$net_rx_bytes" "$net_tx_bytes"
+`
+	if ctxCfg.DockerHostType == config.ContextLocal {
+		cmd := exec.Command("sh", "-lc", script)
+		cmd.Dir = ctxCfg.ProjectDir
+		output, err := cmd.CombinedOutput()
+		return string(output), err
+	}
+
+	client, err := ctxCfg.DialSSH()
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+
+	remoteCmd := fmt.Sprintf("cd %s && ", shellquote.Join(ctxCfg.ProjectDir))
+	if ctxCfg.RunSudo {
+		remoteCmd += "sudo "
+	}
+	remoteCmd += shellquote.Join("sh", "-lc", script)
+
+	output, err := session.CombinedOutput(remoteCmd)
+	if err != nil {
+		if _, ok := err.(*ssh.ExitError); ok && len(output) > 0 {
+			return string(output), nil
+		}
+		return string(output), err
+	}
+	return string(output), nil
+}
+
 func composePSArgs(ctxCfg config.Context) []string {
 	args := []string{"compose"}
 	for _, file := range ctxCfg.ComposeFile {
@@ -269,14 +372,18 @@ func applyDockerStats(summary *ProjectSummary, output string) {
 	if summary == nil {
 		return
 	}
+	serviceIndex := map[string]int{}
+	containerIndex := map[string]int{}
 	serviceNames := map[string]struct{}{}
 	containerNames := map[string]struct{}{}
-	for _, service := range summary.Services {
+	for i, service := range summary.Services {
 		if strings.TrimSpace(service.Service) != "" {
 			serviceNames[service.Service] = struct{}{}
+			serviceIndex[service.Service] = i
 		}
 		if strings.TrimSpace(service.Name) != "" {
 			containerNames[service.Name] = struct{}{}
+			containerIndex[service.Name] = i
 		}
 	}
 
@@ -301,8 +408,65 @@ func applyDockerStats(summary *ProjectSummary, output string) {
 		if limit > maxLimit {
 			maxLimit = limit
 		}
+		if idx, ok := containerIndex[row.Name]; ok {
+			summary.Services[idx].CPUPercent = parsePercent(row.CPUPerc)
+			summary.Services[idx].MemoryBytes = used
+			summary.Services[idx].MemoryLimitBytes = limit
+		} else if idx, ok := serviceIndex[row.Name]; ok {
+			summary.Services[idx].CPUPercent = parsePercent(row.CPUPerc)
+			summary.Services[idx].MemoryBytes = used
+			summary.Services[idx].MemoryLimitBytes = limit
+		}
 	}
 	summary.MemoryLimitBytes = maxLimit
+}
+
+type hostMetricsPayload struct {
+	Load1       string `json:"load1"`
+	CPUCount    string `json:"cpu_count"`
+	DiskTotalKB string `json:"disk_total_kb"`
+	DiskAvailKB string `json:"disk_avail_kb"`
+	NetRXBytes  string `json:"net_rx_bytes"`
+	NetTXBytes  string `json:"net_tx_bytes"`
+}
+
+func applyHostMetrics(summary *ProjectSummary, output string) {
+	if summary == nil {
+		return
+	}
+	load1, cpuCount, diskAvailable, diskTotal, netRX, netTX := parseHostMetricsOutput(output)
+	summary.HostLoad1 = load1
+	summary.HostCPUCount = cpuCount
+	summary.DiskAvailable = diskAvailable
+	summary.DiskTotal = diskTotal
+	summary.NetworkRXBytes = netRX
+	summary.NetworkTXBytes = netTX
+	summary.CollectedAt = time.Now()
+}
+
+func parseHostMetricsOutput(output string) (float64, int, uint64, uint64, uint64, uint64) {
+	var payload hostMetricsPayload
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &payload); err != nil {
+		return 0, 0, 0, 0, 0, 0
+	}
+	load1, _ := strconv.ParseFloat(strings.TrimSpace(payload.Load1), 64)
+	cpuCount, _ := strconv.Atoi(strings.TrimSpace(payload.CPUCount))
+	diskTotal := parseUint(strings.TrimSpace(payload.DiskTotalKB)) * 1000
+	diskAvailable := parseUint(strings.TrimSpace(payload.DiskAvailKB)) * 1000
+	netRX := parseUint(strings.TrimSpace(payload.NetRXBytes))
+	netTX := parseUint(strings.TrimSpace(payload.NetTXBytes))
+	return load1, cpuCount, diskAvailable, diskTotal, netRX, netTX
+}
+
+func parseUint(value string) uint64 {
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func parsePercent(value string) float64 {

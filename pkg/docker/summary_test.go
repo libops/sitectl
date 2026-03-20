@@ -108,3 +108,28 @@ func TestApplyDockerStatsUsesSingleEffectiveMemoryLimit(t *testing.T) {
 		t.Fatalf("expected effective memory limit near host total, got %d", summary.MemoryLimitBytes)
 	}
 }
+
+func TestParseHostMetricsOutput(t *testing.T) {
+	output := `{"load1":"1.25","cpu_count":"8","disk_total_kb":"1000000","disk_avail_kb":"250000","net_rx_bytes":"123456","net_tx_bytes":"654321"}`
+
+	load1, cpuCount, diskAvailable, diskTotal, netRX, netTX := parseHostMetricsOutput(output)
+
+	if load1 != 1.25 {
+		t.Fatalf("expected load1 1.25, got %v", load1)
+	}
+	if cpuCount != 8 {
+		t.Fatalf("expected cpu count 8, got %d", cpuCount)
+	}
+	if diskAvailable != 250000000 {
+		t.Fatalf("expected disk available 250000000, got %d", diskAvailable)
+	}
+	if diskTotal != 1000000000 {
+		t.Fatalf("expected disk total 1000000000, got %d", diskTotal)
+	}
+	if netRX != 123456 {
+		t.Fatalf("expected network rx 123456, got %d", netRX)
+	}
+	if netTX != 654321 {
+		t.Fatalf("expected network tx 654321, got %d", netTX)
+	}
+}
