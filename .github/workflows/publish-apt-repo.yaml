@@ -1,0 +1,37 @@
+name: publish-apt-repo
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-apt-repo:
+    if: ${{ vars.LIBOPS_PACKAGES_GCLOUD_PROJECT != '' && vars.LIBOPS_PACKAGES_GCLOUD_OIDC_POOL != '' && vars.LIBOPS_PACKAGES_GSA != '' && vars.LIBOPS_PACKAGES_GCS_BUCKET != '' && vars.LIBOPS_PACKAGES_APTLY_GPG_KEY_ID != '' }}
+    uses: libops/terraform-linux-packages/.github/workflows/reusable-publish-apt-repo.yaml@main
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit
+    with:
+      go-version: ">=1.25.8"
+      gcp-project: ${{ vars.LIBOPS_PACKAGES_GCLOUD_PROJECT }}
+      workload-identity-provider: ${{ vars.LIBOPS_PACKAGES_GCLOUD_OIDC_POOL }}
+      service-account: ${{ vars.LIBOPS_PACKAGES_GSA }}
+      gcs-bucket: ${{ vars.LIBOPS_PACKAGES_GCS_BUCKET }}
+      gcs-bucket-prefix: ${{ vars.GCS_BUCKET_PREFIX }}
+      aptly-gpg-key-id: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_KEY_ID }}
+      aptly-gpg-private-key-secret: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PRIVATE_KEY_SECRET || 'aptly-gpg-private-key' }}
+      aptly-gpg-passphrase-secret: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PASSPHRASE_SECRET || 'aptly-gpg-passphrase' }}
+      aptly-distributions: ${{ vars.APTLY_DISTRIBUTIONS || 'bookworm' }}
+      aptly-component: ${{ vars.APTLY_COMPONENT || 'main' }}
+      aptly-architectures: ${{ vars.APTLY_ARCHITECTURES || 'amd64,arm64' }}
+      aptly-publish-prefix: ${{ vars.APTLY_PUBLISH_PREFIX || '.' }}
+      aptly-origin: ${{ vars.APTLY_ORIGIN || 'libops' }}
+      aptly-label: ${{ vars.APTLY_LABEL || 'sitectl' }}
+      aptly-public-key-name: ${{ vars.APTLY_PUBLIC_KEY_NAME || 'sitectl-archive-keyring' }}

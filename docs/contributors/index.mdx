@@ -1,0 +1,119 @@
+---
+title: Contributing
+description: Contributor guidance for sitectl, including UI architecture rules and release publishing expectations.
+---
+
+import { TUI } from "/docs/snippets/tui-tooltip.mdx";
+
+# Contributing
+
+## UI Architecture
+
+`sitectl` supports two interaction modes:
+
+- one-off command execution such as `sitectl compose ps`
+- an embedded <TUI /> dashboard launched by running `sitectl` with no additional arguments
+
+Because both modes need to share behavior, interactive command UIs must be designed as composable Bubble Tea models instead of bespoke terminal flows.
+
+## Rule
+
+When a command needs interactive UI:
+
+- keep business logic separate from UI state and rendering
+- make the UI self-contained inside the command or shared UI package
+- ensure the same UI can run standalone or be embedded inside the dashboard
+
+In practice, command implementations should follow this split:
+
+- service layer: pure command logic and side effects
+- UI layer: Bubble Tea model and Bubbles-based components
+- Cobra layer: chooses between non-interactive execution and launching the UI
+
+## Required Libraries
+
+Interactive `sitectl` UIs should build on the shared <TUI /> stack already in use:
+
+- `bubbletea` for state, events, and screen management
+- `bubbles` for list, help, input, viewport, progress, and similar primitives
+- `lipgloss` for styling and layout
+- `bubblezone` for click targets and mouse hit detection where needed
+- `harmonica` for motion and transitions where appropriate
+- `ntcharts` for terminal charts where appropriate
+
+## What Not To Do
+
+Do not implement custom terminal widgets when the library stack already provides them.
+
+Examples:
+
+- do not hand-roll a select menu when `bubbles/list` fits
+- do not hand-roll a text input when `bubbles/textinput` or `textarea` fits
+- do not hand-roll help footers when `bubbles/help` fits
+- do not hand-roll scroll containers when `bubbles/viewport` fits
+
+`lipgloss` should be used for presentation and composition, not as a replacement for Bubble Tea or Bubbles interaction primitives.
+
+## Shared Components
+
+Reusable interaction primitives should live in shared UI packages so commands and the dashboard can both consume them.
+
+Current direction:
+
+- shared prompt, select, and input components belong in `pkg/ui`
+- command-specific interactive screens can live near the command, but should still be Bubble Tea models
+- older bespoke prompt implementations should be migrated to shared Bubble Tea and Bubbles components over time
+
+## Design Goal
+
+A command that has an interactive flow should be embeddable in the dashboard without rewriting its UI logic.
+
+That means a command UI should be structured so it can be:
+
+- launched directly from Cobra
+- pushed or mounted inside the dashboard <TUI />
+
+If a proposed command UI cannot be reused that way, it should be redesigned before being added.
+
+## Release Publishing
+
+GoReleaser builds the release artifacts, including Linux packages via `nfpms`.
+
+- GitHub release publishing runs from [goreleaser.yaml](https://github.com/libops/sitectl/blob/main/.github/workflows/goreleaser.yaml)
+
+### Linux package publishing
+
+This repo also publishes Debian and RPM repositories through the shared libops packaging infrastructure.
+
+GitHub Actions workflow:
+
+- [publish-apt-repo.yaml](https://github.com/libops/sitectl/blob/main/.github/workflows/publish-apt-repo.yaml)
+- shared publishing script: [publish-package-repo.sh](https://github.com/libops/terraform-linux-packages/blob/main/scripts/publish-package-repo.sh)
+
+Required GitHub secrets:
+
+- `HOMEBREW_REPO`: token used by GoReleaser for release publishing
+
+Required GitHub variables:
+
+- `LIBOPS_PACKAGES_GCLOUD_OIDC_POOL`: Workload Identity provider resource name
+- `LIBOPS_PACKAGES_GCLOUD_PROJECT`: Google Cloud project ID that holds the package infrastructure
+- `LIBOPS_PACKAGES_GSA`: Google service account email used by GitHub Actions
+- `LIBOPS_PACKAGES_GCS_BUCKET`: bucket name that hosts the published package repository
+- `LIBOPS_PACKAGES_APTLY_GPG_KEY_ID`: GPG key ID or fingerprint to use for signing
+- `LIBOPS_PACKAGES_APTLY_GPG_PRIVATE_KEY_SECRET`: Secret Manager secret ID that stores the armored private key
+- `LIBOPS_PACKAGES_APTLY_GPG_PASSPHRASE_SECRET`: Secret Manager secret ID that stores the signing key passphrase
+
+Optional GitHub variables:
+
+- `GCS_BUCKET_PREFIX` default: empty
+- `APTLY_DISTRIBUTIONS` default: `bookworm`
+- `APTLY_COMPONENT` default: `main`
+- `APTLY_ARCHITECTURES` default: `amd64,arm64`
+- `APTLY_PUBLISH_PREFIX` default: `.`
+- `APTLY_ORIGIN` default: `libops`
+- `APTLY_LABEL` default: `sitectl`
+- `APTLY_PUBLIC_KEY_NAME` default: `sitectl-archive-keyring`
+- `RPM_REPOSITORY_PATH` default: `rpm`
+
+The workflow rebuilds Debian and RPM repository metadata from the current release artifacts only. That is enough for fresh installs and upgrades, but it does not preserve older package versions for pinning or rollback.
