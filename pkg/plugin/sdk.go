@@ -18,6 +18,7 @@ import (
 	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/libops/sitectl/pkg/validate"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
@@ -49,6 +50,10 @@ type SDK struct {
 	Config            Config
 	RootCmd           *cobra.Command
 	contextValidators []validate.Validator
+	contextCache      *config.Context
+	sshClient         *ssh.Client
+	dockerClient      *docker.DockerClient
+	fileAccessor      *FileAccessor
 }
 
 // NewSDK creates a new plugin SDK instance
@@ -171,18 +176,39 @@ func (s *SDK) GetMetadataCommand() *cobra.Command {
 // This is a helper for plugins that need to interact with Docker
 // Returns the existing DockerClient which handles both local and remote contexts
 func (s *SDK) GetDockerClient() (*docker.DockerClient, error) {
+	if s.dockerClient != nil {
+		return s.dockerClient, nil
+	}
 	ctx, err := s.GetContext()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get context: %w", err)
 	}
+	if ctx.DockerHostType == config.ContextLocal {
+		s.dockerClient, err = docker.GetDockerCli(ctx)
+		return s.dockerClient, err
+	}
+	sshClient, err := s.getSSHClient()
+	if err != nil {
+		return nil, err
+	}
+	s.dockerClient, err = docker.GetDockerCliWithSSH(ctx, sshClient, false)
+	if err != nil {
+		return nil, err
+	}
+	return s.dockerClient, nil
+}
 
-	return docker.GetDockerCli(ctx)
+func (s *SDK) GetSSHClient() (*ssh.Client, error) {
+	return s.getSSHClient()
 }
 
 // GetContext loads the sitectl context configuration
 // This is useful for plugins that need to access context-specific settings
 // If no context is specified, returns the current context from config
 func (s *SDK) GetContext() (*config.Context, error) {
+	if s.contextCache != nil {
+		return s.contextCache, nil
+	}
 	// Load the config
 	cfg, err := config.Load()
 	if err != nil {
@@ -208,11 +234,30 @@ func (s *SDK) GetContext() (*config.Context, error) {
 			if err := validateContextPlugin(ctx.Plugin, s.Metadata.Name); err != nil {
 				return nil, fmt.Errorf("context %q is not supported by plugin %q: %w", ctx.Name, s.Metadata.Name, err)
 			}
-			return &ctx, nil
+			s.contextCache = &ctx
+			return s.contextCache, nil
 		}
 	}
 
 	return nil, fmt.Errorf("context %q not found", contextName)
+}
+
+func (s *SDK) getSSHClient() (*ssh.Client, error) {
+	if s.sshClient != nil {
+		return s.sshClient, nil
+	}
+	ctx, err := s.GetContext()
+	if err != nil {
+		return nil, err
+	}
+	if ctx == nil || ctx.DockerHostType == config.ContextLocal {
+		return nil, nil
+	}
+	s.sshClient, err = ctx.DialSSH()
+	if err != nil {
+		return nil, err
+	}
+	return s.sshClient, nil
 }
 
 func validateContextPlugin(contextPlugin, requestedPlugin string) error {
@@ -333,10 +378,11 @@ func (s *SDK) ExecInContainerInteractive(ctx context.Context, containerID string
 }
 
 type CommandExecOptions struct {
-	Stdin   io.Reader
-	Stdout  io.Writer
-	Stderr  io.Writer
-	Capture bool
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+	Capture    bool
+	LiveStderr bool
 }
 
 func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts CommandExecOptions) (string, error) {
@@ -367,11 +413,13 @@ func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts Command
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
 		cmd.Stdout = &stdout
-		stderrSink := io.Writer(&stderr)
-		if opts.Stderr != nil {
+		var stderrSink io.Writer
+		if opts.Stderr != nil && opts.LiveStderr {
 			stderrSink = io.MultiWriter(opts.Stderr, &stderr)
-		} else {
+		} else if opts.LiveStderr {
 			stderrSink = io.MultiWriter(os.Stderr, &stderr)
+		} else {
+			stderrSink = &stderr
 		}
 		cmd.Stderr = stderrSink
 		if err := cmd.Run(); err != nil {

@@ -32,13 +32,16 @@ type DockerClient struct {
 	CLI        DockerAPI
 	SshCli     *ssh.Client
 	httpClient *http.Client
+	ownsSSH    bool
 }
 
 func (d *DockerClient) Close() error {
 	var firstErr error
 	if d.SshCli != nil {
-		if err := d.SshCli.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if d.ownsSSH {
+			if err := d.SshCli.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	if d.httpClient != nil {
@@ -62,6 +65,23 @@ func GetDockerCli(activeCtx *config.Context) (*DockerClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error establishing SSH connection: %v", err)
 	}
+	return GetDockerCliWithSSH(activeCtx, sshConn, true)
+}
+
+func GetDockerCliWithSSH(activeCtx *config.Context, sshConn *ssh.Client, ownsSSH bool) (*DockerClient, error) {
+	if activeCtx.DockerHostType == config.ContextLocal {
+		cli, err := client.NewClientWithOpts(
+			client.WithHost("unix://"+activeCtx.DockerSocket),
+			client.WithAPIVersionNegotiation(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("error creating local Docker client: %v", err)
+		}
+		return &DockerClient{CLI: cli}, nil
+	}
+	if sshConn == nil {
+		return nil, fmt.Errorf("ssh client is required for remote docker context")
+	}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return sshConn.Dial("unix", activeCtx.DockerSocket)
@@ -76,13 +96,16 @@ func GetDockerCli(activeCtx *config.Context) (*DockerClient, error) {
 		client.WithAPIVersionNegotiation(),
 	)
 	if err != nil {
-		sshConn.Close()
+		if ownsSSH {
+			sshConn.Close()
+		}
 		return nil, fmt.Errorf("error creating Docker client over SSH: %v", err)
 	}
 	return &DockerClient{
 		CLI:        cli,
 		SshCli:     sshConn,
 		httpClient: httpClient,
+		ownsSSH:    ownsSSH,
 	}, nil
 }
 

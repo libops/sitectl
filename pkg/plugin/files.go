@@ -1,13 +1,16 @@
 package plugin
 
 import (
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
+	"github.com/kballard/go-shellquote"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -17,6 +20,7 @@ type FileAccessor struct {
 	ctx            *config.Context
 	ssh            *ssh.Client
 	sftp           *sftp.Client
+	ownsSSH        bool
 	mu             sync.Mutex
 	readFileCache  map[string][]byte
 	readDirCache   map[string][]os.FileInfo
@@ -24,16 +28,33 @@ type FileAccessor struct {
 }
 
 func (s *SDK) GetFileAccessor() (*FileAccessor, error) {
+	if s.fileAccessor != nil {
+		return s.fileAccessor, nil
+	}
 	ctx, err := s.GetContext()
 	if err != nil {
 		return nil, err
 	}
-	return NewFileAccessor(ctx)
+	if ctx == nil || ctx.DockerHostType == config.ContextLocal {
+		s.fileAccessor, err = NewFileAccessor(ctx)
+		return s.fileAccessor, err
+	}
+	sshClient, err := s.getSSHClient()
+	if err != nil {
+		return nil, err
+	}
+	s.fileAccessor, err = NewFileAccessorWithSSH(ctx, sshClient, false)
+	return s.fileAccessor, err
 }
 
 func NewFileAccessor(ctx *config.Context) (*FileAccessor, error) {
+	return NewFileAccessorWithSSH(ctx, nil, true)
+}
+
+func NewFileAccessorWithSSH(ctx *config.Context, client *ssh.Client, ownsSSH bool) (*FileAccessor, error) {
 	accessor := &FileAccessor{
 		ctx:            ctx,
+		ownsSSH:        ownsSSH,
 		readFileCache:  map[string][]byte{},
 		readDirCache:   map[string][]os.FileInfo{},
 		listFilesCache: map[string][]string{},
@@ -41,13 +62,18 @@ func NewFileAccessor(ctx *config.Context) (*FileAccessor, error) {
 	if ctx == nil || ctx.DockerHostType == config.ContextLocal {
 		return accessor, nil
 	}
-	client, err := ctx.DialSSH()
-	if err != nil {
-		return nil, err
+	if client == nil {
+		var err error
+		client, err = ctx.DialSSH()
+		if err != nil {
+			return nil, err
+		}
 	}
 	sftpClient, err := sftp.NewClient(client)
 	if err != nil {
-		client.Close()
+		if ownsSSH {
+			client.Close()
+		}
 		return nil, err
 	}
 	accessor.ssh = client
@@ -62,7 +88,7 @@ func (a *FileAccessor) Close() error {
 	if a.sftp != nil {
 		_ = a.sftp.Close()
 	}
-	if a.ssh != nil {
+	if a.ssh != nil && a.ownsSSH {
 		return a.ssh.Close()
 	}
 	return nil
@@ -90,6 +116,78 @@ func (a *FileAccessor) ReadFile(path string) ([]byte, error) {
 	}
 	a.storeFile(path, data)
 	return append([]byte(nil), data...), nil
+}
+
+func (a *FileAccessor) ReadFiles(paths []string) (map[string][]byte, error) {
+	results := make(map[string][]byte, len(paths))
+	missing := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		if data, ok := a.cachedFile(path); ok {
+			results[path] = data
+			continue
+		}
+		missing = append(missing, path)
+	}
+
+	if len(missing) == 0 {
+		return results, nil
+	}
+
+	if a == nil || a.ctx == nil || a.ctx.DockerHostType == config.ContextLocal {
+		for _, path := range missing {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			a.storeFile(path, data)
+			results[path] = append([]byte(nil), data...)
+		}
+		return results, nil
+	}
+
+	session, err := a.ssh.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+
+	var builder strings.Builder
+	for _, path := range missing {
+		quoted := shellquote.Join(path)
+		builder.WriteString("printf '__SITECTL_START__%s\\n' ")
+		builder.WriteString(quoted)
+		builder.WriteString("; cat ")
+		builder.WriteString(quoted)
+		builder.WriteString("; printf '\\n__SITECTL_END__%s\\n' ")
+		builder.WriteString(quoted)
+		builder.WriteString("; ")
+	}
+
+	output, err := session.CombinedOutput(builder.String())
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := parseBatchedFileOutput(string(output))
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range missing {
+		data, ok := parsed[path]
+		if !ok {
+			return nil, fmt.Errorf("missing batched file content for %s", path)
+		}
+		a.storeFile(path, data)
+		results[path] = append([]byte(nil), data...)
+	}
+	return results, nil
 }
 
 func (a *FileAccessor) ListFiles(root string) ([]string, error) {
@@ -180,6 +278,9 @@ func (a *FileAccessor) MatchFilesInDir(root, pattern string) ([]string, error) {
 }
 
 func (a *FileAccessor) readDir(root string) ([]os.FileInfo, error) {
+	if a == nil {
+		return nil, os.ErrInvalid
+	}
 	a.mu.Lock()
 	if entries, ok := a.readDirCache[root]; ok {
 		a.mu.Unlock()
@@ -188,7 +289,7 @@ func (a *FileAccessor) readDir(root string) ([]os.FileInfo, error) {
 	a.mu.Unlock()
 
 	var entries []os.FileInfo
-	if a == nil || a.ctx == nil || a.ctx.DockerHostType == config.ContextLocal {
+	if a.ctx == nil || a.ctx.DockerHostType == config.ContextLocal {
 		dirEntries, err := os.ReadDir(root)
 		if err != nil {
 			return nil, err
@@ -262,4 +363,39 @@ func (a *FileAccessor) storeList(root string, files []string) {
 	a.mu.Lock()
 	a.listFilesCache[root] = out
 	a.mu.Unlock()
+}
+
+func parseBatchedFileOutput(output string) (map[string][]byte, error) {
+	const startPrefix = "__SITECTL_START__"
+	const endPrefix = "__SITECTL_END__"
+
+	results := map[string][]byte{}
+	var currentPath string
+	var current strings.Builder
+
+	for _, line := range strings.Split(output, "\n") {
+		switch {
+		case strings.HasPrefix(line, startPrefix):
+			currentPath = strings.TrimPrefix(line, startPrefix)
+			current.Reset()
+		case strings.HasPrefix(line, endPrefix):
+			endPath := strings.TrimPrefix(line, endPrefix)
+			if currentPath == "" || endPath != currentPath {
+				return nil, fmt.Errorf("batched file output markers out of sync")
+			}
+			results[currentPath] = []byte(strings.TrimSuffix(current.String(), "\n"))
+			currentPath = ""
+		default:
+			if currentPath == "" {
+				continue
+			}
+			current.WriteString(line)
+			current.WriteString("\n")
+		}
+	}
+
+	if currentPath != "" {
+		return nil, fmt.Errorf("unterminated batched file output for %s", currentPath)
+	}
+	return results, nil
 }
