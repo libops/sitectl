@@ -1,4 +1,4 @@
-.PHONY: build deps lint test docker integration-test docs docs-host plugins install-plugins publish-aptly-repo
+.PHONY: build deps lint test docker integration-test plugins install-plugins publish-aptly-repo
 
 BINARY_NAME=sitectl
 DOCS_PORT ?= 3000
@@ -9,17 +9,6 @@ deps:
 
 build: deps
 	go build -o $(BINARY_NAME) .
-
-docs:
-	docker run --rm -it \
-		-p $(DOCS_PORT):$(DOCS_PORT) \
-		-v "$(CURDIR):/work" \
-		-w /work \
-		node:22-bookworm \
-		sh -lc "npx mint dev --port $(DOCS_PORT) --host 0.0.0.0"
-
-docs-host:
-	npx mint dev
 
 lint:
 	go fmt ./...

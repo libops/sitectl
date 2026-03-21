@@ -85,12 +85,14 @@ func renderCoreDebug(ctx config.Context) string {
 	if strings.TrimSpace(ctx.DockerSocket) != "" {
 		lines = append(lines, fmt.Sprintf("Docker socket: %s", ctx.DockerSocket))
 	}
+
+	body := []string{strings.Join(lines, "\n")}
 	if diagnostics, err := collectLogDiagnostics(&ctx); err == nil {
-		lines = append(lines, renderLogDiagnostics(diagnostics)...)
+		body = append(body, renderLogDiagnostics(diagnostics)...)
 	} else {
-		lines = append(lines, fmt.Sprintf("Log diagnostics: unavailable (%v)", err))
+		body = append(body, corecomponent.RenderChecklistItem("Log diagnostics", "warning", err.Error()))
 	}
-	return corecomponent.RenderSection("sitectl", strings.Join(lines, "\n"))
+	return corecomponent.RenderSection("sitectl", strings.Join(body, "\n\n"))
 }
 
 type logDiagnostics struct {
@@ -262,17 +264,30 @@ func renderLogDiagnostics(diagnostics logDiagnostics) []string {
 	if diagnostics.KnownSize {
 		totalLine = fmt.Sprintf("Total logs: %s", humanBytes(diagnostics.TotalBytes))
 	}
-	lines = append(lines, totalLine)
+	totalState := "ok"
+	totalDetail := totalLine
+	if !diagnostics.KnownSize {
+		totalState = "warning"
+		totalDetail = totalLine + "; unable to determine one or more container log file sizes"
+	} else if diagnostics.TotalBytes >= 1<<30 {
+		totalState = "warning"
+		totalDetail = totalLine + "; aggregate container logs exceed 1 GiB"
+	}
+	lines = append(lines, corecomponent.RenderChecklistItem("Total logs", totalState, totalDetail))
 
 	if diagnostics.UnboundedCount == 0 {
 		if diagnostics.ExternalDriverCount > 0 {
-			lines = append(lines, "Log handling: logs are capped or shipped to an external driver")
+			lines = append(lines, corecomponent.RenderChecklistItem("Log handling", "ok", "logs are capped or shipped to an external driver"))
 		} else {
-			lines = append(lines, "Log handling: file-backed container logs appear capped")
+			lines = append(lines, corecomponent.RenderChecklistItem("Log handling", "ok", "file-backed container logs appear capped"))
 		}
 	} else {
-		lines = append(lines, fmt.Sprintf("Log handling: %d container(s) are using unbounded file-backed logs", diagnostics.UnboundedCount))
-		lines = append(lines, "Best practice: set Docker log rotation with max-size and max-file, or ship logs to syslog, journald, or another central driver.")
+		state := "failed"
+		if diagnostics.UnboundedCount <= 2 {
+			state = "warning"
+		}
+		lines = append(lines, corecomponent.RenderChecklistItem("Log handling", state, fmt.Sprintf("%d container(s) are using unbounded file-backed logs", diagnostics.UnboundedCount)))
+		lines = append(lines, corecomponent.RenderChecklistItem("Best practice", "info", "set Docker log rotation with max-size and max-file, or ship logs to syslog, journald, or another central driver"))
 	}
 
 	if debugVerbose {
