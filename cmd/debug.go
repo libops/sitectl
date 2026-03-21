@@ -2,11 +2,9 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -378,30 +376,9 @@ func logFileSizeLocal(path string) (int64, bool, error) {
 		if os.IsNotExist(err) {
 			return 0, false, nil
 		}
-		if errors.Is(err, os.ErrPermission) {
-			size, sudoErr := logFileSizeLocalSudo(path)
-			if sudoErr == nil {
-				return size, true, nil
-			}
-			return 0, false, fmt.Errorf("%w; sudo stat failed: %v", err, sudoErr)
-		}
 		return 0, false, err
 	}
 	return info.Size(), true, nil
-}
-
-func logFileSizeLocalSudo(path string) (int64, error) {
-	cmd := exec.Command("sudo", "-n", "sh", "-lc", fmt.Sprintf("test -f %s && wc -c < %s || true", shellquote.Join(path), shellquote.Join(path)))
-	slog.Debug(cmd.String())
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return 0, err
-	}
-	text := strings.TrimSpace(string(output))
-	if text == "" {
-		return 0, nil
-	}
-	return strconv.ParseInt(text, 10, 64)
 }
 
 func logFileSizesRemote(ctxCfg *config.Context, paths []string) (map[string]int64, error) {
@@ -437,9 +414,6 @@ func logFileSizesRemote(ctxCfg *config.Context, paths []string) (map[string]int6
 		parts = append(parts, fmt.Sprintf("if test -f %s; then printf '%%s\\t' %s; stat -c %%s %s; fi", quoted, quoted, quoted))
 	}
 	cmd := strings.Join(parts, "; ")
-	if ctxCfg.RunSudo {
-		cmd = "sudo -n sh -lc " + shellquote.Join(cmd)
-	}
 	output, err := session.CombinedOutput(cmd)
 	if err != nil {
 		return nil, err
