@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"charm.land/fang/v2"
@@ -17,6 +18,7 @@ import (
 	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/libops/sitectl/pkg/validate"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // Metadata contains information about a plugin
@@ -357,13 +359,26 @@ func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts Command
 	invocation = append(invocation, args...)
 
 	cmd := exec.Command(installed.Path, invocation...)
+	cmd.Env = os.Environ()
+	if width, ok := terminalColumns(); ok {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("COLUMNS=%d", width))
+	}
 	cmd.Stdin = opts.Stdin
 	cmd.Stderr = opts.Stderr
 
 	if opts.Capture {
 		var stdout bytes.Buffer
+		var stderr bytes.Buffer
 		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
+			detail := strings.TrimSpace(stderr.String())
+			if detail == "" {
+				detail = strings.TrimSpace(stdout.String())
+			}
+			if detail != "" {
+				return "", fmt.Errorf("run plugin %q: %w: %s", pluginName, err, detail)
+			}
 			return "", fmt.Errorf("run plugin %q: %w", pluginName, err)
 		}
 		return stdout.String(), nil
@@ -411,4 +426,14 @@ func (s *SDK) InvokeIncludedPlugins(args []string) ([]string, error) {
 		}
 	}
 	return outputs, nil
+}
+
+func terminalColumns() (int, bool) {
+	if columns, err := strconv.Atoi(strings.TrimSpace(os.Getenv("COLUMNS"))); err == nil && columns > 0 {
+		return columns, true
+	}
+	if width, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && width > 0 {
+		return width, true
+	}
+	return 0, false
 }

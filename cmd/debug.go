@@ -2,25 +2,63 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	dockerimage "github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/client"
 	"github.com/kballard/go-shellquote"
-	corecomponent "github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
 	"github.com/libops/sitectl/pkg/plugin"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var debugOutputPath string
 var debugVerbose bool
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+const (
+	imageSizeWarningThreshold = int64(20 * 1024 * 1024 * 1024)
+	dockerPruneDocsURL        = "https://docs.docker.com/engine/manage-resources/pruning/"
+)
+
+var (
+	debugPanelStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("#112235")).
+			Padding(1, 2)
+	debugTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#98C1D9"))
+	debugMutedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#9FB3C8"))
+	debugSectionDividerStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("#29425E"))
+	debugStatusOKStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#7BD389"))
+	debugStatusWarningStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#F4C95D"))
+	debugStatusFailedStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#F28482"))
+	debugRowStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("#112235"))
+)
 
 var debugCmd = &cobra.Command{
 	Use:   "debug",
@@ -38,8 +76,12 @@ var debugCmd = &cobra.Command{
 		var body strings.Builder
 		body.WriteString(renderCoreDebug(ctx))
 
-		if strings.TrimSpace(ctx.Plugin) != "" {
-			output, err := pluginSDK.InvokePluginCommand(ctx.Plugin, []string{"__debug"}, plugin.CommandExecOptions{Capture: true})
+		if pluginName := strings.TrimSpace(ctx.Plugin); pluginName != "" && pluginName != "core" {
+			pluginArgs := []string{"__debug"}
+			if debugVerbose {
+				pluginArgs = append(pluginArgs, "--verbose")
+			}
+			output, err := pluginSDK.InvokePluginCommand(pluginName, pluginArgs, plugin.CommandExecOptions{Capture: true})
 			if err != nil {
 				return err
 			}
@@ -50,7 +92,8 @@ var debugCmd = &cobra.Command{
 		}
 
 		if strings.TrimSpace(debugOutputPath) != "" {
-			if err := os.WriteFile(debugOutputPath, []byte(body.String()+"\n"), 0o644); err != nil {
+			report := renderPlainDebugReport(body.String())
+			if err := os.WriteFile(debugOutputPath, []byte(report+"\n"), 0o644); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "wrote debug bundle to %s\n", debugOutputPath)
@@ -69,30 +112,52 @@ func init() {
 }
 
 func renderCoreDebug(ctx config.Context) string {
-	lines := []string{
-		fmt.Sprintf("Generated: %s", time.Now().UTC().Format(time.RFC3339)),
-		fmt.Sprintf("Context: %s", ctx.Name),
-		fmt.Sprintf("Plugin owner: %s", firstNonEmpty(ctx.Plugin, "core")),
-		fmt.Sprintf("Docker host type: %s", ctx.DockerHostType),
-		fmt.Sprintf("Project dir: %s", ctx.ProjectDir),
+	meta := []debugRow{
+		{Label: "Generated", Value: time.Now().UTC().Format(time.RFC3339)},
+		{Label: "Context", Value: ctx.Name},
+		{Label: "Plugin owner", Value: firstNonEmpty(ctx.Plugin, "core")},
+		{Label: "Docker host type", Value: string(ctx.DockerHostType)},
+		{Label: "Project dir", Value: ctx.ProjectDir},
 	}
 	if strings.TrimSpace(ctx.ProjectName) != "" {
-		lines = append(lines, fmt.Sprintf("Project name: %s", ctx.ProjectName))
+		meta = append(meta, debugRow{Label: "Project name", Value: ctx.ProjectName})
 	}
 	if strings.TrimSpace(ctx.ComposeProjectName) != "" {
-		lines = append(lines, fmt.Sprintf("Compose project: %s", ctx.ComposeProjectName))
+		meta = append(meta, debugRow{Label: "Compose project", Value: ctx.ComposeProjectName})
 	}
 	if strings.TrimSpace(ctx.DockerSocket) != "" {
-		lines = append(lines, fmt.Sprintf("Docker socket: %s", ctx.DockerSocket))
+		meta = append(meta, debugRow{Label: "Docker socket", Value: ctx.DockerSocket})
 	}
 
-	body := []string{strings.Join(lines, "\n")}
-	if diagnostics, err := collectLogDiagnostics(&ctx); err == nil {
-		body = append(body, renderLogDiagnostics(diagnostics)...)
-	} else {
-		body = append(body, corecomponent.RenderChecklistItem("Log diagnostics", "warning", err.Error()))
+	coreBody := []string{
+		debugMutedStyle.Render("General Docker configuration and host-level diagnostics for this context."),
+		"",
+		debugDivider(),
+		"",
+		debugTitleStyle.Render("General"),
+		"",
+		formatDebugRows(meta),
 	}
-	return corecomponent.RenderSection("sitectl", strings.Join(body, "\n\n"))
+	if diagnostics, err := collectLogDiagnostics(&ctx); err == nil {
+		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows(logSummaryRows(diagnostics)))
+		if debugVerbose {
+			coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Details"), "", renderLogDetailsBody(diagnostics))
+		}
+	} else {
+		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows([]debugRow{
+			{Label: "Log status", Value: renderStatus("warning")},
+			{Label: "Log diagnostics", Value: err.Error()},
+		}))
+	}
+	if diagnostics, err := collectImageDiagnostics(&ctx); err == nil {
+		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Image Summary"), "", formatDebugRows(imageSummaryRows(diagnostics)))
+	} else {
+		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Image Summary"), "", formatDebugRows([]debugRow{
+			{Label: "Image status", Value: renderStatus("warning")},
+			{Label: "Image diagnostics", Value: err.Error()},
+		}))
+	}
+	return renderDebugPanel("sitectl", strings.Join(coreBody, "\n"))
 }
 
 type logDiagnostics struct {
@@ -113,6 +178,11 @@ type containerLogDiagnostics struct {
 	Rotated      bool
 	External     bool
 	RotationHint string
+}
+
+type imageDiagnostics struct {
+	TotalBytes int64
+	ImageCount int
 }
 
 func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
@@ -136,6 +206,7 @@ func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
 		KnownSize:  true,
 		Containers: make([]containerLogDiagnostics, 0, len(containers)),
 	}
+	remotePaths := make([]string, 0, len(containers))
 
 	for _, summary := range containers {
 		name := trimContainerName(summary.Names)
@@ -152,22 +223,58 @@ func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
 		if !item.Rotated && !item.External {
 			diagnostics.UnboundedCount++
 		}
-		if item.LogPath != "" {
-			size, hasSize, err := logFileSize(ctxCfg, item.LogPath)
+		if item.LogPath != "" && ctxCfg.DockerHostType != config.ContextLocal {
+			remotePaths = append(remotePaths, item.LogPath)
+		}
+		diagnostics.Containers = append(diagnostics.Containers, item)
+	}
+
+	if ctxCfg.DockerHostType == config.ContextLocal {
+		for i := range diagnostics.Containers {
+			item := &diagnostics.Containers[i]
+			if item.LogPath == "" {
+				diagnostics.KnownSize = false
+				continue
+			}
+			size, hasSize, err := logFileSizeLocal(item.LogPath)
 			if err != nil {
 				item.RotationHint = appendHint(item.RotationHint, fmt.Sprintf("unable to stat log file: %v", err))
 				diagnostics.KnownSize = false
+				continue
+			}
+			item.SizeBytes = size
+			item.HasSize = hasSize
+			if hasSize {
+				diagnostics.TotalBytes += size
 			} else {
-				item.SizeBytes = size
-				item.HasSize = hasSize
-				if hasSize {
-					diagnostics.TotalBytes += size
-				} else {
-					diagnostics.KnownSize = false
-				}
+				diagnostics.KnownSize = false
 			}
 		}
-		diagnostics.Containers = append(diagnostics.Containers, item)
+	} else if len(remotePaths) > 0 {
+		sizes, err := logFileSizesRemote(ctxCfg, remotePaths)
+		if err != nil {
+			diagnostics.KnownSize = false
+			for i := range diagnostics.Containers {
+				if diagnostics.Containers[i].LogPath == "" {
+					continue
+				}
+				diagnostics.Containers[i].RotationHint = appendHint(diagnostics.Containers[i].RotationHint, fmt.Sprintf("unable to stat log file: %v", err))
+			}
+		} else {
+			for i := range diagnostics.Containers {
+				item := &diagnostics.Containers[i]
+				if item.LogPath != "" {
+					size, ok := sizes[item.LogPath]
+					if ok {
+						item.SizeBytes = size
+						item.HasSize = true
+						diagnostics.TotalBytes += size
+						continue
+					}
+				}
+				diagnostics.KnownSize = false
+			}
+		}
 	}
 
 	sort.Slice(diagnostics.Containers, func(i, j int) bool {
@@ -175,6 +282,51 @@ func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
 	})
 
 	return diagnostics, nil
+}
+
+func collectImageDiagnostics(ctxCfg *config.Context) (imageDiagnostics, error) {
+	cli, err := docker.GetDockerCli(ctxCfg)
+	if err != nil {
+		return imageDiagnostics{}, err
+	}
+	defer cli.Close()
+
+	apiClient, ok := cli.CLI.(*client.Client)
+	if !ok {
+		return imageDiagnostics{}, fmt.Errorf("docker client does not support image listing")
+	}
+
+	images, err := apiClient.ImageList(context.Background(), dockerimage.ListOptions{All: true})
+	if err != nil {
+		return imageDiagnostics{}, err
+	}
+
+	diagnostics := imageDiagnostics{ImageCount: len(images)}
+	for _, image := range images {
+		if image.Size > 0 {
+			diagnostics.TotalBytes += image.Size
+		}
+	}
+
+	return diagnostics, nil
+}
+
+func imageSummaryRows(diagnostics imageDiagnostics) []debugRow {
+	state := "ok"
+	rows := []debugRow{
+		{Label: "Image status", Value: renderStatus(state)},
+		{Label: "Total images", Value: humanBytes(diagnostics.TotalBytes)},
+		{Label: "Image count", Value: strconv.Itoa(diagnostics.ImageCount)},
+	}
+	if diagnostics.TotalBytes >= imageSizeWarningThreshold {
+		state = "warning"
+		rows[0].Value = renderStatus(state)
+		rows = append(rows,
+			debugRow{Label: "Recommendation", Value: "run docker system prune -af periodically on development hosts"},
+			debugRow{Label: "Docs", Value: dockerPruneDocsURL},
+		)
+	}
+	return rows
 }
 
 func describeContainerLogs(service, containerName string, inspect dockercontainer.InspectResponse) containerLogDiagnostics {
@@ -215,103 +367,248 @@ func evaluateLogConfig(driver string, options map[string]string) (rotated bool, 
 	}
 }
 
-func logFileSize(ctxCfg *config.Context, path string) (int64, bool, error) {
+func logFileSizeLocal(path string) (int64, bool, error) {
 	if strings.TrimSpace(path) == "" {
 		return 0, false, nil
 	}
-	if ctxCfg.DockerHostType == config.ContextLocal {
-		info, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return 0, false, nil
-			}
-			return 0, false, err
+	slog.Debug("logFileSizeLocal", "path", path)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, false, nil
 		}
-		return info.Size(), true, nil
+		if errors.Is(err, os.ErrPermission) {
+			size, sudoErr := logFileSizeLocalSudo(path)
+			if sudoErr == nil {
+				return size, true, nil
+			}
+			return 0, false, fmt.Errorf("%w; sudo stat failed: %v", err, sudoErr)
+		}
+		return 0, false, err
+	}
+	return info.Size(), true, nil
+}
+
+func logFileSizeLocalSudo(path string) (int64, error) {
+	cmd := exec.Command("sudo", "-n", "sh", "-lc", fmt.Sprintf("test -f %s && wc -c < %s || true", shellquote.Join(path), shellquote.Join(path)))
+	slog.Debug(cmd.String())
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, err
+	}
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		return 0, nil
+	}
+	return strconv.ParseInt(text, 10, 64)
+}
+
+func logFileSizesRemote(ctxCfg *config.Context, paths []string) (map[string]int64, error) {
+	uniquePaths := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		uniquePaths = append(uniquePaths, path)
+	}
+	if len(uniquePaths) == 0 {
+		return map[string]int64{}, nil
 	}
 
 	client, err := ctxCfg.DialSSH()
 	if err != nil {
-		return 0, false, err
+		return nil, err
 	}
 	defer client.Close()
 
 	session, err := client.NewSession()
 	if err != nil {
-		return 0, false, err
+		return nil, err
 	}
 	defer session.Close()
 
-	cmd := fmt.Sprintf("test -f %s && wc -c < %s || true", shellquote.Join(path), shellquote.Join(path))
+	parts := make([]string, 0, len(uniquePaths))
+	for _, path := range uniquePaths {
+		quoted := shellquote.Join(path)
+		parts = append(parts, fmt.Sprintf("if test -f %s; then printf '%%s\\t' %s; stat -c %%s %s; fi", quoted, quoted, quoted))
+	}
+	cmd := strings.Join(parts, "; ")
+	if ctxCfg.RunSudo {
+		cmd = "sudo -n sh -lc " + shellquote.Join(cmd)
+	}
 	output, err := session.CombinedOutput(cmd)
 	if err != nil {
-		return 0, false, err
+		return nil, err
 	}
-	text := strings.TrimSpace(string(output))
-	if text == "" {
-		return 0, false, nil
+
+	sizes := map[string]int64{}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		path, rawSize, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		size, err := strconv.ParseInt(strings.TrimSpace(rawSize), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		sizes[strings.TrimSpace(path)] = size
 	}
-	size, err := strconv.ParseInt(text, 10, 64)
-	if err != nil {
-		return 0, false, err
-	}
-	return size, true, nil
+	return sizes, nil
 }
 
-func renderLogDiagnostics(diagnostics logDiagnostics) []string {
-	lines := []string{}
-	totalLine := "Total logs: unknown"
+func logSummaryRows(diagnostics logDiagnostics) []debugRow {
+	totalLine := "unknown"
 	if diagnostics.KnownSize {
-		totalLine = fmt.Sprintf("Total logs: %s", humanBytes(diagnostics.TotalBytes))
+		totalLine = humanBytes(diagnostics.TotalBytes)
 	}
 	totalState := "ok"
-	totalDetail := totalLine
 	if !diagnostics.KnownSize {
 		totalState = "warning"
-		totalDetail = totalLine + "; unable to determine one or more container log file sizes"
 	} else if diagnostics.TotalBytes >= 1<<30 {
 		totalState = "warning"
-		totalDetail = totalLine + "; aggregate container logs exceed 1 GiB"
 	}
-	lines = append(lines, corecomponent.RenderChecklistItem("Total logs", totalState, totalDetail))
 
+	logHandling := "file-backed container logs appear capped"
 	if diagnostics.UnboundedCount == 0 {
 		if diagnostics.ExternalDriverCount > 0 {
-			lines = append(lines, corecomponent.RenderChecklistItem("Log handling", "ok", "logs are capped or shipped to an external driver"))
-		} else {
-			lines = append(lines, corecomponent.RenderChecklistItem("Log handling", "ok", "file-backed container logs appear capped"))
+			logHandling = "logs are capped or shipped to an external driver"
 		}
 	} else {
-		state := "failed"
+		totalState = "failed"
 		if diagnostics.UnboundedCount <= 2 {
-			state = "warning"
+			totalState = "warning"
 		}
-		lines = append(lines, corecomponent.RenderChecklistItem("Log handling", state, fmt.Sprintf("%d container(s) are using unbounded file-backed logs", diagnostics.UnboundedCount)))
-		lines = append(lines, corecomponent.RenderChecklistItem("Best practice", "info", "set Docker log rotation with max-size and max-file, or ship logs to syslog, journald, or another central driver"))
+		logHandling = fmt.Sprintf("%d container(s) are using unbounded file-backed logs", diagnostics.UnboundedCount)
 	}
 
-	if debugVerbose {
-		lines = append(lines, "", "Log details:")
-		for _, item := range diagnostics.Containers {
-			line := fmt.Sprintf("  %s: driver=%s", item.Service, item.Driver)
-			if item.HasSize {
-				line += fmt.Sprintf(", size=%s", humanBytes(item.SizeBytes))
-			}
-			if item.External {
-				line += ", external"
-			} else if item.Rotated {
-				line += ", rotated"
-			} else {
-				line += ", not rotated"
-			}
-			if item.RotationHint != "" {
-				line += fmt.Sprintf(" (%s)", item.RotationHint)
-			}
-			lines = append(lines, line)
+	rows := []debugRow{
+		{Label: "Log status", Value: renderStatus(totalState)},
+		{Label: "Total logs", Value: totalLine},
+		{Label: "Log handling", Value: logHandling},
+	}
+	if !diagnostics.KnownSize {
+		rows = append(rows, debugRow{Label: "Note", Value: "unable to determine one or more container log file sizes"})
+	} else if diagnostics.TotalBytes >= 1<<30 {
+		rows = append(rows, debugRow{Label: "Note", Value: "aggregate container logs exceed 1 GiB"})
+	}
+	if diagnostics.UnboundedCount > 0 {
+		rows = append(rows, debugRow{
+			Label: "Recommendation",
+			Value: `configure Docker log rotation with max-size and max-file, or ship logs to syslog, journald, or another central driver
+
+https://docs.docker.com/engine/logging/configure/`})
+	}
+	return rows
+}
+
+func renderLogDetailsBody(diagnostics logDiagnostics) string {
+	lines := []string{"Log details:"}
+	for _, item := range diagnostics.Containers {
+		line := fmt.Sprintf("  %s: driver=%s", item.Service, item.Driver)
+		if item.HasSize {
+			line += fmt.Sprintf(", size=%s", humanBytes(item.SizeBytes))
+		}
+		if item.External {
+			line += ", external"
+		} else if item.Rotated {
+			line += ", rotated"
+		} else {
+			line += ", not rotated"
+		}
+		if item.RotationHint != "" {
+			line += fmt.Sprintf(" (%s)", item.RotationHint)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+type debugRow struct {
+	Label string
+	Value string
+}
+
+func renderDebugPanel(title, body string) string {
+	header := debugTitleStyle.Render(strings.TrimSpace(title))
+	content := header
+	if strings.TrimSpace(body) != "" {
+		content += "\n\n" + body
+	}
+	return debugPanelStyle.Width(debugPanelWidth()).Render(content)
+}
+
+func formatDebugRows(rows []debugRow) string {
+	labelWidth := 0
+	for _, row := range rows {
+		if len(strings.TrimSpace(row.Label)) > labelWidth {
+			labelWidth = len(strings.TrimSpace(row.Label))
 		}
 	}
 
-	return lines
+	lines := make([]string, 0, len(rows))
+	rowWidth := debugContentWidth()
+	for _, row := range rows {
+		label := strings.TrimSpace(row.Label)
+		value := strings.TrimSpace(row.Value)
+		if label == "" {
+			lines = append(lines, renderDebugRow(rowWidth, "", value))
+			continue
+		}
+		lines = append(lines, renderDebugRow(rowWidth, fmt.Sprintf("%-*s", labelWidth, label), value))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderDebugRow(width int, label, value string) string {
+	valueWidth := max(0, width-lipgloss.Width(label)-2)
+	row := label
+	if strings.TrimSpace(label) != "" {
+		row += "  "
+	}
+	row += lipgloss.NewStyle().
+		Width(valueWidth).
+		Background(lipgloss.Color("#112235")).
+		Render(value)
+	return debugRowStyle.Width(width).Render(row)
+}
+
+func debugPanelWidth() int {
+	if columns, err := strconv.Atoi(strings.TrimSpace(os.Getenv("COLUMNS"))); err == nil && columns > 0 {
+		return max(40, columns)
+	}
+	if width, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && width > 0 {
+		return max(40, width)
+	}
+	return 100
+}
+
+func debugContentWidth() int {
+	return max(20, debugPanelWidth()-4)
+}
+
+func debugDivider() string {
+	return debugSectionDividerStyle.Width(debugContentWidth()).Render(strings.Repeat("─", debugContentWidth()))
+}
+
+func renderStatus(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "ok":
+		return debugStatusOKStyle.Render("OK")
+	case "warning":
+		return debugStatusWarningStyle.Render("WARNING")
+	case "failed":
+		return debugStatusFailedStyle.Render("FAILED")
+	default:
+		return debugMutedStyle.Render(strings.ToUpper(strings.TrimSpace(state)))
+	}
 }
 
 func humanBytes(size int64) string {
@@ -335,6 +632,14 @@ func trimContainerName(names []string) string {
 		}
 	}
 	return ""
+}
+
+func renderPlainDebugReport(value string) string {
+	lines := strings.Split(ansiPattern.ReplaceAllString(value, ""), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \t")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func firstNonEmpty(values ...string) string {

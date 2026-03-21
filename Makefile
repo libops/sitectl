@@ -1,7 +1,8 @@
-.PHONY: build deps lint test docker integration-test plugins install-plugins publish-aptly-repo
+.PHONY: build deps lint test docker integration-test plugins install-plugins publish-aptly-repo install
 
 BINARY_NAME=sitectl
 DOCS_PORT ?= 3000
+INSTALL_DIR ?= /usr/local/bin
 
 deps:
 	go get .
@@ -9,6 +10,11 @@ deps:
 
 build: deps
 	go build -o $(BINARY_NAME) .
+
+install: build
+	sudo cp $(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
+	@if [ -d ../sitectl-isle ]; then $(MAKE) -C ../sitectl-isle install; fi
+	@if [ -d ../sitectl-drupal ]; then $(MAKE) -C ../sitectl-drupal install; fi
 
 lint:
 	go fmt ./...

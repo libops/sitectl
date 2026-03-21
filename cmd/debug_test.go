@@ -18,14 +18,8 @@ func TestEvaluateLogConfigDetectsUnboundedJSONFileLogs(t *testing.T) {
 	}
 }
 
-func TestRenderLogDiagnosticsExpandsWhenLogsNeedAttention(t *testing.T) {
-	oldVerbose := debugVerbose
-	debugVerbose = true
-	t.Cleanup(func() {
-		debugVerbose = oldVerbose
-	})
-
-	lines := renderLogDiagnostics(logDiagnostics{
+func TestLogSummaryRowsIncludeRecommendationWhenLogsNeedAttention(t *testing.T) {
+	rows := logSummaryRows(logDiagnostics{
 		KnownSize:      true,
 		TotalBytes:     25 * 1024 * 1024,
 		UnboundedCount: 1,
@@ -34,26 +28,32 @@ func TestRenderLogDiagnosticsExpandsWhenLogsNeedAttention(t *testing.T) {
 		},
 	})
 
-	rendered := strings.Join(lines, "\n")
-	if !strings.Contains(rendered, "Total logs: 25.0MiB") {
+	rendered := formatDebugRows(rows)
+	if !strings.Contains(rendered, "Total logs") || !strings.Contains(rendered, "25.0MiB") {
 		t.Fatalf("expected total log size, got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "Best practice:") {
-		t.Fatalf("expected best practice guidance, got:\n%s", rendered)
+	if !strings.Contains(rendered, "Recommendation") {
+		t.Fatalf("expected recommendation guidance, got:\n%s", rendered)
 	}
+}
+
+func TestRenderLogDetailsBodyIncludesPerContainerRows(t *testing.T) {
+	rendered := renderLogDetailsBody(logDiagnostics{
+		KnownSize:      true,
+		TotalBytes:     25 * 1024 * 1024,
+		UnboundedCount: 1,
+		Containers: []containerLogDiagnostics{
+			{Service: "drupal", Driver: "json-file", SizeBytes: 25 * 1024 * 1024, HasSize: true, Rotated: false, RotationHint: "file-backed logs are not capped; set max-size and max-file"},
+		},
+	})
+
 	if !strings.Contains(rendered, "drupal: driver=json-file, size=25.0MiB, not rotated") {
 		t.Fatalf("expected per-container detail, got:\n%s", rendered)
 	}
 }
 
-func TestRenderLogDiagnosticsDefaultIsCompact(t *testing.T) {
-	oldVerbose := debugVerbose
-	debugVerbose = false
-	t.Cleanup(func() {
-		debugVerbose = oldVerbose
-	})
-
-	lines := renderLogDiagnostics(logDiagnostics{
+func TestLogSummaryRowsStayCompact(t *testing.T) {
+	rows := logSummaryRows(logDiagnostics{
 		KnownSize:      true,
 		TotalBytes:     25 * 1024 * 1024,
 		UnboundedCount: 1,
@@ -62,11 +62,25 @@ func TestRenderLogDiagnosticsDefaultIsCompact(t *testing.T) {
 		},
 	})
 
-	rendered := strings.Join(lines, "\n")
+	rendered := formatDebugRows(rows)
 	if strings.Contains(rendered, "drupal: driver=") {
 		t.Fatalf("expected compact output without per-container detail, got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "Log handling: 1 container(s) are using unbounded file-backed logs") {
+	if !strings.Contains(rendered, "Log handling") || !strings.Contains(rendered, "1 container(s) are using unbounded file-backed logs") {
 		t.Fatalf("expected compact log handling line, got:\n%s", rendered)
+	}
+}
+
+func TestImageSummaryRowsWarnWhenThresholdExceeded(t *testing.T) {
+	rendered := formatDebugRows(imageSummaryRows(imageDiagnostics{
+		TotalBytes: imageSizeWarningThreshold + 1,
+		ImageCount: 42,
+	}))
+
+	if !strings.Contains(rendered, "docker system prune -af") {
+		t.Fatalf("expected prune recommendation, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, dockerPruneDocsURL) {
+		t.Fatalf("expected prune docs link, got:\n%s", rendered)
 	}
 }

@@ -199,6 +199,9 @@ func resolveComponentOwner(cmd *cobra.Command, raw string) (string, string, erro
 	if strings.TrimSpace(owner) == "" {
 		return "", "", fmt.Errorf("context %q does not define a plugin owner", ctx.Name)
 	}
+	if owner == "core" {
+		return "", "", fmt.Errorf("context %q uses plugin %q; component commands require a stack plugin such as isle", ctx.Name, owner)
+	}
 	return owner, name, nil
 }
 
