@@ -81,7 +81,7 @@ var debugCmd = &cobra.Command{
 			return writeDebugReport(cmd, report)
 		}
 
-		report, err := collectDebugReport(contextName, ctx, reporter)
+		report, err := collectDebugReport(cmd.Context(), contextName, ctx, reporter)
 		if err != nil {
 			return err
 		}
@@ -103,19 +103,25 @@ func writeDebugReport(cmd *cobra.Command, report string) error {
 	return err
 }
 
-func collectDebugReport(contextName string, ctx config.Context, reporter debugProgressReporter) (string, error) {
+func collectDebugReport(runCtx context.Context, contextName string, ctx config.Context, reporter debugProgressReporter) (string, error) {
+	if err := runCtx.Err(); err != nil {
+		return "", err
+	}
 	var body strings.Builder
 	reportProgress(reporter, "Collecting Core Diagnostics", "Inspecting Docker configuration, logs, and images")
-	body.WriteString(renderCoreDebug(ctx))
+	body.WriteString(renderCoreDebug(runCtx, ctx))
 
 	if pluginName := strings.TrimSpace(ctx.Plugin); pluginName != "" && pluginName != "core" {
+		if err := runCtx.Err(); err != nil {
+			return "", err
+		}
 		pluginArgs := []string{"--context", contextName, "__debug"}
 		if debugVerbose {
 			pluginArgs = append(pluginArgs, "--verbose")
 		}
 		reportProgress(reporter, "Collecting Plugin Diagnostics", fmt.Sprintf("Running %s debug collectors", pluginName))
 		slog.Debug("handing off debug to plugin", "context", contextName, "plugin", pluginName, "args", pluginArgs)
-		output, err := pluginSDK.InvokePluginCommand(pluginName, pluginArgs, plugin.CommandExecOptions{Capture: true, LiveStderr: !progressEnabled()})
+		output, err := pluginSDK.InvokePluginCommand(pluginName, pluginArgs, plugin.CommandExecOptions{Context: runCtx, Capture: true, LiveStderr: !progressEnabled()})
 		if err != nil {
 			return "", err
 		}
@@ -140,7 +146,7 @@ func runDebugCollectionWithProgress(cmd *cobra.Command, contextName string, ctx 
 	defer func() { debugProgressUIActive = false }()
 	progress := newDebugProgressLine(cmd.ErrOrStderr())
 	defer progress.Close()
-	return collectDebugReport(contextName, ctx, progress.Report)
+	return collectDebugReport(cmd.Context(), contextName, ctx, progress.Report)
 }
 
 func reportProgress(reporter debugProgressReporter, title, detail string) {
@@ -153,7 +159,7 @@ func progressEnabled() bool {
 	return debugProgressUIActive
 }
 
-func renderCoreDebug(ctx config.Context) string {
+func renderCoreDebug(runCtx context.Context, ctx config.Context) string {
 	slog.Debug("starting core debug", "context", ctx.Name, "docker_host_type", ctx.DockerHostType)
 	meta := []debugRow{
 		{Label: "Generated", Value: time.Now().UTC().Format(time.RFC3339)},
@@ -181,7 +187,7 @@ func renderCoreDebug(ctx config.Context) string {
 		"",
 		formatDebugRows(meta),
 	}
-	logDiagnostics, logErr, imageDiagnostics, imageErr := collectCoreDockerDiagnostics(&ctx)
+	logDiagnostics, logErr, imageDiagnostics, imageErr := collectCoreDockerDiagnostics(runCtx, &ctx)
 	if logErr == nil {
 		slog.Debug("collected log diagnostics", "context", ctx.Name, "containers", len(logDiagnostics.Containers))
 		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows(logSummaryRows(logDiagnostics)))
@@ -238,6 +244,8 @@ type debugProgressLine struct {
 	title  string
 	detail string
 	mu     sync.Mutex
+	done   chan struct{}
+	once   sync.Once
 }
 
 func newDebugProgressLine(w io.Writer) *debugProgressLine {
@@ -245,12 +253,15 @@ func newDebugProgressLine(w io.Writer) *debugProgressLine {
 	if !ok {
 		return &debugProgressLine{frames: []string{".", "o", "O", "o"}}
 	}
-	return &debugProgressLine{
+	progress := &debugProgressLine{
 		out:    file,
 		frames: []string{"-", "\\", "|", "/"},
 		title:  "Preparing Debug Bundle",
 		detail: "Starting diagnostic collection",
+		done:   make(chan struct{}),
 	}
+	go progress.animate(120 * time.Millisecond)
+	return progress
 }
 
 func (p *debugProgressLine) Report(title, detail string) {
@@ -258,9 +269,40 @@ func (p *debugProgressLine) Report(title, detail string) {
 		return
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.title = strings.TrimSpace(title)
 	p.detail = strings.TrimSpace(detail)
+	p.renderLocked()
+	p.mu.Unlock()
+}
+
+func (p *debugProgressLine) Close() {
+	if p == nil || p.out == nil {
+		return
+	}
+	p.once.Do(func() {
+		close(p.done)
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		fmt.Fprint(p.out, "\r\033[2K")
+	})
+}
+
+func (p *debugProgressLine) animate(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.mu.Lock()
+			p.renderLocked()
+			p.mu.Unlock()
+		case <-p.done:
+			return
+		}
+	}
+}
+
+func (p *debugProgressLine) renderLocked() {
 	if p.out == nil {
 		return
 	}
@@ -268,15 +310,6 @@ func (p *debugProgressLine) Report(title, detail string) {
 	p.index++
 	line := fmt.Sprintf("\r%s %s", frame, strings.TrimSpace(strings.Join([]string{p.title, p.detail}, " - ")))
 	fmt.Fprint(p.out, truncateDebugProgress(line))
-}
-
-func (p *debugProgressLine) Close() {
-	if p == nil || p.out == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	fmt.Fprint(p.out, "\r\033[2K")
 }
 
 func truncateDebugProgress(line string) string {
@@ -298,10 +331,10 @@ func truncateDebugProgress(line string) string {
 	return string(runes[:width-1]) + "…"
 }
 
-func collectLogDiagnosticsWithClient(ctxCfg *config.Context, cli *docker.DockerClient) (logDiagnostics, error) {
+func collectLogDiagnosticsWithClient(runCtx context.Context, ctxCfg *config.Context, cli *docker.DockerClient) (logDiagnostics, error) {
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "com.docker.compose.project="+ctxCfg.EffectiveComposeProjectName())
-	containers, err := cli.CLI.ContainerList(context.Background(), dockercontainer.ListOptions{
+	containers, err := cli.CLI.ContainerList(runCtx, dockercontainer.ListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
@@ -315,9 +348,12 @@ func collectLogDiagnosticsWithClient(ctxCfg *config.Context, cli *docker.DockerC
 	}
 
 	for _, summary := range containers {
+		if err := runCtx.Err(); err != nil {
+			return logDiagnostics{}, err
+		}
 		name := trimContainerName(summary.Names)
 		service := firstNonEmpty(summary.Labels["com.docker.compose.service"], name)
-		inspect, err := cli.CLI.ContainerInspect(context.Background(), name)
+		inspect, err := cli.CLI.ContainerInspect(runCtx, name)
 		if err != nil {
 			return logDiagnostics{}, err
 		}
@@ -339,13 +375,13 @@ func collectLogDiagnosticsWithClient(ctxCfg *config.Context, cli *docker.DockerC
 	return diagnostics, nil
 }
 
-func collectImageDiagnosticsWithClient(ctxCfg *config.Context, cli *docker.DockerClient) (imageDiagnostics, error) {
+func collectImageDiagnosticsWithClient(runCtx context.Context, ctxCfg *config.Context, cli *docker.DockerClient) (imageDiagnostics, error) {
 	apiClient, ok := cli.CLI.(*client.Client)
 	if !ok {
 		return imageDiagnostics{}, fmt.Errorf("docker client does not support image listing")
 	}
 
-	images, err := apiClient.ImageList(context.Background(), dockerimage.ListOptions{All: true})
+	images, err := apiClient.ImageList(runCtx, dockerimage.ListOptions{All: true})
 	if err != nil {
 		return imageDiagnostics{}, err
 	}
@@ -361,7 +397,7 @@ func collectImageDiagnosticsWithClient(ctxCfg *config.Context, cli *docker.Docke
 	return diagnostics, nil
 }
 
-func collectCoreDockerDiagnostics(ctxCfg *config.Context) (logDiagnostics, error, imageDiagnostics, error) {
+func collectCoreDockerDiagnostics(runCtx context.Context, ctxCfg *config.Context) (logDiagnostics, error, imageDiagnostics, error) {
 	slog.Debug("opening shared docker client for core diagnostics", "context", ctxCfg.Name)
 	cli, err := docker.GetDockerCli(ctxCfg)
 	if err != nil {
@@ -370,9 +406,9 @@ func collectCoreDockerDiagnostics(ctxCfg *config.Context) (logDiagnostics, error
 	defer cli.Close()
 
 	slog.Debug("collecting log diagnostics", "context", ctxCfg.Name)
-	logs, logErr := collectLogDiagnosticsWithClient(ctxCfg, cli)
+	logs, logErr := collectLogDiagnosticsWithClient(runCtx, ctxCfg, cli)
 	slog.Debug("collecting image diagnostics", "context", ctxCfg.Name)
-	images, imageErr := collectImageDiagnosticsWithClient(ctxCfg, cli)
+	images, imageErr := collectImageDiagnosticsWithClient(runCtx, ctxCfg, cli)
 	return logs, logErr, images, imageErr
 }
 

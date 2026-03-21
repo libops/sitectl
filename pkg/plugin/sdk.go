@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"charm.land/fang/v2"
 	"github.com/libops/sitectl/pkg/component"
@@ -52,8 +54,6 @@ type SDK struct {
 	contextValidators []validate.Validator
 	contextCache      *config.Context
 	sshClient         *ssh.Client
-	dockerClient      *docker.DockerClient
-	fileAccessor      *FileAccessor
 }
 
 // NewSDK creates a new plugin SDK instance
@@ -69,6 +69,9 @@ func NewSDK(metadata Metadata) *SDK {
 		Version: metadata.Version,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			return sdk.setupLogging(cmd)
+		},
+		PersistentPostRun: func(cmd *cobra.Command, args []string) {
+			sdk.Close()
 		},
 		Annotations: map[string]string{
 			cobra.CommandDisplayNameAnnotation: fmt.Sprintf("sitectl %s", metadata.Name),
@@ -133,8 +136,14 @@ func (s *SDK) AddCommand(cmd *cobra.Command) {
 
 // Execute runs the plugin
 func (s *SDK) Execute() {
+	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-runCtx.Done()
+		_ = s.Close()
+	}()
 	if err := fang.Execute(
-		context.Background(),
+		runCtx,
 		s.RootCmd,
 		fang.WithVersion(s.RootCmd.Version),
 	); err != nil {
@@ -176,26 +185,18 @@ func (s *SDK) GetMetadataCommand() *cobra.Command {
 // This is a helper for plugins that need to interact with Docker
 // Returns the existing DockerClient which handles both local and remote contexts
 func (s *SDK) GetDockerClient() (*docker.DockerClient, error) {
-	if s.dockerClient != nil {
-		return s.dockerClient, nil
-	}
 	ctx, err := s.GetContext()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get context: %w", err)
 	}
 	if ctx.DockerHostType == config.ContextLocal {
-		s.dockerClient, err = docker.GetDockerCli(ctx)
-		return s.dockerClient, err
+		return docker.GetDockerCli(ctx)
 	}
 	sshClient, err := s.getSSHClient()
 	if err != nil {
 		return nil, err
 	}
-	s.dockerClient, err = docker.GetDockerCliWithSSH(ctx, sshClient, false)
-	if err != nil {
-		return nil, err
-	}
-	return s.dockerClient, nil
+	return docker.GetDockerCliWithSSH(ctx, sshClient, false)
 }
 
 func (s *SDK) GetSSHClient() (*ssh.Client, error) {
@@ -258,6 +259,18 @@ func (s *SDK) getSSHClient() (*ssh.Client, error) {
 		return nil, err
 	}
 	return s.sshClient, nil
+}
+
+func (s *SDK) Close() error {
+	if s == nil {
+		return nil
+	}
+	if s.sshClient != nil {
+		err := s.sshClient.Close()
+		s.sshClient = nil
+		return err
+	}
+	return nil
 }
 
 func validateContextPlugin(contextPlugin, requestedPlugin string) error {
@@ -353,31 +366,43 @@ func (s *SDK) PromptAndSaveLocalContext(opts config.LocalContextCreateOptions) (
 	return config.PromptAndSaveLocalContext(opts)
 }
 
-// ExecInContainer executes a command in a Docker container
-// This is a convenience wrapper for plugins
-func (s *SDK) ExecInContainer(ctx context.Context, containerID string, cmd []string) (int, error) {
+// ExecContainer executes a command in a Docker container using the shared SDK Docker path.
+func (s *SDK) ExecContainer(ctx context.Context, opts docker.ExecOptions) (int, error) {
 	cli, err := s.GetDockerClient()
 	if err != nil {
 		return -1, fmt.Errorf("failed to create Docker client: %w", err)
 	}
 	defer cli.Close()
 
-	return cli.ExecSimple(ctx, containerID, cmd)
+	return cli.Exec(ctx, opts)
 }
 
-// ExecInContainerInteractive executes an interactive command in a Docker container with TTY
-// This is a convenience wrapper for plugins
-func (s *SDK) ExecInContainerInteractive(ctx context.Context, containerID string, cmd []string) (int, error) {
-	cli, err := s.GetDockerClient()
-	if err != nil {
-		return -1, fmt.Errorf("failed to create Docker client: %w", err)
-	}
-	defer cli.Close()
+// ExecInContainer executes a command in a Docker container.
+// This is a convenience wrapper for plugins.
+func (s *SDK) ExecInContainer(ctx context.Context, containerID string, cmd []string) (int, error) {
+	return s.ExecContainer(ctx, docker.ExecOptions{
+		Container:    containerID,
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+}
 
-	return cli.ExecInteractive(ctx, containerID, cmd)
+// ExecInContainerInteractive executes an interactive command in a Docker container with TTY.
+// This is a convenience wrapper for plugins.
+func (s *SDK) ExecInContainerInteractive(ctx context.Context, containerID string, cmd []string) (int, error) {
+	return s.ExecContainer(ctx, docker.ExecOptions{
+		Container:    containerID,
+		Cmd:          cmd,
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		Tty:          true,
+	})
 }
 
 type CommandExecOptions struct {
+	Context    context.Context
 	Stdin      io.Reader
 	Stdout     io.Writer
 	Stderr     io.Writer
@@ -401,7 +426,11 @@ func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts Command
 	invocation = append(invocation, args...)
 	slog.Debug("invoking plugin command", "plugin", pluginName, "path", installed.Path, "args", invocation, "capture", opts.Capture)
 
-	cmd := exec.Command(installed.Path, invocation...)
+	execCtx := opts.Context
+	if execCtx == nil {
+		execCtx = context.Background()
+	}
+	cmd := exec.CommandContext(execCtx, installed.Path, invocation...)
 	cmd.Env = os.Environ()
 	if width, ok := terminalColumns(); ok {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("COLUMNS=%d", width))

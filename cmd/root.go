@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
 	"syscall"
 
@@ -48,8 +49,10 @@ var RootCmd = &cobra.Command{
 }
 
 func Execute() {
+	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	err := fang.Execute(
-		context.Background(),
+		runCtx,
 		RootCmd,
 		fang.WithVersion(RootCmd.Version),
 	)

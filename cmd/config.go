@@ -774,8 +774,6 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 		localCtx.ComposeNetwork,
 		localCtx.EffectiveComposeNetwork(),
 	)
-	runSudo := remoteContextBool(previousRemote, func(ctx *config.Context) bool { return ctx.RunSudo }, localCtx.RunSudo)
-
 	for {
 		hostname, err = promptRequiredValueWithDefault("Remote hostname/domain (e.g. stage.example.com)", hostname)
 		if err != nil {
@@ -808,7 +806,6 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 			SSHUser:                sshUser,
 			SSHPort:                sshPort,
 			SSHKeyPath:             sshKey,
-			RunSudo:                localCtx.RunSudo,
 			DockerSocket:           dockerSocket,
 			ComposeFile:            append([]string{}, localCtx.ComposeFile...),
 			EnvFile:                append([]string{}, localCtx.EnvFile...),
@@ -820,7 +817,6 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 		remoteCtx.ProjectName = projectName
 		remoteCtx.ComposeProjectName = composeProjectName
 		remoteCtx.ComposeNetwork = composeNetwork
-		remoteCtx.RunSudo = runSudo
 		if detected := config.DetectContextComposeNetwork(remoteCtx); detected != "" {
 			remoteCtx.ComposeNetwork = detected
 		}
@@ -911,37 +907,6 @@ func promptUintWithDefault(label string, defaultValue uint) (uint, error) {
 	return uint(parsed), nil
 }
 
-func promptBooleanChoice(label string, defaultValue bool) (bool, error) {
-	defaultChoice := "no"
-	if defaultValue {
-		defaultChoice = "yes"
-	}
-	value, err := createConfigPromptChoice(
-		strings.ToLower(strings.ReplaceAll(label, " ", "-")),
-		[]corecomponent.Choice{
-			{
-				Value:   "yes",
-				Label:   "yes",
-				Help:    label,
-				Aliases: []string{"y", "1"},
-			},
-			{
-				Value:   "no",
-				Label:   "no",
-				Help:    "Do not use sudo.",
-				Aliases: []string{"n", "2"},
-			},
-		},
-		defaultChoice,
-		createConfigInput,
-		strings.Split(corecomponent.RenderSection(label, label+"?"), "\n")...,
-	)
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(value) == "yes", nil
-}
-
 func validateRemoteDockerAccess(ctx *config.Context) error {
 	if ctx == nil || ctx.DockerHostType != config.ContextRemote {
 		return nil
@@ -988,16 +953,11 @@ func validateRemoteDockerAccess(ctx *config.Context) error {
 			if promptErr != nil {
 				return promptErr
 			}
-			runSudo, promptErr := promptBooleanChoice("Run Docker commands with sudo", ctx.RunSudo)
-			if promptErr != nil {
-				return promptErr
-			}
 			ctx.ProjectDir = projectDir
 			ctx.ProjectName = projectName
 			ctx.ComposeProjectName = firstNonEmptyString(ctx.ComposeProjectName, projectName)
 			ctx.ComposeNetwork = firstNonEmptyString(config.DetectContextComposeNetwork(ctx), ctx.ComposeNetwork, ctx.EffectiveComposeNetwork())
 			ctx.DockerSocket = dockerSocket
-			ctx.RunSudo = runSudo
 			continue
 		}
 		return nil
@@ -1032,13 +992,6 @@ func remoteContextUint(ctx *config.Context, getter func(*config.Context) uint, f
 		return value
 	}
 	return fallback
-}
-
-func remoteContextBool(ctx *config.Context, getter func(*config.Context) bool, fallback bool) bool {
-	if ctx == nil || getter == nil {
-		return fallback
-	}
-	return getter(ctx)
 }
 
 func suggestedEnvironmentContextName(localCtx *config.Context, environment string) string {

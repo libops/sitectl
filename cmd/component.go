@@ -38,9 +38,10 @@ var (
 		}
 		invocation = append(invocation, args...)
 		_, err := pluginSDK.InvokePluginCommand(installed.Name, invocation, plugin.CommandExecOptions{
-			Stdin:  RootCmd.InOrStdin(),
-			Stdout: RootCmd.OutOrStdout(),
-			Stderr: RootCmd.ErrOrStderr(),
+			Context: RootCmd.Context(),
+			Stdin:   RootCmd.InOrStdin(),
+			Stdout:  RootCmd.OutOrStdout(),
+			Stderr:  RootCmd.ErrOrStderr(),
 		})
 		return err
 	}

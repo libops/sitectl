@@ -63,6 +63,7 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 		listeners := make([]net.Listener, 0, len(args))
 		done := make(chan os.Signal, 1)
 		signal.Notify(done, os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
+		defer signal.Stop(done)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -77,9 +78,15 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 			if err != nil {
 				return fmt.Errorf("invalid local port '%s': must be an integer", localPortStr)
 			}
+			if localPort < 1 || localPort > 65535 {
+				return fmt.Errorf("invalid local port '%s': must be between 1 and 65535", localPortStr)
+			}
 			remotePort, err := strconv.Atoi(remotePortStr)
 			if err != nil {
 				return fmt.Errorf("invalid remote port '%s': must be an integer", remotePortStr)
+			}
+			if remotePort < 1 || remotePort > 65535 {
+				return fmt.Errorf("invalid remote port '%s': must be between 1 and 65535", remotePortStr)
 			}
 
 			addr := fmt.Sprintf("localhost:%d", localPort)
@@ -89,7 +96,7 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 			}
 			listeners = append(listeners, listener)
 
-			containerName, err := cli.GetContainerName(c, service)
+			containerName, err := cli.GetContainerNameContext(ctx, c, service)
 			if err != nil {
 				return err
 			}
@@ -100,7 +107,6 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 
 			remoteEndpoint := fmt.Sprintf("%s:%d", serviceIp, remotePort)
 			go func(listener net.Listener, lp, remoteAddr string) {
-				defer listener.Close()
 				fmt.Printf("Forwarding localhost:%s -> %s via SSH\n", lp, remoteAddr)
 				for {
 					localConn, err := listener.Accept()

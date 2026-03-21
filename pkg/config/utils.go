@@ -136,7 +136,6 @@ func contextHasStoredValues(context Context) bool {
 		context.SSHKeyPath != "" ||
 		len(context.EnvFile) > 0 ||
 		len(context.ComposeFile) > 0 ||
-		context.RunSudo ||
 		context.DatabaseService != "" ||
 		context.DatabaseUser != "" ||
 		context.DatabasePasswordSecret != "" ||

@@ -118,7 +118,11 @@ func GetSecret(ctx context.Context, cli DockerAPI, c *config.Context, containerN
 	for _, mount := range containerJSON.Mounts {
 		if mount.Destination == expectedTarget {
 			secretFilePath := filepath.Join(c.ProjectDir, "secrets", secretName)
-			return c.ReadSmallFile(secretFilePath), nil
+			secret, err := c.ReadSmallFile(secretFilePath)
+			if err != nil {
+				return "", fmt.Errorf("read secret %q: %w", secretName, err)
+			}
+			return secret, nil
 		}
 	}
 	return GetConfigEnv(ctx, cli, containerName, secretName)
@@ -161,8 +165,10 @@ func (d *DockerClient) GetServiceIp(ctx context.Context, c *config.Context, cont
 }
 
 func (d *DockerClient) GetContainerName(c *config.Context, service string) (string, error) {
-	ctx := context.Background()
+	return d.GetContainerNameContext(context.Background(), c, service)
+}
 
+func (d *DockerClient) GetContainerNameContext(ctx context.Context, c *config.Context, service string) (string, error) {
 	// Define the filters based on the Docker Compose labels.
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "com.docker.compose.project="+c.EffectiveComposeProjectName())
@@ -338,7 +344,7 @@ func getDatabaseURIsWithClient(ctx context.Context, dockerCli *DockerClient, c *
 	dbHost := "127.0.0.1"
 
 	// Get the database container name
-	containerName, err := dockerCli.GetContainerName(c, c.DatabaseService)
+	containerName, err := dockerCli.GetContainerNameContext(ctx, c, c.DatabaseService)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get %s container: %w", c.DatabaseService, err)
 	}

@@ -1,20 +1,22 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 
-	"github.com/kballard/go-shellquote"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
+
+const maxRemoteReadBytes int64 = 4 << 20
+const remoteReadConcurrency = 8
 
 type FileAccessor struct {
 	ctx            *config.Context
@@ -28,23 +30,18 @@ type FileAccessor struct {
 }
 
 func (s *SDK) GetFileAccessor() (*FileAccessor, error) {
-	if s.fileAccessor != nil {
-		return s.fileAccessor, nil
-	}
 	ctx, err := s.GetContext()
 	if err != nil {
 		return nil, err
 	}
 	if ctx == nil || ctx.DockerHostType == config.ContextLocal {
-		s.fileAccessor, err = NewFileAccessor(ctx)
-		return s.fileAccessor, err
+		return NewFileAccessor(ctx)
 	}
 	sshClient, err := s.getSSHClient()
 	if err != nil {
 		return nil, err
 	}
-	s.fileAccessor, err = NewFileAccessorWithSSH(ctx, sshClient, false)
-	return s.fileAccessor, err
+	return NewFileAccessorWithSSH(ctx, sshClient, false)
 }
 
 func NewFileAccessor(ctx *config.Context) (*FileAccessor, error) {
@@ -95,6 +92,13 @@ func (a *FileAccessor) Close() error {
 }
 
 func (a *FileAccessor) ReadFile(path string) ([]byte, error) {
+	return a.ReadFileContext(context.Background(), path)
+}
+
+func (a *FileAccessor) ReadFileContext(ctx context.Context, path string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if data, ok := a.cachedFile(path); ok {
 		return data, nil
 	}
@@ -109,7 +113,7 @@ func (a *FileAccessor) ReadFile(path string) ([]byte, error) {
 			return nil, openErr
 		}
 		defer file.Close()
-		data, err = io.ReadAll(file)
+		data, err = readAllLimited(file, maxRemoteReadBytes)
 	}
 	if err != nil {
 		return nil, err
@@ -119,16 +123,22 @@ func (a *FileAccessor) ReadFile(path string) ([]byte, error) {
 }
 
 func (a *FileAccessor) ReadFiles(paths []string) (map[string][]byte, error) {
+	return a.ReadFilesContext(context.Background(), paths)
+}
+
+func (a *FileAccessor) ReadFilesContext(ctx context.Context, paths []string) (map[string][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	results := make(map[string][]byte, len(paths))
 	missing := make([]string, 0, len(paths))
-	seen := map[string]bool{}
 
 	for _, path := range paths {
-		path = strings.TrimSpace(path)
-		if path == "" || seen[path] {
+		if path == "" {
 			continue
 		}
-		seen[path] = true
 		if data, ok := a.cachedFile(path); ok {
 			results[path] = data
 			continue
@@ -152,40 +162,91 @@ func (a *FileAccessor) ReadFiles(paths []string) (map[string][]byte, error) {
 		return results, nil
 	}
 
-	session, err := a.ssh.NewSession()
-	if err != nil {
-		return nil, err
+	type readResult struct {
+		path string
+		data []byte
+		err  error
 	}
-	defer session.Close()
 
-	var builder strings.Builder
+	workers := remoteReadConcurrency
+	if len(missing) < workers {
+		workers = len(missing)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	jobs := make(chan string, len(missing))
+	out := make(chan readResult, len(missing))
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case path, ok := <-jobs:
+					if !ok {
+						return
+					}
+					if err := ctx.Err(); err != nil {
+						out <- readResult{path: path, err: err}
+						return
+					}
+					file, err := a.sftp.Open(path)
+					if err != nil {
+						out <- readResult{path: path, err: err}
+						cancel()
+						return
+					}
+					data, err := readAllLimited(file, maxRemoteReadBytes)
+					file.Close()
+					out <- readResult{path: path, data: data, err: err}
+					if err != nil {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
+
+enqueue:
 	for _, path := range missing {
-		quoted := shellquote.Join(path)
-		builder.WriteString("printf '__SITECTL_START__%s\\n' ")
-		builder.WriteString(quoted)
-		builder.WriteString("; cat ")
-		builder.WriteString(quoted)
-		builder.WriteString("; printf '\\n__SITECTL_END__%s\\n' ")
-		builder.WriteString(quoted)
-		builder.WriteString("; ")
-	}
-
-	output, err := session.CombinedOutput(builder.String())
-	if err != nil {
-		return nil, err
-	}
-
-	parsed, err := parseBatchedFileOutput(string(output))
-	if err != nil {
-		return nil, err
-	}
-	for _, path := range missing {
-		data, ok := parsed[path]
-		if !ok {
-			return nil, fmt.Errorf("missing batched file content for %s", path)
+		if err := ctx.Err(); err != nil {
+			break
 		}
-		a.storeFile(path, data)
-		results[path] = append([]byte(nil), data...)
+		select {
+		case <-ctx.Done():
+			break enqueue
+		case jobs <- path:
+		}
+	}
+	close(jobs)
+
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+
+	var firstErr error
+	for result := range out {
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+			cancel()
+			continue
+		}
+		if result.err != nil {
+			continue
+		}
+		a.storeFile(result.path, result.data)
+		results[result.path] = append([]byte(nil), result.data...)
+	}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return results, nil
 }
@@ -365,37 +426,14 @@ func (a *FileAccessor) storeList(root string, files []string) {
 	a.mu.Unlock()
 }
 
-func parseBatchedFileOutput(output string) (map[string][]byte, error) {
-	const startPrefix = "__SITECTL_START__"
-	const endPrefix = "__SITECTL_END__"
-
-	results := map[string][]byte{}
-	var currentPath string
-	var current strings.Builder
-
-	for _, line := range strings.Split(output, "\n") {
-		switch {
-		case strings.HasPrefix(line, startPrefix):
-			currentPath = strings.TrimPrefix(line, startPrefix)
-			current.Reset()
-		case strings.HasPrefix(line, endPrefix):
-			endPath := strings.TrimPrefix(line, endPrefix)
-			if currentPath == "" || endPath != currentPath {
-				return nil, fmt.Errorf("batched file output markers out of sync")
-			}
-			results[currentPath] = []byte(strings.TrimSuffix(current.String(), "\n"))
-			currentPath = ""
-		default:
-			if currentPath == "" {
-				continue
-			}
-			current.WriteString(line)
-			current.WriteString("\n")
-		}
+func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
+	limited := io.LimitReader(r, limit+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
 	}
-
-	if currentPath != "" {
-		return nil, fmt.Errorf("unterminated batched file output for %s", currentPath)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("remote file exceeds %d bytes", limit)
 	}
-	return results, nil
+	return data, nil
 }

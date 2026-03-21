@@ -127,11 +127,11 @@ func TestGetSecret_MountedSecret(t *testing.T) {
 	fakeConfig := &config.Context{
 		ProjectDir:  "/tmp/project",
 		ProjectName: "test",
-		ReadSmallFileFunc: func(path string) string {
+		ReadSmallFileFunc: func(path string) (string, error) {
 			if strings.HasSuffix(path, filepath.Join("secrets", "secretName")) {
-				return "fileSecret"
+				return "fileSecret", nil
 			}
-			return ""
+			return "", nil
 		},
 	}
 	secret, err := GetSecret(context.Background(), fake, fakeConfig, "dummyContainer", "secretName")
