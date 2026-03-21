@@ -18,6 +18,7 @@ type InstalledPlugin struct {
 	Author       string
 	TemplateRepo string
 	CanCreate    bool
+	Includes     []string
 }
 
 var builtinTemplateRepos = map[string]string{
@@ -59,6 +60,15 @@ func DiscoverInstalledFromPath(pathEnv string) []InstalledPlugin {
 	}
 
 	return discovered
+}
+
+func FindInstalled(name string) (InstalledPlugin, bool) {
+	for _, discovered := range DiscoverInstalled() {
+		if discovered.Name == name {
+			return discovered, true
+		}
+	}
+	return InstalledPlugin{}, false
 }
 
 func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) InstalledPlugin {
@@ -139,6 +149,17 @@ func ParsePluginInfoOutput(output string) InstalledPlugin {
 			info.Author = value
 		case "template-repo":
 			info.TemplateRepo = value
+		case "includes":
+			if value == "" {
+				continue
+			}
+			for _, include := range strings.Split(value, ",") {
+				include = strings.TrimSpace(include)
+				if include == "" {
+					continue
+				}
+				info.Includes = append(info.Includes, include)
+			}
 		}
 	}
 
