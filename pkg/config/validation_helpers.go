@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/kballard/go-shellquote"
-	"github.com/pkg/sftp"
 )
 
 func IsDockerSocketAlive(socket string) bool {
@@ -31,19 +30,12 @@ func (c *Context) FileExists(path string) (bool, error) {
 		return err == nil, err
 	}
 
-	client, err := c.DialSSH()
+	accessor, err := c.NewFileAccessor()
 	if err != nil {
 		return false, err
 	}
-	defer client.Close()
-
-	sftpClient, err := sftp.NewClient(client)
-	if err != nil {
-		return false, err
-	}
-	defer sftpClient.Close()
-
-	_, err = sftpClient.Stat(path)
+	defer accessor.Close()
+	_, err = accessor.Stat(path)
 	if err != nil {
 		return false, nil
 	}

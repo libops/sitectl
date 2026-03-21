@@ -12,9 +12,7 @@ import (
 
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/kballard/go-shellquote"
 	"github.com/libops/sitectl/pkg/config"
-	"golang.org/x/crypto/ssh"
 )
 
 type ServiceSummary struct {
@@ -136,33 +134,7 @@ func runComposePS(ctxCfg *config.Context) (string, error) {
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
-
-	remoteCmd := fmt.Sprintf("cd %s && ", shellquote.Join(ctxCfg.ProjectDir))
-	if ctxCfg.RunSudo {
-		remoteCmd += "sudo "
-	}
-	remoteCmd += shellquote.Join(append([]string{"docker"}, args...)...)
-
-	client, err := ctxCfg.DialSSH()
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return "", err
-	}
-	defer session.Close()
-
-	output, err := session.CombinedOutput(remoteCmd)
-	if err != nil {
-		if _, ok := err.(*ssh.ExitError); ok && len(output) > 0 {
-			return string(output), nil
-		}
-		return string(output), err
-	}
-	return string(output), nil
+	return ctxCfg.RunQuietCommand(exec.Command("docker", args...))
 }
 
 func runDockerStats(ctxCfg *config.Context) (string, error) {
@@ -173,33 +145,7 @@ func runDockerStats(ctxCfg *config.Context) (string, error) {
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
-
-	remoteCmd := fmt.Sprintf("cd %s && ", shellquote.Join(ctxCfg.ProjectDir))
-	if ctxCfg.RunSudo {
-		remoteCmd += "sudo "
-	}
-	remoteCmd += shellquote.Join(append([]string{"docker"}, args...)...)
-
-	client, err := ctxCfg.DialSSH()
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return "", err
-	}
-	defer session.Close()
-
-	output, err := session.CombinedOutput(remoteCmd)
-	if err != nil {
-		if _, ok := err.(*ssh.ExitError); ok && len(output) > 0 {
-			return string(output), nil
-		}
-		return string(output), err
-	}
-	return string(output), nil
+	return ctxCfg.RunQuietCommand(exec.Command("docker", args...))
 }
 
 func runHostMetrics(ctxCfg *config.Context) (string, error) {
@@ -259,33 +205,7 @@ printf '{"load1":"%s","cpu_count":"%s","disk_total_kb":"%s","disk_avail_kb":"%s"
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
-
-	client, err := ctxCfg.DialSSH()
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return "", err
-	}
-	defer session.Close()
-
-	remoteCmd := fmt.Sprintf("cd %s && ", shellquote.Join(ctxCfg.ProjectDir))
-	if ctxCfg.RunSudo {
-		remoteCmd += "sudo "
-	}
-	remoteCmd += shellquote.Join("sh", "-lc", script)
-
-	output, err := session.CombinedOutput(remoteCmd)
-	if err != nil {
-		if _, ok := err.(*ssh.ExitError); ok && len(output) > 0 {
-			return string(output), nil
-		}
-		return string(output), err
-	}
-	return string(output), nil
+	return ctxCfg.RunQuietCommand(exec.Command("sh", "-lc", script))
 }
 
 func composePSArgs(ctxCfg config.Context) []string {

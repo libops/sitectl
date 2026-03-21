@@ -3,8 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"log/slog"
 	"net/url"
 	"os"
@@ -14,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/sftp"
 	"github.com/spf13/pflag"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -46,7 +43,6 @@ type Context struct {
 	SSHKeyPath         string      `yaml:"ssh-key,omitempty"`
 	EnvFile            []string    `yaml:"env-file"`
 	ComposeFile        []string    `yaml:"compose-file,omitempty"`
-	RunSudo            bool        `yaml:"sudo"`
 
 	// Database connection configuration
 	DatabaseService        string `yaml:"database-service,omitempty"`
@@ -54,7 +50,7 @@ type Context struct {
 	DatabasePasswordSecret string `yaml:"database-password-secret,omitempty"`
 	DatabaseName           string `yaml:"database-name,omitempty"`
 
-	ReadSmallFileFunc func(filename string) string `yaml:"-"`
+	ReadSmallFileFunc func(filename string) (string, error) `yaml:"-"`
 
 	// Extra holds plugin-specific configuration.
 	// Each plugin uses its own key (e.g., "drupal", "isle", "wordpress").
@@ -193,7 +189,7 @@ func ResolveCurrentContextName(f *pflag.FlagSet) (string, error) {
 	return c, nil
 }
 
-func (c *Context) ReadSmallFile(filename string) string {
+func (c *Context) ReadSmallFile(filename string) (string, error) {
 	if c.ReadSmallFileFunc != nil {
 		return c.ReadSmallFileFunc(filename)
 	}
@@ -201,41 +197,22 @@ func (c *Context) ReadSmallFile(filename string) string {
 	if c.DockerHostType == ContextLocal {
 		data, err := os.ReadFile(filename)
 		if err != nil {
-			slog.Error("Error reading file", "file", filename, "err", err)
-			return ""
+			return "", fmt.Errorf("read file %q: %w", filename, err)
 		}
-
-		return string(data)
+		return string(data), nil
 	}
-	client, err := c.DialSSH()
+
+	accessor, err := c.NewFileAccessor()
 	if err != nil {
-		slog.Error("Error establishing SSH connection", "err", err)
-		return ""
+		return "", fmt.Errorf("create file accessor: %w", err)
 	}
-	defer client.Close()
+	defer accessor.Close()
 
-	sftpClient, err := sftp.NewClient(client)
+	data, err := accessor.ReadFile(filename)
 	if err != nil {
-		slog.Error("Error creating SFTP client", "err", err)
-		return ""
+		return "", fmt.Errorf("read remote file %q: %w", filename, err)
 	}
-	defer sftpClient.Close()
-
-	// Use SFTP to read the file securely
-	remoteFile, err := sftpClient.Open(filename)
-	if err != nil {
-		slog.Error("Error opening remote file", "file", filename, "err", err)
-		return ""
-	}
-	defer remoteFile.Close()
-
-	data, err := io.ReadAll(remoteFile)
-	if err != nil {
-		slog.Error("Error reading remote file", "file", filename, "err", err)
-		return ""
-	}
-
-	return string(data)
+	return string(data), nil
 }
 
 func (c Context) EffectiveComposeProjectName() string {
@@ -258,6 +235,9 @@ func (c *Context) DialSSH() (*ssh.Client, error) {
 		// Check if the error is due to encryption (passphrase required)
 		var ppErr *ssh.PassphraseMissingError
 		if errors.As(err, &ppErr) {
+			if !term.IsTerminal(int(os.Stdin.Fd())) {
+				return nil, fmt.Errorf("ssh key %s requires a passphrase, but no interactive terminal is available", c.SSHKeyPath)
+			}
 			// Key is encrypted, prompt for passphrase
 			fmt.Printf("Enter passphrase for SSH key %s: ", c.SSHKeyPath)
 			passphrase, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -276,7 +256,10 @@ func (c *Context) DialSSH() (*ssh.Client, error) {
 		}
 	}
 
-	knownHostsPath := filepath.Join(filepath.Dir(c.SSHKeyPath), "known_hosts")
+	knownHostsPath, err := defaultKnownHostsPath()
+	if err != nil {
+		return nil, fmt.Errorf("error resolving known_hosts path: %w", err)
+	}
 	slog.Debug("Setting known_hosts", "known_hosts", knownHostsPath)
 	hostKeyCallback, err := knownhosts.New(knownHostsPath)
 	if err != nil {
@@ -316,6 +299,21 @@ func (c *Context) DialSSH() (*ssh.Client, error) {
 	return client, nil
 }
 
+func defaultKnownHostsPath() (string, error) {
+	home := os.Getenv("HOME")
+	if strings.TrimSpace(home) == "" {
+		u, err := user.Current()
+		if err != nil {
+			return "", err
+		}
+		home = u.HomeDir
+	}
+	if strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("unable to determine user home directory")
+	}
+	return filepath.Join(home, ".ssh", "known_hosts"), nil
+}
+
 func (c *Context) ProjectDirExists() (bool, error) {
 	if c.DockerHostType == ContextLocal {
 		_, err := os.Stat(c.ProjectDir)
@@ -329,21 +327,13 @@ func (c *Context) ProjectDirExists() (bool, error) {
 		return !os.IsNotExist(err), nil
 	}
 
-	client, err := c.DialSSH()
+	accessor, err := c.NewFileAccessor()
 	if err != nil {
 		slog.Error("Error establishing SSH connection", "err", err)
 		return false, err
 	}
-	defer client.Close()
-
-	sftpClient, err := sftp.NewClient(client)
-	if err != nil {
-		slog.Error("Error creating SFTP client", "err", err)
-		return false, err
-	}
-	defer sftpClient.Close()
-
-	_, err = sftpClient.Stat(c.ProjectDir)
+	defer accessor.Close()
+	_, err = accessor.Stat(c.ProjectDir)
 	if err != nil {
 		return false, nil
 	}
@@ -459,37 +449,13 @@ func (cc *Context) VerifyRemoteInput(existingSite bool) error {
 }
 
 func (c *Context) UploadFile(source, destination string) error {
-	client, err := c.DialSSH()
+	accessor, err := c.NewFileAccessor()
 	if err != nil {
 		slog.Error("Error establishing SSH connection", "err", err)
 		return err
 	}
-	defer client.Close()
-
-	sftpClient, err := sftp.NewClient(client)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer sftpClient.Close()
-
-	localFile, err := os.Open(source)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer localFile.Close()
-
-	remoteFile, err := sftpClient.Create(destination)
-	if err != nil {
-		return err
-	}
-	defer remoteFile.Close()
-
-	_, err = remoteFile.ReadFrom(localFile)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	defer accessor.Close()
+	return accessor.UploadFile(source, destination)
 }
 
 // GetSshUri returns an SSH connection URI

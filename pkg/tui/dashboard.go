@@ -26,7 +26,6 @@ import (
 	"github.com/libops/sitectl/pkg/docker"
 	"github.com/libops/sitectl/pkg/plugin"
 	zone "github.com/lrstanley/bubblezone/v2"
-	"golang.org/x/crypto/ssh"
 )
 
 type siteGroup struct {
@@ -1286,33 +1285,7 @@ func fetchComposeLogs(ctx config.Context) (string, error) {
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
-
-	remoteCmd := fmt.Sprintf("cd %s && ", shellquote.Join(ctx.ProjectDir))
-	if ctx.RunSudo {
-		remoteCmd += "sudo "
-	}
-	remoteCmd += shellquote.Join(append([]string{"docker"}, args...)...)
-
-	client, err := ctx.DialSSH()
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return "", err
-	}
-	defer session.Close()
-
-	output, err := session.CombinedOutput(remoteCmd)
-	if err != nil {
-		if _, ok := err.(*ssh.ExitError); ok && len(output) > 0 {
-			return string(output), nil
-		}
-		return string(output), err
-	}
-	return string(output), nil
+	return ctx.RunQuietCommand(exec.Command("docker", args...))
 }
 
 func composeArgs(ctx config.Context, subcommand ...string) []string {
@@ -2083,25 +2056,5 @@ func fetchContainerLogs(ctx config.Context, containerName string) (string, error
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
-
-	remoteCmd := fmt.Sprintf("cd %s && ", shellquote.Join(ctx.ProjectDir))
-	if ctx.RunSudo {
-		remoteCmd += "sudo "
-	}
-	remoteCmd += shellquote.Join(append([]string{"docker"}, args...)...)
-
-	client, err := ctx.DialSSH()
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return "", err
-	}
-	defer session.Close()
-
-	output, err := session.CombinedOutput(remoteCmd)
-	return string(output), err
+	return ctx.RunQuietCommand(exec.Command("docker", args...))
 }

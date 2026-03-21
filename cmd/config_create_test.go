@@ -740,9 +740,6 @@ func TestRunCreateConfigRepromptsDockerSettingsAfterComposePSFailure(t *testing.
 		if ctx.DockerSocket != "/run/user/1000/docker.sock" {
 			t.Fatalf("expected updated docker socket, got %q", ctx.DockerSocket)
 		}
-		if !ctx.RunSudo {
-			t.Fatal("expected updated run sudo true")
-		}
 		if ctx.ProjectName != "museum-prod" {
 			t.Fatalf("expected updated project name museum-prod, got %q", ctx.ProjectName)
 		}
@@ -762,8 +759,6 @@ func TestRunCreateConfigRepromptsDockerSettingsAfterComposePSFailure(t *testing.
 			return "no", nil
 		case "update-environment-context":
 			return "update", nil
-		case "run-docker-commands-with-sudo":
-			return "yes", nil
 		default:
 			t.Fatalf("unexpected choice prompt: %s", name)
 			return "", nil
@@ -810,9 +805,6 @@ func TestRunCreateConfigRepromptsDockerSettingsAfterComposePSFailure(t *testing.
 	}
 	if remoteCtx.Plugin != "core" {
 		t.Fatalf("expected saved plugin core, got %q", remoteCtx.Plugin)
-	}
-	if !remoteCtx.RunSudo {
-		t.Fatal("expected saved run sudo true")
 	}
 }
 

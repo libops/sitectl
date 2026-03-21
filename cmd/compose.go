@@ -124,7 +124,7 @@ Examples:
 		cmdArgs = append(cmdArgs, filteredArgs...)
 		c := exec.Command("docker", cmdArgs...)
 		c.Dir = context.ProjectDir
-		_, err = context.RunCommand(c)
+		_, err = context.RunCommandContext(cmd.Context(), c)
 		if err != nil {
 			return err
 		}

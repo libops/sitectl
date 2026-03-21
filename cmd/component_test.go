@@ -38,9 +38,12 @@ func TestResolveComponentOwnerUsesNamespace(t *testing.T) {
 		t.Fatalf("Set(context) error = %v", err)
 	}
 
-	owner, name, err := resolveComponentOwner(cmd, "drupal/modules")
+	contextName, owner, name, err := resolveComponentOwner(cmd, "drupal/modules")
 	if err != nil {
 		t.Fatalf("resolveComponentOwner() error = %v", err)
+	}
+	if contextName != "museum" {
+		t.Fatalf("unexpected context name: %q", contextName)
 	}
 	if owner != "drupal" || name != "modules" {
 		t.Fatalf("unexpected owner/name: %q %q", owner, name)
@@ -68,9 +71,12 @@ func TestResolveComponentOwnerFallsBackToContextPlugin(t *testing.T) {
 		t.Fatalf("Set(context) error = %v", err)
 	}
 
-	owner, name, err := resolveComponentOwner(cmd, "fcrepo")
+	contextName, owner, name, err := resolveComponentOwner(cmd, "fcrepo")
 	if err != nil {
 		t.Fatalf("resolveComponentOwner() error = %v", err)
+	}
+	if contextName != "museum" {
+		t.Fatalf("unexpected context name: %q", contextName)
 	}
 	if owner != "isle" || name != "fcrepo" {
 		t.Fatalf("unexpected owner/name: %q %q", owner, name)

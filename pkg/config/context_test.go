@@ -111,7 +111,6 @@ func contextsEqual(a, b Context) bool {
 		a.SSHKeyPath == b.SSHKeyPath &&
 		len(a.EnvFile) == len(b.EnvFile) &&
 		len(a.ComposeFile) == len(b.ComposeFile) &&
-		a.RunSudo == b.RunSudo &&
 		a.DatabaseService == b.DatabaseService &&
 		a.DatabaseUser == b.DatabaseUser &&
 		a.DatabasePasswordSecret == b.DatabasePasswordSecret &&
@@ -291,7 +290,10 @@ func TestReadSmallFileLocal(t *testing.T) {
 	ctx := &Context{
 		DockerHostType: ContextLocal,
 	}
-	readContent := ctx.ReadSmallFile(filePath)
+	readContent, err := ctx.ReadSmallFile(filePath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if readContent != content {
 		t.Fatalf("expected %q, got %q", content, readContent)
 	}
@@ -314,6 +316,21 @@ func TestDialSSHError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "error reading SSH key") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDefaultKnownHostsPathUsesHomeSSHDirectory(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	path, err := defaultKnownHostsPath()
+	if err != nil {
+		t.Fatalf("defaultKnownHostsPath() error = %v", err)
+	}
+
+	want := filepath.Join(tempHome, ".ssh", "known_hosts")
+	if path != want {
+		t.Fatalf("defaultKnownHostsPath() = %q, want %q", path, want)
 	}
 }
 

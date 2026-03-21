@@ -137,8 +137,8 @@ func readComposeDiscoveryDocForContext(ctx *Context) (composeDiscoveryDoc, bool)
 		if err != nil || !exists {
 			continue
 		}
-		data := ctx.ReadSmallFile(path)
-		if strings.TrimSpace(data) == "" {
+		data, err := ctx.ReadSmallFile(path)
+		if err != nil || strings.TrimSpace(data) == "" {
 			continue
 		}
 		var doc composeDiscoveryDoc

@@ -32,13 +32,16 @@ type DockerClient struct {
 	CLI        DockerAPI
 	SshCli     *ssh.Client
 	httpClient *http.Client
+	ownsSSH    bool
 }
 
 func (d *DockerClient) Close() error {
 	var firstErr error
 	if d.SshCli != nil {
-		if err := d.SshCli.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if d.ownsSSH {
+			if err := d.SshCli.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	if d.httpClient != nil {
@@ -62,6 +65,23 @@ func GetDockerCli(activeCtx *config.Context) (*DockerClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error establishing SSH connection: %v", err)
 	}
+	return GetDockerCliWithSSH(activeCtx, sshConn, true)
+}
+
+func GetDockerCliWithSSH(activeCtx *config.Context, sshConn *ssh.Client, ownsSSH bool) (*DockerClient, error) {
+	if activeCtx.DockerHostType == config.ContextLocal {
+		cli, err := client.NewClientWithOpts(
+			client.WithHost("unix://"+activeCtx.DockerSocket),
+			client.WithAPIVersionNegotiation(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("error creating local Docker client: %v", err)
+		}
+		return &DockerClient{CLI: cli}, nil
+	}
+	if sshConn == nil {
+		return nil, fmt.Errorf("ssh client is required for remote docker context")
+	}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return sshConn.Dial("unix", activeCtx.DockerSocket)
@@ -76,13 +96,16 @@ func GetDockerCli(activeCtx *config.Context) (*DockerClient, error) {
 		client.WithAPIVersionNegotiation(),
 	)
 	if err != nil {
-		sshConn.Close()
+		if ownsSSH {
+			sshConn.Close()
+		}
 		return nil, fmt.Errorf("error creating Docker client over SSH: %v", err)
 	}
 	return &DockerClient{
 		CLI:        cli,
 		SshCli:     sshConn,
 		httpClient: httpClient,
+		ownsSSH:    ownsSSH,
 	}, nil
 }
 
@@ -95,7 +118,11 @@ func GetSecret(ctx context.Context, cli DockerAPI, c *config.Context, containerN
 	for _, mount := range containerJSON.Mounts {
 		if mount.Destination == expectedTarget {
 			secretFilePath := filepath.Join(c.ProjectDir, "secrets", secretName)
-			return c.ReadSmallFile(secretFilePath), nil
+			secret, err := c.ReadSmallFile(secretFilePath)
+			if err != nil {
+				return "", fmt.Errorf("read secret %q: %w", secretName, err)
+			}
+			return secret, nil
 		}
 	}
 	return GetConfigEnv(ctx, cli, containerName, secretName)
@@ -138,8 +165,10 @@ func (d *DockerClient) GetServiceIp(ctx context.Context, c *config.Context, cont
 }
 
 func (d *DockerClient) GetContainerName(c *config.Context, service string) (string, error) {
-	ctx := context.Background()
+	return d.GetContainerNameContext(context.Background(), c, service)
+}
 
+func (d *DockerClient) GetContainerNameContext(ctx context.Context, c *config.Context, service string) (string, error) {
 	// Define the filters based on the Docker Compose labels.
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "com.docker.compose.project="+c.EffectiveComposeProjectName())
@@ -315,7 +344,7 @@ func getDatabaseURIsWithClient(ctx context.Context, dockerCli *DockerClient, c *
 	dbHost := "127.0.0.1"
 
 	// Get the database container name
-	containerName, err := dockerCli.GetContainerName(c, c.DatabaseService)
+	containerName, err := dockerCli.GetContainerNameContext(ctx, c, c.DatabaseService)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get %s container: %w", c.DatabaseService, err)
 	}

@@ -2,15 +2,15 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -18,7 +18,6 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
-	"github.com/kballard/go-shellquote"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -28,6 +27,7 @@ import (
 
 var debugOutputPath string
 var debugVerbose bool
+var debugProgressUIActive bool
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
@@ -72,37 +72,67 @@ var debugCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-
-		var body strings.Builder
-		body.WriteString(renderCoreDebug(ctx))
-
-		if pluginName := strings.TrimSpace(ctx.Plugin); pluginName != "" && pluginName != "core" {
-			pluginArgs := []string{"__debug"}
-			if debugVerbose {
-				pluginArgs = append(pluginArgs, "--verbose")
-			}
-			output, err := pluginSDK.InvokePluginCommand(pluginName, pluginArgs, plugin.CommandExecOptions{Capture: true})
+		reporter := debugProgressReporter(nil)
+		if stderrFile, ok := cmd.ErrOrStderr().(*os.File); ok && term.IsTerminal(int(stderrFile.Fd())) {
+			report, err := runDebugCollectionWithProgress(cmd, contextName, ctx)
 			if err != nil {
 				return err
 			}
-			if trimmed := strings.TrimSpace(output); trimmed != "" {
-				body.WriteString("\n\n")
-				body.WriteString(trimmed)
-			}
+			return writeDebugReport(cmd, report)
 		}
 
-		if strings.TrimSpace(debugOutputPath) != "" {
-			report := renderPlainDebugReport(body.String())
-			if err := os.WriteFile(debugOutputPath, []byte(report+"\n"), 0o644); err != nil {
-				return err
-			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "wrote debug bundle to %s\n", debugOutputPath)
+		report, err := collectDebugReport(cmd.Context(), contextName, ctx, reporter)
+		if err != nil {
 			return err
 		}
-
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), body.String())
-		return err
+		return writeDebugReport(cmd, report)
 	},
+}
+
+func writeDebugReport(cmd *cobra.Command, report string) error {
+	if strings.TrimSpace(debugOutputPath) != "" {
+		report = renderPlainDebugReport(report)
+		if err := os.WriteFile(debugOutputPath, []byte(report+"\n"), 0o644); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "wrote debug bundle to %s\n", debugOutputPath)
+		return err
+	}
+
+	_, err := fmt.Fprintln(cmd.OutOrStdout(), report)
+	return err
+}
+
+func collectDebugReport(runCtx context.Context, contextName string, ctx config.Context, reporter debugProgressReporter) (string, error) {
+	if err := runCtx.Err(); err != nil {
+		return "", err
+	}
+	var body strings.Builder
+	reportProgress(reporter, "Collecting Core Diagnostics", "Inspecting Docker configuration, logs, and images")
+	body.WriteString(renderCoreDebug(runCtx, ctx))
+
+	if pluginName := strings.TrimSpace(ctx.Plugin); pluginName != "" && pluginName != "core" {
+		if err := runCtx.Err(); err != nil {
+			return "", err
+		}
+		pluginArgs := []string{"--context", contextName, "__debug"}
+		if debugVerbose {
+			pluginArgs = append(pluginArgs, "--verbose")
+		}
+		reportProgress(reporter, "Collecting Plugin Diagnostics", fmt.Sprintf("Running %s debug collectors", pluginName))
+		slog.Debug("handing off debug to plugin", "context", contextName, "plugin", pluginName, "args", pluginArgs)
+		output, err := pluginSDK.InvokePluginCommand(pluginName, pluginArgs, plugin.CommandExecOptions{Context: runCtx, Capture: true, LiveStderr: !progressEnabled()})
+		if err != nil {
+			return "", err
+		}
+		slog.Debug("plugin debug completed", "context", contextName, "plugin", pluginName)
+		if trimmed := strings.TrimSpace(output); trimmed != "" {
+			body.WriteString("\n\n")
+			body.WriteString(trimmed)
+		}
+	}
+
+	return body.String(), nil
 }
 
 func init() {
@@ -111,7 +141,26 @@ func init() {
 	RootCmd.AddCommand(debugCmd)
 }
 
-func renderCoreDebug(ctx config.Context) string {
+func runDebugCollectionWithProgress(cmd *cobra.Command, contextName string, ctx config.Context) (string, error) {
+	debugProgressUIActive = true
+	defer func() { debugProgressUIActive = false }()
+	progress := newDebugProgressLine(cmd.ErrOrStderr())
+	defer progress.Close()
+	return collectDebugReport(cmd.Context(), contextName, ctx, progress.Report)
+}
+
+func reportProgress(reporter debugProgressReporter, title, detail string) {
+	if reporter != nil {
+		reporter(title, detail)
+	}
+}
+
+func progressEnabled() bool {
+	return debugProgressUIActive
+}
+
+func renderCoreDebug(runCtx context.Context, ctx config.Context) string {
+	slog.Debug("starting core debug", "context", ctx.Name, "docker_host_type", ctx.DockerHostType)
 	meta := []debugRow{
 		{Label: "Generated", Value: time.Now().UTC().Format(time.RFC3339)},
 		{Label: "Context", Value: ctx.Name},
@@ -138,31 +187,35 @@ func renderCoreDebug(ctx config.Context) string {
 		"",
 		formatDebugRows(meta),
 	}
-	if diagnostics, err := collectLogDiagnostics(&ctx); err == nil {
-		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows(logSummaryRows(diagnostics)))
+	logDiagnostics, logErr, imageDiagnostics, imageErr := collectCoreDockerDiagnostics(runCtx, &ctx)
+	if logErr == nil {
+		slog.Debug("collected log diagnostics", "context", ctx.Name, "containers", len(logDiagnostics.Containers))
+		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows(logSummaryRows(logDiagnostics)))
 		if debugVerbose {
-			coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Details"), "", renderLogDetailsBody(diagnostics))
+			coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Details"), "", renderLogDetailsBody(logDiagnostics))
 		}
 	} else {
+		slog.Debug("log diagnostics failed", "context", ctx.Name, "error", logErr)
 		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows([]debugRow{
 			{Label: "Log status", Value: renderStatus("warning")},
-			{Label: "Log diagnostics", Value: err.Error()},
+			{Label: "Log diagnostics", Value: logErr.Error()},
 		}))
 	}
-	if diagnostics, err := collectImageDiagnostics(&ctx); err == nil {
-		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Image Summary"), "", formatDebugRows(imageSummaryRows(diagnostics)))
+	if imageErr == nil {
+		slog.Debug("collected image diagnostics", "context", ctx.Name, "images", imageDiagnostics.ImageCount, "total_bytes", imageDiagnostics.TotalBytes)
+		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Image Summary"), "", formatDebugRows(imageSummaryRows(imageDiagnostics)))
 	} else {
+		slog.Debug("image diagnostics failed", "context", ctx.Name, "error", imageErr)
 		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Image Summary"), "", formatDebugRows([]debugRow{
 			{Label: "Image status", Value: renderStatus("warning")},
-			{Label: "Image diagnostics", Value: err.Error()},
+			{Label: "Image diagnostics", Value: imageErr.Error()},
 		}))
 	}
+	slog.Debug("finished core debug", "context", ctx.Name)
 	return renderDebugPanel("sitectl", strings.Join(coreBody, "\n"))
 }
 
 type logDiagnostics struct {
-	TotalBytes          int64
-	KnownSize           bool
 	Containers          []containerLogDiagnostics
 	UnboundedCount      int
 	ExternalDriverCount int
@@ -172,9 +225,6 @@ type containerLogDiagnostics struct {
 	Service      string
 	Container    string
 	Driver       string
-	LogPath      string
-	SizeBytes    int64
-	HasSize      bool
 	Rotated      bool
 	External     bool
 	RotationHint string
@@ -185,33 +235,125 @@ type imageDiagnostics struct {
 	ImageCount int
 }
 
-func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
-	cli, err := docker.GetDockerCli(ctxCfg)
-	if err != nil {
-		return logDiagnostics{}, err
-	}
-	defer cli.Close()
+type debugProgressReporter func(title, detail string)
 
+type debugProgressLine struct {
+	out    *os.File
+	frames []string
+	index  int
+	title  string
+	detail string
+	mu     sync.Mutex
+	done   chan struct{}
+	once   sync.Once
+}
+
+func newDebugProgressLine(w io.Writer) *debugProgressLine {
+	file, ok := w.(*os.File)
+	if !ok {
+		return &debugProgressLine{frames: []string{".", "o", "O", "o"}}
+	}
+	progress := &debugProgressLine{
+		out:    file,
+		frames: []string{"-", "\\", "|", "/"},
+		title:  "Preparing Debug Bundle",
+		detail: "Starting diagnostic collection",
+		done:   make(chan struct{}),
+	}
+	go progress.animate(120 * time.Millisecond)
+	return progress
+}
+
+func (p *debugProgressLine) Report(title, detail string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.title = strings.TrimSpace(title)
+	p.detail = strings.TrimSpace(detail)
+	p.renderLocked()
+	p.mu.Unlock()
+}
+
+func (p *debugProgressLine) Close() {
+	if p == nil || p.out == nil {
+		return
+	}
+	p.once.Do(func() {
+		close(p.done)
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		fmt.Fprint(p.out, "\r\033[2K")
+	})
+}
+
+func (p *debugProgressLine) animate(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.mu.Lock()
+			p.renderLocked()
+			p.mu.Unlock()
+		case <-p.done:
+			return
+		}
+	}
+}
+
+func (p *debugProgressLine) renderLocked() {
+	if p.out == nil {
+		return
+	}
+	frame := p.frames[p.index%len(p.frames)]
+	p.index++
+	line := fmt.Sprintf("\r%s %s", frame, strings.TrimSpace(strings.Join([]string{p.title, p.detail}, " - ")))
+	fmt.Fprint(p.out, truncateDebugProgress(line))
+}
+
+func truncateDebugProgress(line string) string {
+	width := debugPanelWidth()
+	if width <= 0 {
+		return line
+	}
+	plain := ansiPattern.ReplaceAllString(line, "")
+	if lipgloss.Width(plain) <= width {
+		return line
+	}
+	runes := []rune(plain)
+	if len(runes) <= width {
+		return string(runes)
+	}
+	if width <= 1 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+func collectLogDiagnosticsWithClient(runCtx context.Context, ctxCfg *config.Context, cli *docker.DockerClient) (logDiagnostics, error) {
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "com.docker.compose.project="+ctxCfg.EffectiveComposeProjectName())
-	containers, err := cli.CLI.ContainerList(context.Background(), dockercontainer.ListOptions{
+	containers, err := cli.CLI.ContainerList(runCtx, dockercontainer.ListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
 	if err != nil {
 		return logDiagnostics{}, err
 	}
+	slog.Debug("listed containers for log diagnostics", "context", ctxCfg.Name, "count", len(containers))
 
 	diagnostics := logDiagnostics{
-		KnownSize:  true,
 		Containers: make([]containerLogDiagnostics, 0, len(containers)),
 	}
-	remotePaths := make([]string, 0, len(containers))
 
 	for _, summary := range containers {
+		if err := runCtx.Err(); err != nil {
+			return logDiagnostics{}, err
+		}
 		name := trimContainerName(summary.Names)
 		service := firstNonEmpty(summary.Labels["com.docker.compose.service"], name)
-		inspect, err := cli.CLI.ContainerInspect(context.Background(), name)
+		inspect, err := cli.CLI.ContainerInspect(runCtx, name)
 		if err != nil {
 			return logDiagnostics{}, err
 		}
@@ -223,58 +365,7 @@ func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
 		if !item.Rotated && !item.External {
 			diagnostics.UnboundedCount++
 		}
-		if item.LogPath != "" && ctxCfg.DockerHostType != config.ContextLocal {
-			remotePaths = append(remotePaths, item.LogPath)
-		}
 		diagnostics.Containers = append(diagnostics.Containers, item)
-	}
-
-	if ctxCfg.DockerHostType == config.ContextLocal {
-		for i := range diagnostics.Containers {
-			item := &diagnostics.Containers[i]
-			if item.LogPath == "" {
-				diagnostics.KnownSize = false
-				continue
-			}
-			size, hasSize, err := logFileSizeLocal(item.LogPath)
-			if err != nil {
-				item.RotationHint = appendHint(item.RotationHint, fmt.Sprintf("unable to stat log file: %v", err))
-				diagnostics.KnownSize = false
-				continue
-			}
-			item.SizeBytes = size
-			item.HasSize = hasSize
-			if hasSize {
-				diagnostics.TotalBytes += size
-			} else {
-				diagnostics.KnownSize = false
-			}
-		}
-	} else if len(remotePaths) > 0 {
-		sizes, err := logFileSizesRemote(ctxCfg, remotePaths)
-		if err != nil {
-			diagnostics.KnownSize = false
-			for i := range diagnostics.Containers {
-				if diagnostics.Containers[i].LogPath == "" {
-					continue
-				}
-				diagnostics.Containers[i].RotationHint = appendHint(diagnostics.Containers[i].RotationHint, fmt.Sprintf("unable to stat log file: %v", err))
-			}
-		} else {
-			for i := range diagnostics.Containers {
-				item := &diagnostics.Containers[i]
-				if item.LogPath != "" {
-					size, ok := sizes[item.LogPath]
-					if ok {
-						item.SizeBytes = size
-						item.HasSize = true
-						diagnostics.TotalBytes += size
-						continue
-					}
-				}
-				diagnostics.KnownSize = false
-			}
-		}
 	}
 
 	sort.Slice(diagnostics.Containers, func(i, j int) bool {
@@ -284,22 +375,17 @@ func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
 	return diagnostics, nil
 }
 
-func collectImageDiagnostics(ctxCfg *config.Context) (imageDiagnostics, error) {
-	cli, err := docker.GetDockerCli(ctxCfg)
-	if err != nil {
-		return imageDiagnostics{}, err
-	}
-	defer cli.Close()
-
+func collectImageDiagnosticsWithClient(runCtx context.Context, ctxCfg *config.Context, cli *docker.DockerClient) (imageDiagnostics, error) {
 	apiClient, ok := cli.CLI.(*client.Client)
 	if !ok {
 		return imageDiagnostics{}, fmt.Errorf("docker client does not support image listing")
 	}
 
-	images, err := apiClient.ImageList(context.Background(), dockerimage.ListOptions{All: true})
+	images, err := apiClient.ImageList(runCtx, dockerimage.ListOptions{All: true})
 	if err != nil {
 		return imageDiagnostics{}, err
 	}
+	slog.Debug("listed images", "context", ctxCfg.Name, "count", len(images))
 
 	diagnostics := imageDiagnostics{ImageCount: len(images)}
 	for _, image := range images {
@@ -309,6 +395,21 @@ func collectImageDiagnostics(ctxCfg *config.Context) (imageDiagnostics, error) {
 	}
 
 	return diagnostics, nil
+}
+
+func collectCoreDockerDiagnostics(runCtx context.Context, ctxCfg *config.Context) (logDiagnostics, error, imageDiagnostics, error) {
+	slog.Debug("opening shared docker client for core diagnostics", "context", ctxCfg.Name)
+	cli, err := docker.GetDockerCli(ctxCfg)
+	if err != nil {
+		return logDiagnostics{}, err, imageDiagnostics{}, err
+	}
+	defer cli.Close()
+
+	slog.Debug("collecting log diagnostics", "context", ctxCfg.Name)
+	logs, logErr := collectLogDiagnosticsWithClient(runCtx, ctxCfg, cli)
+	slog.Debug("collecting image diagnostics", "context", ctxCfg.Name)
+	images, imageErr := collectImageDiagnosticsWithClient(runCtx, ctxCfg, cli)
+	return logs, logErr, images, imageErr
 }
 
 func imageSummaryRows(diagnostics imageDiagnostics) []debugRow {
@@ -333,7 +434,6 @@ func describeContainerLogs(service, containerName string, inspect dockercontaine
 	item := containerLogDiagnostics{
 		Service:   service,
 		Container: containerName,
-		LogPath:   strings.TrimSpace(inspect.LogPath),
 	}
 	if inspect.HostConfig != nil {
 		item.Driver = strings.TrimSpace(inspect.HostConfig.LogConfig.Type)
@@ -367,114 +467,8 @@ func evaluateLogConfig(driver string, options map[string]string) (rotated bool, 
 	}
 }
 
-func logFileSizeLocal(path string) (int64, bool, error) {
-	if strings.TrimSpace(path) == "" {
-		return 0, false, nil
-	}
-	slog.Debug("logFileSizeLocal", "path", path)
-
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, false, nil
-		}
-		if errors.Is(err, os.ErrPermission) {
-			size, sudoErr := logFileSizeLocalSudo(path)
-			if sudoErr == nil {
-				return size, true, nil
-			}
-			return 0, false, fmt.Errorf("%w; sudo stat failed: %v", err, sudoErr)
-		}
-		return 0, false, err
-	}
-	return info.Size(), true, nil
-}
-
-func logFileSizeLocalSudo(path string) (int64, error) {
-	cmd := exec.Command("sudo", "-n", "sh", "-lc", fmt.Sprintf("test -f %s && wc -c < %s || true", shellquote.Join(path), shellquote.Join(path)))
-	slog.Debug(cmd.String())
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return 0, err
-	}
-	text := strings.TrimSpace(string(output))
-	if text == "" {
-		return 0, nil
-	}
-	return strconv.ParseInt(text, 10, 64)
-}
-
-func logFileSizesRemote(ctxCfg *config.Context, paths []string) (map[string]int64, error) {
-	uniquePaths := make([]string, 0, len(paths))
-	seen := map[string]bool{}
-	for _, path := range paths {
-		path = strings.TrimSpace(path)
-		if path == "" || seen[path] {
-			continue
-		}
-		seen[path] = true
-		uniquePaths = append(uniquePaths, path)
-	}
-	if len(uniquePaths) == 0 {
-		return map[string]int64{}, nil
-	}
-
-	client, err := ctxCfg.DialSSH()
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return nil, err
-	}
-	defer session.Close()
-
-	parts := make([]string, 0, len(uniquePaths))
-	for _, path := range uniquePaths {
-		quoted := shellquote.Join(path)
-		parts = append(parts, fmt.Sprintf("if test -f %s; then printf '%%s\\t' %s; stat -c %%s %s; fi", quoted, quoted, quoted))
-	}
-	cmd := strings.Join(parts, "; ")
-	if ctxCfg.RunSudo {
-		cmd = "sudo -n sh -lc " + shellquote.Join(cmd)
-	}
-	output, err := session.CombinedOutput(cmd)
-	if err != nil {
-		return nil, err
-	}
-
-	sizes := map[string]int64{}
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		path, rawSize, ok := strings.Cut(line, "\t")
-		if !ok {
-			continue
-		}
-		size, err := strconv.ParseInt(strings.TrimSpace(rawSize), 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		sizes[strings.TrimSpace(path)] = size
-	}
-	return sizes, nil
-}
-
 func logSummaryRows(diagnostics logDiagnostics) []debugRow {
-	totalLine := "unknown"
-	if diagnostics.KnownSize {
-		totalLine = humanBytes(diagnostics.TotalBytes)
-	}
 	totalState := "ok"
-	if !diagnostics.KnownSize {
-		totalState = "warning"
-	} else if diagnostics.TotalBytes >= 1<<30 {
-		totalState = "warning"
-	}
 
 	logHandling := "file-backed container logs appear capped"
 	if diagnostics.UnboundedCount == 0 {
@@ -491,18 +485,12 @@ func logSummaryRows(diagnostics logDiagnostics) []debugRow {
 
 	rows := []debugRow{
 		{Label: "Log status", Value: renderStatus(totalState)},
-		{Label: "Total logs", Value: totalLine},
 		{Label: "Log handling", Value: logHandling},
-	}
-	if !diagnostics.KnownSize {
-		rows = append(rows, debugRow{Label: "Note", Value: "unable to determine one or more container log file sizes"})
-	} else if diagnostics.TotalBytes >= 1<<30 {
-		rows = append(rows, debugRow{Label: "Note", Value: "aggregate container logs exceed 1 GiB"})
 	}
 	if diagnostics.UnboundedCount > 0 {
 		rows = append(rows, debugRow{
 			Label: "Recommendation",
-			Value: `configure Docker log rotation with max-size and max-file, or ship logs to syslog, journald, or another central driver
+			Value: `for non-local environments, configure Docker log rotation with max-size and max-file, or ship logs to syslog, journald, or another central driver
 
 https://docs.docker.com/engine/logging/configure/`})
 	}
@@ -513,9 +501,6 @@ func renderLogDetailsBody(diagnostics logDiagnostics) string {
 	lines := []string{"Log details:"}
 	for _, item := range diagnostics.Containers {
 		line := fmt.Sprintf("  %s: driver=%s", item.Service, item.Driver)
-		if item.HasSize {
-			line += fmt.Sprintf(", size=%s", humanBytes(item.SizeBytes))
-		}
 		if item.External {
 			line += ", external"
 		} else if item.Rotated {
@@ -649,17 +634,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func appendHint(current, next string) string {
-	current = strings.TrimSpace(current)
-	next = strings.TrimSpace(next)
-	switch {
-	case current == "":
-		return next
-	case next == "":
-		return current
-	default:
-		return current + "; " + next
-	}
 }

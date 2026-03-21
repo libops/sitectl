@@ -106,9 +106,6 @@ func TestLoadFromFlags(t *testing.T) {
 	if ctx.Environment != "staging" {
 		t.Errorf("Expected environment 'staging', got %q", ctx.Environment)
 	}
-	if ctx.RunSudo != true {
-		t.Errorf("Expected site 'true', got %t", ctx.RunSudo)
-	}
 	expectedSlice := []string{".env", "/tmp/.env"}
 	if !reflect.DeepEqual(ctx.EnvFile, expectedSlice) {
 		t.Errorf("expected env-file slice %v but got %v", expectedSlice, ctx.EnvFile)

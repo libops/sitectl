@@ -27,15 +27,21 @@ var (
 	componentSetDisposition      string
 	componentSetTLSMode          string
 	componentSetYolo             bool
-	invokePluginCommand          = func(pluginName string, args []string) error {
+	invokePluginCommand          = func(pluginName, contextName string, args []string) error {
 		installed, ok := plugin.FindInstalled(pluginName)
 		if !ok {
 			return fmt.Errorf("plugin %q is not installed", pluginName)
 		}
-		_, err := pluginSDK.InvokePluginCommand(installed.Name, args, plugin.CommandExecOptions{
-			Stdin:  RootCmd.InOrStdin(),
-			Stdout: RootCmd.OutOrStdout(),
-			Stderr: RootCmd.ErrOrStderr(),
+		invocation := make([]string, 0, len(args)+2)
+		if strings.TrimSpace(contextName) != "" {
+			invocation = append(invocation, "--context", contextName)
+		}
+		invocation = append(invocation, args...)
+		_, err := pluginSDK.InvokePluginCommand(installed.Name, invocation, plugin.CommandExecOptions{
+			Context: RootCmd.Context(),
+			Stdin:   RootCmd.InOrStdin(),
+			Stdout:  RootCmd.OutOrStdout(),
+			Stderr:  RootCmd.ErrOrStderr(),
 		})
 		return err
 	}
@@ -51,7 +57,7 @@ var componentDescribeCmd = &cobra.Command{
 	Aliases: []string{"status"},
 	Short:   "Describe the current component state",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		owner, name, err := resolveComponentOwner(cmd, componentDescribeName)
+		contextName, owner, name, err := resolveComponentOwner(cmd, componentDescribeName)
 		if err != nil {
 			return err
 		}
@@ -73,7 +79,7 @@ var componentDescribeCmd = &cobra.Command{
 			invocation = append(invocation, "--format", componentDescribeFormat)
 		}
 
-		return invokePluginCommand(owner, invocation)
+		return invokePluginCommand(owner, contextName, invocation)
 	},
 }
 
@@ -82,7 +88,7 @@ var componentReconcileCmd = &cobra.Command{
 	Aliases: []string{"review", "align"},
 	Short:   "Review and reconcile component state",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		owner, name, err := resolveComponentOwner(cmd, componentReconcileName)
+		contextName, owner, name, err := resolveComponentOwner(cmd, componentReconcileName)
 		if err != nil {
 			return err
 		}
@@ -107,7 +113,7 @@ var componentReconcileCmd = &cobra.Command{
 			invocation = append(invocation, "--format", componentReconcileFormat)
 		}
 
-		return invokePluginCommand(owner, invocation)
+		return invokePluginCommand(owner, contextName, invocation)
 	},
 }
 
@@ -116,7 +122,7 @@ var componentSetCmd = &cobra.Command{
 	Short: "Set a component disposition",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		owner, name, err := resolveComponentOwner(cmd, args[0])
+		contextName, owner, name, err := resolveComponentOwner(cmd, args[0])
 		if err != nil {
 			return err
 		}
@@ -144,7 +150,7 @@ var componentSetCmd = &cobra.Command{
 			invocation = append(invocation, "--yolo")
 		}
 
-		return invokePluginCommand(owner, invocation)
+		return invokePluginCommand(owner, contextName, invocation)
 	},
 }
 
@@ -179,15 +185,15 @@ func init() {
 
 var pluginSDK *plugin.SDK
 
-func resolveComponentOwner(cmd *cobra.Command, raw string) (string, string, error) {
+func resolveComponentOwner(cmd *cobra.Command, raw string) (string, string, string, error) {
 	contextName, err := config.ResolveCurrentContextName(cmd.Flags())
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	ctx, err := config.GetContext(contextName)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	owner := ctx.Plugin
@@ -197,12 +203,12 @@ func resolveComponentOwner(cmd *cobra.Command, raw string) (string, string, erro
 		name = componentName
 	}
 	if strings.TrimSpace(owner) == "" {
-		return "", "", fmt.Errorf("context %q does not define a plugin owner", ctx.Name)
+		return "", "", "", fmt.Errorf("context %q does not define a plugin owner", ctx.Name)
 	}
 	if owner == "core" {
-		return "", "", fmt.Errorf("context %q uses plugin %q; component commands require a stack plugin such as isle", ctx.Name, owner)
+		return "", "", "", fmt.Errorf("context %q uses plugin %q; component commands require a stack plugin such as isle", ctx.Name, owner)
 	}
-	return owner, name, nil
+	return contextName, owner, name, nil
 }
 
 func splitNamespacedComponent(raw string) (string, string, bool) {
