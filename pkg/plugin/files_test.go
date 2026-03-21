@@ -60,6 +60,17 @@ func TestNewFileAccessorLocalReadListAndMatch(t *testing.T) {
 	if !slices.Equal(matches, wantMatches) {
 		t.Fatalf("unexpected matches: got %v want %v", matches, wantMatches)
 	}
+
+	flatMatches, err := accessor.MatchFilesInDir(root, "*.yml")
+	if err != nil {
+		t.Fatalf("MatchFilesInDir() error = %v", err)
+	}
+	wantFlatMatches := []string{
+		filepath.Join(root, "alpha.yml"),
+	}
+	if !slices.Equal(flatMatches, wantFlatMatches) {
+		t.Fatalf("unexpected flat matches: got %v want %v", flatMatches, wantFlatMatches)
+	}
 }
 
 func TestSDKGetFileAccessorUsesResolvedContext(t *testing.T) {

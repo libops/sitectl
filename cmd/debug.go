@@ -79,10 +79,12 @@ var debugCmd = &cobra.Command{
 			if debugVerbose {
 				pluginArgs = append(pluginArgs, "--verbose")
 			}
+			slog.Debug("handing off debug to plugin", "context", contextName, "plugin", pluginName, "args", pluginArgs)
 			output, err := pluginSDK.InvokePluginCommand(pluginName, pluginArgs, plugin.CommandExecOptions{Capture: true})
 			if err != nil {
 				return err
 			}
+			slog.Debug("plugin debug completed", "context", contextName, "plugin", pluginName)
 			if trimmed := strings.TrimSpace(output); trimmed != "" {
 				body.WriteString("\n\n")
 				body.WriteString(trimmed)
@@ -110,6 +112,7 @@ func init() {
 }
 
 func renderCoreDebug(ctx config.Context) string {
+	slog.Debug("starting core debug", "context", ctx.Name, "docker_host_type", ctx.DockerHostType)
 	meta := []debugRow{
 		{Label: "Generated", Value: time.Now().UTC().Format(time.RFC3339)},
 		{Label: "Context", Value: ctx.Name},
@@ -136,25 +139,32 @@ func renderCoreDebug(ctx config.Context) string {
 		"",
 		formatDebugRows(meta),
 	}
+	slog.Debug("collecting log diagnostics", "context", ctx.Name)
 	if diagnostics, err := collectLogDiagnostics(&ctx); err == nil {
+		slog.Debug("collected log diagnostics", "context", ctx.Name, "containers", len(diagnostics.Containers), "known_size", diagnostics.KnownSize)
 		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows(logSummaryRows(diagnostics)))
 		if debugVerbose {
 			coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Details"), "", renderLogDetailsBody(diagnostics))
 		}
 	} else {
+		slog.Debug("log diagnostics failed", "context", ctx.Name, "error", err)
 		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows([]debugRow{
 			{Label: "Log status", Value: renderStatus("warning")},
 			{Label: "Log diagnostics", Value: err.Error()},
 		}))
 	}
+	slog.Debug("collecting image diagnostics", "context", ctx.Name)
 	if diagnostics, err := collectImageDiagnostics(&ctx); err == nil {
+		slog.Debug("collected image diagnostics", "context", ctx.Name, "images", diagnostics.ImageCount, "total_bytes", diagnostics.TotalBytes)
 		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Image Summary"), "", formatDebugRows(imageSummaryRows(diagnostics)))
 	} else {
+		slog.Debug("image diagnostics failed", "context", ctx.Name, "error", err)
 		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Image Summary"), "", formatDebugRows([]debugRow{
 			{Label: "Image status", Value: renderStatus("warning")},
 			{Label: "Image diagnostics", Value: err.Error()},
 		}))
 	}
+	slog.Debug("finished core debug", "context", ctx.Name)
 	return renderDebugPanel("sitectl", strings.Join(coreBody, "\n"))
 }
 
@@ -184,6 +194,7 @@ type imageDiagnostics struct {
 }
 
 func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
+	slog.Debug("opening docker client for log diagnostics", "context", ctxCfg.Name)
 	cli, err := docker.GetDockerCli(ctxCfg)
 	if err != nil {
 		return logDiagnostics{}, err
@@ -199,6 +210,7 @@ func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
 	if err != nil {
 		return logDiagnostics{}, err
 	}
+	slog.Debug("listed containers for log diagnostics", "context", ctxCfg.Name, "count", len(containers))
 
 	diagnostics := logDiagnostics{
 		KnownSize:  true,
@@ -249,6 +261,7 @@ func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
 			}
 		}
 	} else if len(remotePaths) > 0 {
+		slog.Debug("collecting remote log file sizes", "context", ctxCfg.Name, "paths", len(remotePaths))
 		sizes, err := logFileSizesRemote(ctxCfg, remotePaths)
 		if err != nil {
 			diagnostics.KnownSize = false
@@ -283,6 +296,7 @@ func collectLogDiagnostics(ctxCfg *config.Context) (logDiagnostics, error) {
 }
 
 func collectImageDiagnostics(ctxCfg *config.Context) (imageDiagnostics, error) {
+	slog.Debug("opening docker client for image diagnostics", "context", ctxCfg.Name)
 	cli, err := docker.GetDockerCli(ctxCfg)
 	if err != nil {
 		return imageDiagnostics{}, err
@@ -298,6 +312,7 @@ func collectImageDiagnostics(ctxCfg *config.Context) (imageDiagnostics, error) {
 	if err != nil {
 		return imageDiagnostics{}, err
 	}
+	slog.Debug("listed images", "context", ctxCfg.Name, "count", len(images))
 
 	diagnostics := imageDiagnostics{ImageCount: len(images)}
 	for _, image := range images {
@@ -396,6 +411,7 @@ func logFileSizesRemote(ctxCfg *config.Context, paths []string) (map[string]int6
 		return map[string]int64{}, nil
 	}
 
+	slog.Debug("dialing ssh for remote log sizes", "context", ctxCfg.Name, "paths", len(uniquePaths))
 	client, err := ctxCfg.DialSSH()
 	if err != nil {
 		return nil, err
@@ -414,10 +430,12 @@ func logFileSizesRemote(ctxCfg *config.Context, paths []string) (map[string]int6
 		parts = append(parts, fmt.Sprintf("if test -f %s; then printf '%%s\\t' %s; stat -c %%s %s; fi", quoted, quoted, quoted))
 	}
 	cmd := strings.Join(parts, "; ")
+	slog.Debug("running remote log size command", "context", ctxCfg.Name, "command", cmd)
 	output, err := session.CombinedOutput(cmd)
 	if err != nil {
 		return nil, err
 	}
+	slog.Debug("completed remote log size command", "context", ctxCfg.Name)
 
 	sizes := map[string]int64{}
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {

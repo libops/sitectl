@@ -94,17 +94,13 @@ func (s *SDK) setupLogging(cmd *cobra.Command) error {
 	opts := &slog.HandlerOptions{
 		Level: level,
 	}
-	handler := slog.New(slog.NewTextHandler(os.Stdout, opts))
+	handler := slog.New(slog.NewTextHandler(os.Stderr, opts))
 	slog.SetDefault(handler)
 
-	// Store config for plugin use
+	// Store config for plugin use.
 	s.Config.LogLevel = ll
 	if s.RootCmd.PersistentFlags().Lookup("context") != nil {
-		if cmd.Flags().Changed("context") {
-			s.Config.Context, _ = cmd.Flags().GetString("context")
-		} else {
-			s.Config.Context = ""
-		}
+		s.Config.Context, _ = cmd.Flags().GetString("context")
 	}
 
 	return nil
@@ -357,6 +353,7 @@ func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts Command
 		invocation = append(invocation, "--log-level", s.Config.LogLevel)
 	}
 	invocation = append(invocation, args...)
+	slog.Debug("invoking plugin command", "plugin", pluginName, "path", installed.Path, "args", invocation, "capture", opts.Capture)
 
 	cmd := exec.Command(installed.Path, invocation...)
 	cmd.Env = os.Environ()
@@ -370,7 +367,13 @@ func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts Command
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
 		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+		stderrSink := io.Writer(&stderr)
+		if opts.Stderr != nil {
+			stderrSink = io.MultiWriter(opts.Stderr, &stderr)
+		} else {
+			stderrSink = io.MultiWriter(os.Stderr, &stderr)
+		}
+		cmd.Stderr = stderrSink
 		if err := cmd.Run(); err != nil {
 			detail := strings.TrimSpace(stderr.String())
 			if detail == "" {
@@ -381,6 +384,7 @@ func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts Command
 			}
 			return "", fmt.Errorf("run plugin %q: %w", pluginName, err)
 		}
+		slog.Debug("plugin command completed", "plugin", pluginName, "path", installed.Path)
 		return stdout.String(), nil
 	}
 
@@ -396,6 +400,7 @@ func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts Command
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("run plugin %q: %w", pluginName, err)
 	}
+	slog.Debug("plugin command completed", "plugin", pluginName, "path", installed.Path)
 	return "", nil
 }
 
