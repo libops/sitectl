@@ -11,6 +11,7 @@ Version: 1.2.3
 Description: Islandora support
 Author: LibOps
 Template-Repo: https://github.com/islandora-devops/isle-site-template
+Includes: drupal,libops
 `
 
 	info := ParsePluginInfoOutput(output)
@@ -22,6 +23,9 @@ Template-Repo: https://github.com/islandora-devops/isle-site-template
 	}
 	if info.Description != "Islandora support" {
 		t.Fatalf("expected description to be parsed, got %q", info.Description)
+	}
+	if len(info.Includes) != 2 || info.Includes[0] != "drupal" || info.Includes[1] != "libops" {
+		t.Fatalf("expected includes to be parsed, got %v", info.Includes)
 	}
 }
 

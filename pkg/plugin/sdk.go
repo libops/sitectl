@@ -1,10 +1,13 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 
 	"charm.land/fang/v2"
@@ -23,6 +26,7 @@ type Metadata struct {
 	Description  string
 	Author       string
 	TemplateRepo string
+	Includes     []string
 }
 
 var builtinPluginIncludes = map[string][]string{
@@ -158,6 +162,9 @@ func (s *SDK) GetMetadataCommand() *cobra.Command {
 			if s.Metadata.TemplateRepo != "" {
 				fmt.Printf("Template-Repo: %s\n", s.Metadata.TemplateRepo)
 			}
+			if len(s.Metadata.Includes) > 0 {
+				fmt.Printf("Includes: %s\n", strings.Join(s.Metadata.Includes, ","))
+			}
 		},
 	}
 }
@@ -220,13 +227,13 @@ func validateContextPlugin(contextPlugin, requestedPlugin string) error {
 	if requestedPlugin == "" {
 		return fmt.Errorf("requested plugin is empty")
 	}
-	if contextPluginSupports(contextPlugin, requestedPlugin) {
+	if ContextPluginSupports(contextPlugin, requestedPlugin) {
 		return nil
 	}
 	return fmt.Errorf("context plugin %q does not include %q", contextPlugin, requestedPlugin)
 }
 
-func contextPluginSupports(contextPlugin, requestedPlugin string) bool {
+func ContextPluginSupports(contextPlugin, requestedPlugin string) bool {
 	if contextPlugin == requestedPlugin {
 		return true
 	}
@@ -238,7 +245,7 @@ func contextPluginSupports(contextPlugin, requestedPlugin string) bool {
 			return false
 		}
 		visited[plugin] = true
-		for _, included := range builtinPluginIncludes[plugin] {
+		for _, included := range pluginIncludes(plugin) {
 			if included == requestedPlugin || walk(included) {
 				return true
 			}
@@ -247,6 +254,31 @@ func contextPluginSupports(contextPlugin, requestedPlugin string) bool {
 	}
 
 	return walk(contextPlugin)
+}
+
+func pluginIncludes(plugin string) []string {
+	seen := map[string]bool{}
+	includes := make([]string, 0, len(builtinPluginIncludes[plugin]))
+
+	for _, include := range builtinPluginIncludes[plugin] {
+		if include == "" || seen[include] {
+			continue
+		}
+		seen[include] = true
+		includes = append(includes, include)
+	}
+
+	if installed, ok := FindInstalled(plugin); ok {
+		for _, include := range installed.Includes {
+			if include == "" || seen[include] {
+				continue
+			}
+			seen[include] = true
+			includes = append(includes, include)
+		}
+	}
+
+	return includes
 }
 
 // GetComponentManager creates a component manager bound to the active sitectl context.
@@ -300,4 +332,83 @@ func (s *SDK) ExecInContainerInteractive(ctx context.Context, containerID string
 	defer cli.Close()
 
 	return cli.ExecInteractive(ctx, containerID, cmd)
+}
+
+type CommandExecOptions struct {
+	Stdin   io.Reader
+	Stdout  io.Writer
+	Stderr  io.Writer
+	Capture bool
+}
+
+func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts CommandExecOptions) (string, error) {
+	installed, ok := FindInstalled(pluginName)
+	if !ok {
+		return "", fmt.Errorf("plugin %q is not installed", pluginName)
+	}
+
+	invocation := make([]string, 0, len(args)+4)
+	if strings.TrimSpace(s.Config.Context) != "" {
+		invocation = append(invocation, "--context", s.Config.Context)
+	}
+	if strings.TrimSpace(s.Config.LogLevel) != "" {
+		invocation = append(invocation, "--log-level", s.Config.LogLevel)
+	}
+	invocation = append(invocation, args...)
+
+	cmd := exec.Command(installed.Path, invocation...)
+	cmd.Stdin = opts.Stdin
+	cmd.Stderr = opts.Stderr
+
+	if opts.Capture {
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("run plugin %q: %w", pluginName, err)
+		}
+		return stdout.String(), nil
+	}
+
+	if opts.Stdout != nil {
+		cmd.Stdout = opts.Stdout
+	}
+	if cmd.Stdout == nil {
+		cmd.Stdout = os.Stdout
+	}
+	if cmd.Stderr == nil {
+		cmd.Stderr = os.Stderr
+	}
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("run plugin %q: %w", pluginName, err)
+	}
+	return "", nil
+}
+
+func (s *SDK) InvokeIncludedPluginCommand(pluginName string, args []string, opts CommandExecOptions) (string, error) {
+	allowed := false
+	for _, include := range s.Metadata.Includes {
+		if include == pluginName {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "", fmt.Errorf("plugin %q is not included by %q", pluginName, s.Metadata.Name)
+	}
+
+	return s.InvokePluginCommand(pluginName, args, opts)
+}
+
+func (s *SDK) InvokeIncludedPlugins(args []string) ([]string, error) {
+	outputs := make([]string, 0, len(s.Metadata.Includes))
+	for _, include := range s.Metadata.Includes {
+		output, err := s.InvokeIncludedPluginCommand(include, args, CommandExecOptions{Capture: true})
+		if err != nil {
+			return nil, err
+		}
+		if trimmed := strings.TrimSpace(output); trimmed != "" {
+			outputs = append(outputs, trimmed)
+		}
+	}
+	return outputs, nil
 }

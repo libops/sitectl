@@ -61,3 +61,12 @@ func TestGetContextRejectsUnsupportedPlugin(t *testing.T) {
 		t.Fatal("expected plugin compatibility error")
 	}
 }
+
+func TestContextPluginSupportsBuiltinHierarchy(t *testing.T) {
+	if !ContextPluginSupports("isle", "drupal") {
+		t.Fatal("expected isle contexts to support drupal")
+	}
+	if ContextPluginSupports("drupal", "isle") {
+		t.Fatal("did not expect drupal contexts to support isle")
+	}
+}
