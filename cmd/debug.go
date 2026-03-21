@@ -77,7 +77,7 @@ var debugCmd = &cobra.Command{
 		body.WriteString(renderCoreDebug(ctx))
 
 		if pluginName := strings.TrimSpace(ctx.Plugin); pluginName != "" && pluginName != "core" {
-			pluginArgs := []string{"__debug"}
+			pluginArgs := []string{"--context", contextName, "__debug"}
 			if debugVerbose {
 				pluginArgs = append(pluginArgs, "--verbose")
 			}

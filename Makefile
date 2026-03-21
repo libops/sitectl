@@ -2,7 +2,7 @@
 
 BINARY_NAME=sitectl
 DOCS_PORT ?= 3000
-INSTALL_DIR ?= /usr/local/bin
+INSTALL_DIR ?= $(or $(dir $(shell which $(BINARY_NAME) 2>/dev/null)),/usr/local/bin/)
 
 deps:
 	go get .
@@ -12,7 +12,7 @@ build: deps
 	go build -o $(BINARY_NAME) .
 
 install: build
-	sudo cp $(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
+	sudo cp $(BINARY_NAME) $(INSTALL_DIR)$(BINARY_NAME)
 	@if [ -d ../sitectl-isle ]; then $(MAKE) -C ../sitectl-isle install; fi
 	@if [ -d ../sitectl-drupal ]; then $(MAKE) -C ../sitectl-drupal install; fi
 
