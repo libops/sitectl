@@ -25,6 +25,8 @@ type LocalContextCreateOptions struct {
 	ComposeNetwork      string
 	Environment         string
 	DockerSocket        string
+	DrupalRootfs        string
+	DrupalContainerRoot string
 	SetDefault          bool
 	ConfirmOverwrite    bool
 	Input               InputFunc
@@ -94,16 +96,18 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 	dockerSocket := GetDefaultLocalDockerSocket(firstNonEmpty(opts.DockerSocket, existing.DockerSocket, "/var/run/docker.sock"))
 
 	ctx := &Context{
-		Name:               name,
-		Site:               site,
-		Plugin:             plugin,
-		DockerHostType:     ContextLocal,
-		Environment:        environment,
-		DockerSocket:       dockerSocket,
-		ProjectName:        projectName,
-		ComposeProjectName: composeProjectName,
-		ComposeNetwork:     composeNetwork,
-		ProjectDir:         projectDir,
+		Name:                name,
+		Site:                site,
+		Plugin:              plugin,
+		DockerHostType:      ContextLocal,
+		Environment:         environment,
+		DockerSocket:        dockerSocket,
+		ProjectName:         projectName,
+		ComposeProjectName:  composeProjectName,
+		ComposeNetwork:      composeNetwork,
+		ProjectDir:          projectDir,
+		DrupalRootfs:        firstNonEmpty(opts.DrupalRootfs, existing.DrupalRootfs),
+		DrupalContainerRoot: firstNonEmpty(opts.DrupalContainerRoot, existing.DrupalContainerRoot),
 	}
 
 	if err := SaveContext(ctx, opts.SetDefault); err != nil {

@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -275,9 +278,32 @@ func (d *DockerClient) Exec(ctx context.Context, opts ExecOptions) (int, error) 
 	}
 	defer resp.Close()
 
-	// Copy output
-	errCh := make(chan error, 1)
+	if ctx != nil {
+		go func() {
+			<-ctx.Done()
+			resp.Close()
+		}()
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	if opts.AttachStdin {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := io.Copy(resp.Conn, opts.Stdin); err != nil && !isIgnorableExecStreamError(err) {
+				errCh <- err
+				return
+			}
+			if closer, ok := resp.Conn.(interface{ CloseWrite() error }); ok {
+				_ = closer.CloseWrite()
+			}
+		}()
+	}
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if opts.Tty {
 			// For TTY, copy directly
 			_, err := io.Copy(opts.Stdout, resp.Reader)
@@ -289,9 +315,22 @@ func (d *DockerClient) Exec(ctx context.Context, opts ExecOptions) (int, error) 
 		}
 	}()
 
-	// Wait for completion
-	if err := <-errCh; err != nil && err != io.EOF {
-		return -1, fmt.Errorf("failed to copy output: %w", err)
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
+
+	for copyErr := range errCh {
+		if ctx != nil && ctx.Err() != nil {
+			return -1, ctx.Err()
+		}
+		if copyErr != nil && !isIgnorableExecStreamError(copyErr) {
+			return -1, fmt.Errorf("failed to copy exec stream: %w", copyErr)
+		}
+	}
+
+	if ctx != nil && ctx.Err() != nil {
+		return -1, ctx.Err()
 	}
 
 	// Get exit code
@@ -301,6 +340,19 @@ func (d *DockerClient) Exec(ctx context.Context, opts ExecOptions) (int, error) 
 	}
 
 	return inspectResp.ExitCode, nil
+}
+
+func isIgnorableExecStreamError(err error) bool {
+	if err == nil || err == io.EOF {
+		return true
+	}
+	if errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "broken pipe") ||
+		strings.Contains(message, "closed network connection") ||
+		strings.Contains(message, "use of closed network connection")
 }
 
 // ExecSimple executes a simple command and returns the exit code

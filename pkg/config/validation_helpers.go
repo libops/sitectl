@@ -10,6 +10,8 @@ import (
 	"github.com/kballard/go-shellquote"
 )
 
+const defaultDrupalContainerRoot = "/var/www/drupal"
+
 func IsDockerSocketAlive(socket string) bool {
 	return isDockerSocketAlive(socket)
 }
@@ -50,6 +52,20 @@ func (c *Context) ResolveProjectPath(path string) string {
 		return filepath.Clean(path)
 	}
 	return filepath.Join(c.ProjectDir, path)
+}
+
+func (c *Context) EffectiveDrupalRootfs() string {
+	if c == nil || strings.TrimSpace(c.DrupalRootfs) == "" {
+		return "."
+	}
+	return strings.TrimSpace(c.DrupalRootfs)
+}
+
+func (c *Context) EffectiveDrupalContainerRoot() string {
+	if c == nil || strings.TrimSpace(c.DrupalContainerRoot) == "" {
+		return defaultDrupalContainerRoot
+	}
+	return strings.TrimSpace(c.DrupalContainerRoot)
 }
 
 func (c *Context) HasComposeProject() (bool, error) {

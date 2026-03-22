@@ -9,8 +9,9 @@ import (
 )
 
 type Config struct {
-	CurrentContext string    `yaml:"current-context"`
-	Contexts       []Context `yaml:"contexts"`
+	CurrentContext string     `yaml:"current-context"`
+	Contexts       []Context  `yaml:"contexts"`
+	CronSpecs      []CronSpec `yaml:"cron-specs,omitempty"`
 }
 
 func ConfigFilePath() string {

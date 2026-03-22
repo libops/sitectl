@@ -27,22 +27,24 @@ const (
 )
 
 type Context struct {
-	Name               string      `yaml:"name"`
-	Site               string      `yaml:"site"`
-	Plugin             string      `yaml:"plugin"`
-	DockerHostType     ContextType `mapstructure:"type" yaml:"type"`
-	Environment        string      `yaml:"environment,omitempty"`
-	DockerSocket       string      `yaml:"docker-socket"`
-	ProjectName        string      `yaml:"project-name"`
-	ComposeProjectName string      `yaml:"compose-project-name,omitempty"`
-	ComposeNetwork     string      `yaml:"compose-network,omitempty"`
-	ProjectDir         string      `yaml:"project-dir"`
-	SSHUser            string      `yaml:"ssh-user"`
-	SSHHostname        string      `yaml:"ssh-hostname,omitempty"`
-	SSHPort            uint        `yaml:"ssh-port,omitempty"`
-	SSHKeyPath         string      `yaml:"ssh-key,omitempty"`
-	EnvFile            []string    `yaml:"env-file"`
-	ComposeFile        []string    `yaml:"compose-file,omitempty"`
+	Name                string      `yaml:"name"`
+	Site                string      `yaml:"site"`
+	Plugin              string      `yaml:"plugin"`
+	DockerHostType      ContextType `mapstructure:"type" yaml:"type"`
+	Environment         string      `yaml:"environment,omitempty"`
+	DockerSocket        string      `yaml:"docker-socket"`
+	ProjectName         string      `yaml:"project-name"`
+	ComposeProjectName  string      `yaml:"compose-project-name,omitempty"`
+	ComposeNetwork      string      `yaml:"compose-network,omitempty"`
+	ProjectDir          string      `yaml:"project-dir"`
+	DrupalRootfs        string      `yaml:"drupal-rootfs,omitempty"`
+	DrupalContainerRoot string      `yaml:"drupal-container-root,omitempty"`
+	SSHUser             string      `yaml:"ssh-user"`
+	SSHHostname         string      `yaml:"ssh-hostname,omitempty"`
+	SSHPort             uint        `yaml:"ssh-port,omitempty"`
+	SSHKeyPath          string      `yaml:"ssh-key,omitempty"`
+	EnvFile             []string    `yaml:"env-file"`
+	ComposeFile         []string    `yaml:"compose-file,omitempty"`
 
 	// Database connection configuration
 	DatabaseService        string `yaml:"database-service,omitempty"`

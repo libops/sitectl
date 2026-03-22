@@ -229,6 +229,16 @@ func (a *FileAccessor) WriteFile(filename string, data []byte) error {
 	return err
 }
 
+func (a *FileAccessor) MkdirAll(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
+		return os.MkdirAll(path, 0o755)
+	}
+	return mkdirAllRemote(a.sftp, path)
+}
+
 func (a *FileAccessor) RemoveFile(filename string) error {
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
 		if err := os.Remove(filename); err != nil && !os.IsNotExist(err) {
@@ -238,6 +248,54 @@ func (a *FileAccessor) RemoveFile(filename string) error {
 	}
 	if err := a.sftp.Remove(filename); err != nil && !isSFTPNotExist(err) {
 		return err
+	}
+	return nil
+}
+
+func (a *FileAccessor) RemoveAll(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
+		if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+
+	entries := []string{}
+	walker := a.sftp.Walk(path)
+	for walker.Step() {
+		if err := walker.Err(); err != nil {
+			if isSFTPNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		entries = append(entries, walker.Path())
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		info, err := a.sftp.Stat(entry)
+		if err != nil {
+			if isSFTPNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if info.IsDir() {
+			if err := a.sftp.RemoveDirectory(entry); err != nil && !isSFTPNotExist(err) {
+				return err
+			}
+			continue
+		}
+		if err := a.sftp.Remove(entry); err != nil && !isSFTPNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }

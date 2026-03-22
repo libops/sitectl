@@ -60,6 +60,9 @@ func LoadFromFlags(f *pflag.FlagSet, context Context) (*Context, error) {
 			continue
 		}
 		tag = strings.Split(tag, ",")[0]
+		if f.Lookup(tag) == nil {
+			continue
+		}
 
 		// Skip map types as they're not supported as flags
 		if field.Type.Kind() == reflect.Map {

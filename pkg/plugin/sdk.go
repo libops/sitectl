@@ -54,6 +54,8 @@ type SDK struct {
 	contextValidators []validate.Validator
 	contextCache      *config.Context
 	sshClient         *ssh.Client
+	jobs              []RegisteredJob
+	jobRootCmd        *cobra.Command
 }
 
 // NewSDK creates a new plugin SDK instance
