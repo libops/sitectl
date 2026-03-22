@@ -102,7 +102,18 @@ func mkdirAllRemote(client *sftp.Client, dir string) error {
 			continue
 		}
 		current = filepath.Join(current, part)
+		info, err := client.Stat(current)
+		if err == nil {
+			if info.IsDir() {
+				continue
+			}
+			return fmt.Errorf("remote path %q exists and is not a directory", current)
+		}
 		if err := client.Mkdir(current); err != nil && !isSFTPExist(err) {
+			info, statErr := client.Stat(current)
+			if statErr == nil && info.IsDir() {
+				continue
+			}
 			return fmt.Errorf("create remote directory %q: %w", current, err)
 		}
 	}
