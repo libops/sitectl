@@ -210,6 +210,13 @@ enqueue:
 	return results, nil
 }
 
+func (a *FileAccessor) StatVFS(path string) (*sftp.StatVFS, error) {
+	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
+		return nil, fmt.Errorf("statvfs is only available for remote file access")
+	}
+	return a.sftp.StatVFS(path)
+}
+
 func (a *FileAccessor) WriteFile(filename string, data []byte) error {
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
 		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
