@@ -3,6 +3,8 @@ package cmd
 import (
 	"strings"
 	"testing"
+
+	"github.com/libops/sitectl/internal/debugreport"
 )
 
 func TestEvaluateLogConfigDetectsUnboundedJSONFileLogs(t *testing.T) {
@@ -76,5 +78,21 @@ func TestImageSummaryRowsWarnWhenThresholdExceeded(t *testing.T) {
 	}
 	if !strings.Contains(rendered, dockerPruneDocsURL) {
 		t.Fatalf("expected prune docs link, got:\n%s", rendered)
+	}
+}
+
+func TestHostSummaryRowsIncludeRequestedStats(t *testing.T) {
+	rendered := formatDebugRows(hostSummaryRows(debugreport.HostDiagnostics{
+		CPUCount:           8,
+		MemoryBytes:        16 * 1024 * 1024 * 1024,
+		SwapBytes:          2 * 1024 * 1024 * 1024,
+		DiskAvailableBytes: 50 * 1024 * 1024 * 1024,
+		OSVersion:          "Debian GNU/Linux 12 (bookworm)",
+	}, "/srv/project"))
+
+	for _, expected := range []string{"CPUs", "Memory", "Swap", "Available disk", "OS version", "Debian GNU/Linux 12 (bookworm)", "/srv/project"} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected %q in rendered rows, got:\n%s", expected, rendered)
+		}
 	}
 }

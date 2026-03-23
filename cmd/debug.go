@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/libops/sitectl/internal/debugreport"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -187,7 +188,40 @@ func renderCoreDebug(runCtx context.Context, ctx config.Context) string {
 		"",
 		formatDebugRows(meta),
 	}
-	logDiagnostics, logErr, imageDiagnostics, imageErr := collectCoreDockerDiagnostics(runCtx, &ctx)
+	var sharedSession *debugreport.Session
+	if ctx.DockerHostType == config.ContextRemote {
+		if session, err := debugreport.NewSession(&ctx); err != nil {
+			slog.Debug("shared debug session setup failed", "context", ctx.Name, "error", err)
+		} else {
+			sharedSession = session
+			defer sharedSession.Close()
+		}
+	}
+
+	var hostDiagnostics debugreport.HostDiagnostics
+	var composeDiagnostics debugreport.ComposeDiagnostics
+	var logDiagnostics logDiagnostics
+	var imageDiagnostics imageDiagnostics
+	var logErr error
+	var imageErr error
+
+	if sharedSession != nil {
+		hostDiagnostics = debugreport.CollectHostDiagnosticsWithSession(runCtx, &ctx, sharedSession)
+		composeDiagnostics = debugreport.CollectComposeDiagnosticsWithSession(runCtx, &ctx, sharedSession)
+		if cli, err := sharedSession.DockerClient(); err != nil {
+			logErr = err
+			imageErr = err
+		} else {
+			logDiagnostics, logErr = collectLogDiagnosticsWithClient(runCtx, &ctx, cli)
+			imageDiagnostics, imageErr = collectImageDiagnosticsWithClient(runCtx, &ctx, cli)
+		}
+	} else {
+		hostDiagnostics = debugreport.CollectHostDiagnostics(runCtx, &ctx)
+		composeDiagnostics = debugreport.CollectComposeDiagnostics(runCtx, &ctx)
+		logDiagnostics, logErr, imageDiagnostics, imageErr = collectCoreDockerDiagnostics(runCtx, &ctx)
+	}
+	coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Host Resources"), "", formatDebugRows(hostSummaryRows(hostDiagnostics, ctx.ProjectDir)))
+	coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Compose Services"), "", formatDebugRows(composeSummaryRows(composeDiagnostics)))
 	if logErr == nil {
 		slog.Debug("collected log diagnostics", "context", ctx.Name, "containers", len(logDiagnostics.Containers))
 		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows(logSummaryRows(logDiagnostics)))
@@ -428,6 +462,80 @@ func imageSummaryRows(diagnostics imageDiagnostics) []debugRow {
 		)
 	}
 	return rows
+}
+
+func hostSummaryRows(diagnostics debugreport.HostDiagnostics, projectDir string) []debugRow {
+	status := "ok"
+	if len(diagnostics.Issues) > 0 {
+		status = "warning"
+	}
+
+	rows := []debugRow{
+		{Label: "Host status", Value: renderStatus(status)},
+		{Label: "CPUs", Value: renderDebugValue(intValueOrUnknown(diagnostics.CPUCount))},
+		{Label: "Memory", Value: renderDebugValue(bytesValueOrUnknown(diagnostics.MemoryBytes))},
+		{Label: "Swap", Value: renderDebugValue(bytesValueOrUnknown(diagnostics.SwapBytes))},
+		{Label: "Available disk", Value: renderDebugValue(diskValueOrUnknown(diagnostics.DiskAvailableBytes, projectDir))},
+		{Label: "OS version", Value: renderDebugValue(diagnostics.OSVersion)},
+	}
+	if len(diagnostics.Issues) > 0 {
+		rows = append(rows, debugRow{Label: "Diagnostics", Value: strings.Join(diagnostics.Issues, "\n")})
+	}
+	return rows
+}
+
+func composeSummaryRows(diagnostics debugreport.ComposeDiagnostics) []debugRow {
+	status := "ok"
+	if len(diagnostics.Issues) > 0 {
+		status = "warning"
+	}
+
+	rows := []debugRow{
+		{Label: "Compose status", Value: renderStatus(status)},
+		{Label: "Compose file", Value: renderDebugValue(diagnostics.ComposePath)},
+	}
+	if len(diagnostics.Services) == 0 {
+		rows = append(rows, debugRow{Label: "Services", Value: "none found"})
+	} else {
+		for _, service := range diagnostics.Services {
+			rows = append(rows, debugRow{Label: service.Service, Value: renderDebugValue(service.Image)})
+		}
+	}
+	if len(diagnostics.Issues) > 0 {
+		rows = append(rows, debugRow{Label: "Diagnostics", Value: strings.Join(diagnostics.Issues, "\n")})
+	}
+	return rows
+}
+
+func renderDebugValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func intValueOrUnknown(value int) string {
+	if value <= 0 {
+		return ""
+	}
+	return strconv.Itoa(value)
+}
+
+func bytesValueOrUnknown(value int64) string {
+	if value < 0 {
+		return ""
+	}
+	return humanBytes(value)
+}
+
+func diskValueOrUnknown(value int64, projectDir string) string {
+	if value < 0 {
+		return ""
+	}
+	if strings.TrimSpace(projectDir) == "" {
+		return humanBytes(value)
+	}
+	return fmt.Sprintf("%s at %s", humanBytes(value), projectDir)
 }
 
 func describeContainerLogs(service, containerName string, inspect dockercontainer.InspectResponse) containerLogDiagnostics {
