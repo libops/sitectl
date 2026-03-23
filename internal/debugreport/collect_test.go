@@ -23,6 +23,39 @@ func TestParseComposeServiceImagesIncludesMissingImageMarker(t *testing.T) {
 	}
 }
 
+func TestParseComposeDiagnosticsExtractsBindMounts(t *testing.T) {
+	services, bindMounts, err := ParseComposeDiagnostics([]byte(`services:
+  app:
+    image: nginx:1.27
+    volumes:
+      - type: bind
+        source: /srv/data
+        target: /data
+      - app-data:/named
+  worker:
+    image: busybox
+    volumes:
+      - ./assets:/assets:ro
+volumes:
+  app-data: {}
+`))
+	if err != nil {
+		t.Fatalf("ParseComposeDiagnostics() error = %v", err)
+	}
+	if len(services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(services))
+	}
+	if len(bindMounts) != 2 {
+		t.Fatalf("expected 2 bind mounts, got %d (%#v)", len(bindMounts), bindMounts)
+	}
+	if bindMounts[0].Source != "./assets" || bindMounts[0].Target != "/assets" {
+		t.Fatalf("unexpected first bind mount: %#v", bindMounts[0])
+	}
+	if bindMounts[1].Source != "/srv/data" || bindMounts[1].Target != "/data" {
+		t.Fatalf("unexpected second bind mount: %#v", bindMounts[1])
+	}
+}
+
 func TestParseMemInfoReturnsMemoryAndSwapBytes(t *testing.T) {
 	memoryBytes, swapBytes, err := ParseMemInfo("MemTotal: 1024 kB\nSwapTotal: 2048 kB\n")
 	if err != nil {

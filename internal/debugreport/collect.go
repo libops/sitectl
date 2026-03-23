@@ -32,12 +32,21 @@ type HostDiagnostics struct {
 type ComposeDiagnostics struct {
 	ComposePath string
 	Services    []ComposeServiceImage
+	BindMounts  []BindMountDiagnostics
 	Issues      []string
 }
 
 type ComposeServiceImage struct {
 	Service string
 	Image   string
+}
+
+type BindMountDiagnostics struct {
+	Service        string
+	Source         string
+	Target         string
+	AvailableBytes int64
+	Issue          string
 }
 
 type Session struct {
@@ -277,34 +286,136 @@ func CollectComposeDiagnosticsWithSession(runCtx context.Context, ctxCfg *config
 		diagnostics.Issues = append(diagnostics.Issues, fmt.Sprintf("compose config: %v", err))
 		return diagnostics
 	}
-	services, parseErr := ParseComposeServiceImages([]byte(output))
+	services, bindMounts, parseErr := ParseComposeDiagnostics([]byte(output))
 	if parseErr != nil {
 		diagnostics.Issues = append(diagnostics.Issues, parseErr.Error())
 		return diagnostics
 	}
 	diagnostics.Services = services
+	diagnostics.BindMounts = collectBindMountDiskDiagnostics(ctxCfg, session, bindMounts)
 	return diagnostics
 }
 
-func ParseComposeServiceImages(data []byte) ([]ComposeServiceImage, error) {
+func ParseComposeDiagnostics(data []byte) ([]ComposeServiceImage, []BindMountDiagnostics, error) {
 	var compose struct {
 		Services map[string]struct {
-			Image string `yaml:"image"`
+			Image   string `yaml:"image"`
+			Volumes []any  `yaml:"volumes"`
 		} `yaml:"services"`
 	}
 	if err := yaml.Unmarshal(data, &compose); err != nil {
-		return nil, fmt.Errorf("parse compose file: %w", err)
+		return nil, nil, fmt.Errorf("parse compose file: %w", err)
 	}
 	services := make([]ComposeServiceImage, 0, len(compose.Services))
+	bindMounts := make([]BindMountDiagnostics, 0)
 	for serviceName, service := range compose.Services {
 		image := strings.TrimSpace(service.Image)
 		if image == "" {
 			image = "(no image field)"
 		}
 		services = append(services, ComposeServiceImage{Service: serviceName, Image: image})
+		bindMounts = append(bindMounts, extractBindMounts(serviceName, service.Volumes)...)
 	}
 	sort.Slice(services, func(i, j int) bool { return services[i].Service < services[j].Service })
-	return services, nil
+	sort.Slice(bindMounts, func(i, j int) bool {
+		if bindMounts[i].Source == bindMounts[j].Source {
+			return bindMounts[i].Service < bindMounts[j].Service
+		}
+		return bindMounts[i].Source < bindMounts[j].Source
+	})
+	return services, bindMounts, nil
+}
+
+func ParseComposeServiceImages(data []byte) ([]ComposeServiceImage, error) {
+	services, _, err := ParseComposeDiagnostics(data)
+	return services, err
+}
+
+func collectBindMountDiskDiagnostics(ctxCfg *config.Context, session *Session, mounts []BindMountDiagnostics) []BindMountDiagnostics {
+	seen := map[string]bool{}
+	results := make([]BindMountDiagnostics, 0, len(mounts))
+	for _, mount := range mounts {
+		key := strings.TrimSpace(mount.Source)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		mount.AvailableBytes = -1
+		availableBytes, err := availableDiskBytesAtPathWithSession(ctxCfg, session, mount.Source)
+		if err != nil {
+			mount.Issue = err.Error()
+		} else {
+			mount.AvailableBytes = availableBytes
+		}
+		results = append(results, mount)
+	}
+	return results
+}
+
+func extractBindMounts(serviceName string, volumes []any) []BindMountDiagnostics {
+	mounts := make([]BindMountDiagnostics, 0)
+	for _, raw := range volumes {
+		switch volume := raw.(type) {
+		case string:
+			source, target, ok := parseBindVolumeString(volume)
+			if !ok {
+				continue
+			}
+			mounts = append(mounts, BindMountDiagnostics{Service: serviceName, Source: source, Target: target})
+		case map[string]any:
+			typeName := strings.ToLower(strings.TrimSpace(stringValue(volume["type"])))
+			if typeName != "bind" {
+				continue
+			}
+			source := strings.TrimSpace(stringValue(volume["source"]))
+			target := strings.TrimSpace(stringValue(volume["target"]))
+			if source == "" || target == "" {
+				continue
+			}
+			mounts = append(mounts, BindMountDiagnostics{Service: serviceName, Source: source, Target: target})
+		}
+	}
+	return mounts
+}
+
+func parseBindVolumeString(value string) (source string, target string, ok bool) {
+	parts := splitVolumeSpec(value)
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	source = strings.TrimSpace(parts[0])
+	target = strings.TrimSpace(parts[1])
+	if source == "" || target == "" || !looksLikeHostPath(source) {
+		return "", "", false
+	}
+	return source, target, true
+}
+
+func splitVolumeSpec(value string) []string {
+	if len(value) >= 2 && value[1] == ':' {
+		parts := strings.SplitN(value[2:], ":", 3)
+		if len(parts) == 0 {
+			return []string{value}
+		}
+		parts[0] = value[:2] + parts[0]
+		return parts
+	}
+	return strings.SplitN(value, ":", 3)
+}
+
+func looksLikeHostPath(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "./") || strings.HasPrefix(trimmed, "../") || strings.HasPrefix(trimmed, "~/") || (len(trimmed) >= 3 && trimmed[1] == ':' && (trimmed[2] == '\\' || trimmed[2] == '/'))
+}
+
+func stringValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	if str, ok := value.(string); ok {
+		return str
+	}
+	return fmt.Sprint(value)
 }
 
 func ParseMemInfo(data string) (memoryBytes int64, swapBytes int64, err error) {
@@ -349,11 +460,11 @@ func availableDiskBytes(ctxCfg *config.Context) (int64, error) {
 	return availableDiskBytesWithSession(ctxCfg, nil)
 }
 
-func availableDiskBytesWithSession(ctxCfg *config.Context, session *Session) (int64, error) {
-	path := firstNonEmpty(strings.TrimSpace(ctxCfg.ProjectDir), "/")
+func availableDiskBytesAtPathWithSession(ctxCfg *config.Context, session *Session, path string) (int64, error) {
+	trimmedPath := firstNonEmpty(strings.TrimSpace(path), "/")
 	if ctxCfg.DockerHostType == config.ContextLocal {
 		var stat syscall.Statfs_t
-		if err := syscall.Statfs(path, &stat); err != nil {
+		if err := syscall.Statfs(trimmedPath, &stat); err != nil {
 			return 0, err
 		}
 		return int64(stat.Bavail) * int64(stat.Bsize), nil
@@ -364,7 +475,7 @@ func availableDiskBytesWithSession(ctxCfg *config.Context, session *Session) (in
 			return 0, err
 		}
 		if accessor != nil {
-			stat, err := accessor.StatVFS(path)
+			stat, err := accessor.StatVFS(trimmedPath)
 			if err != nil {
 				return 0, err
 			}
@@ -385,7 +496,7 @@ func availableDiskBytesWithSession(ctxCfg *config.Context, session *Session) (in
 		return 0, err
 	}
 	defer sftpClient.Close()
-	stat, err := sftpClient.StatVFS(path)
+	stat, err := sftpClient.StatVFS(trimmedPath)
 	if err != nil {
 		return 0, err
 	}
@@ -394,6 +505,10 @@ func availableDiskBytesWithSession(ctxCfg *config.Context, session *Session) (in
 		fragmentSize = int64(stat.Bsize)
 	}
 	return int64(stat.Bavail) * fragmentSize, nil
+}
+
+func availableDiskBytesWithSession(ctxCfg *config.Context, session *Session) (int64, error) {
+	return availableDiskBytesAtPathWithSession(ctxCfg, session, ctxCfg.ProjectDir)
 }
 
 func runRemoteCommandWithSSH(runCtx context.Context, ctxCfg *config.Context, sshClient *ssh.Client, cmd *exec.Cmd) (string, error) {

@@ -501,6 +501,17 @@ func composeSummaryRows(diagnostics debugreport.ComposeDiagnostics) []debugRow {
 			rows = append(rows, debugRow{Label: service.Service, Value: renderDebugValue(service.Image)})
 		}
 	}
+	if len(diagnostics.BindMounts) > 0 {
+		for _, mount := range diagnostics.BindMounts {
+			value := mount.Target + " <- " + mount.Source
+			if mount.Issue != "" {
+				value += " (" + mount.Issue + ")"
+			} else {
+				value += ": " + humanBytes(mount.AvailableBytes) + " available"
+			}
+			rows = append(rows, debugRow{Label: "Bind mount", Value: value})
+		}
+	}
 	if len(diagnostics.Issues) > 0 {
 		rows = append(rows, debugRow{Label: "Diagnostics", Value: strings.Join(diagnostics.Issues, "\n")})
 	}
