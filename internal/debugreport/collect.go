@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/docker/docker/client"
 	"github.com/kballard/go-shellquote"
@@ -463,11 +462,7 @@ func availableDiskBytes(ctxCfg *config.Context) (int64, error) {
 func availableDiskBytesAtPathWithSession(ctxCfg *config.Context, session *Session, path string) (int64, error) {
 	trimmedPath := firstNonEmpty(strings.TrimSpace(path), "/")
 	if ctxCfg.DockerHostType == config.ContextLocal {
-		var stat syscall.Statfs_t
-		if err := syscall.Statfs(trimmedPath, &stat); err != nil {
-			return 0, err
-		}
-		return int64(stat.Bavail) * int64(stat.Bsize), nil
+		return localAvailableDiskBytes(trimmedPath)
 	}
 	if session != nil {
 		accessor, err := session.fileAccessorForContext()
