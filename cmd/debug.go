@@ -123,6 +123,7 @@ func collectDebugReport(runCtx context.Context, contextName string, ctx config.C
 func init() {
 	debugCmd.Flags().StringVarP(&debugOutputPath, "output", "o", "", "Write the bundle to a file instead of stdout.")
 	debugCmd.Flags().BoolVarP(&debugVerbose, "verbose", "v", false, "Include additional diagnostic details.")
+	debugCmd.GroupID = "troubleshoot"
 	RootCmd.AddCommand(debugCmd)
 }
 

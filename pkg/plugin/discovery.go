@@ -21,8 +21,13 @@ type InstalledPlugin struct {
 	Author            string
 	TemplateRepo      string
 	CanCreate         bool
+	CanDeploy         bool
+	CanConverge       bool
+	CanSet            bool
+	CanValidate       bool
 	Includes          []string
 	CreateDefinitions []CreateSpec
+	DeployDefinitions []DeploySpec
 }
 
 var builtinTemplateRepos = map[string]string{
@@ -171,7 +176,10 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 	if !parsed.CanCreate {
 		parsed.CanCreate = len(parsed.CreateDefinitions) > 0
 	}
-	slog.Debug("inspected plugin metadata", "plugin", pluginName, "path", pluginPath, "can_create", parsed.CanCreate, "includes", len(parsed.Includes), "create_definitions", len(parsed.CreateDefinitions), "duration", time.Since(started))
+	if !parsed.CanDeploy {
+		parsed.CanDeploy = len(parsed.DeployDefinitions) > 0
+	}
+	slog.Debug("inspected plugin metadata", "plugin", pluginName, "path", pluginPath, "can_create", parsed.CanCreate, "can_deploy", parsed.CanDeploy, "can_converge", parsed.CanConverge, "can_set", parsed.CanSet, "can_validate", parsed.CanValidate, "includes", len(parsed.Includes), "create_definitions", len(parsed.CreateDefinitions), "deploy_definitions", len(parsed.DeployDefinitions), "duration", time.Since(started))
 	return parsed
 }
 

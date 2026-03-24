@@ -83,6 +83,16 @@ func init() {
 
 	RootCmd.PersistentFlags().String("context", c, "The sitectl context to use. See sitectl config --help for more info")
 	RootCmd.PersistentFlags().String("log-level", ll, "The logging level for the command")
+
+	RootCmd.AddGroup(
+		&cobra.Group{ID: "setup", Title: "Setup:"},
+		&cobra.Group{ID: "workflow", Title: "Workflow:"},
+		&cobra.Group{ID: "ops", Title: "Operations:"},
+		&cobra.Group{ID: "troubleshoot", Title: "Troubleshooting:"},
+		&cobra.Group{ID: "advanced", Title: "Advanced:"},
+		&cobra.Group{ID: "plugins", Title: "Plugin Commands:"},
+	)
+
 	discoverAndRegisterPlugins()
 }
 
@@ -107,6 +117,7 @@ func discoverAndRegisterPlugins() {
 				return nil
 			},
 			DisableFlagParsing: true,
+			GroupID:            "plugins",
 		}
 		RootCmd.AddCommand(pluginCmd)
 	}

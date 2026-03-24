@@ -56,6 +56,7 @@ database port is never exposed on the host. This command is macOS only.`,
 }
 
 func init() {
+	sequelAceCmd.GroupID = "troubleshoot"
 	RootCmd.AddCommand(sequelAceCmd)
 
 	sequelAceCmd.Flags().String("sequel-ace-path", "/Applications/Sequel Ace.app/Contents/MacOS/Sequel Ace", "Path to the Sequel Ace binary.")

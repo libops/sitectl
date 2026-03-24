@@ -59,6 +59,11 @@ type SDK struct {
 	creates           []RegisteredCreate
 	createRootCmd     *cobra.Command
 	componentDefs     []component.Definition
+	deploys           []RegisteredDeploy
+	deployRootCmd     *cobra.Command
+	hasConverge       bool
+	hasSet            bool
+	hasValidate       bool
 }
 
 // NewSDK creates a new plugin SDK instance
@@ -178,8 +183,13 @@ func (s *SDK) GetDiscoveryMetadataCommand() *cobra.Command {
 				TemplateRepo:      strings.TrimSpace(s.Metadata.TemplateRepo),
 				Includes:          append([]string{}, s.Metadata.Includes...),
 				CreateDefinitions: s.CreateDefinitions(),
+				DeployDefinitions: s.DeployDefinitions(),
+				CanConverge:       s.hasConverge,
+				CanSet:            s.hasSet,
+				CanValidate:       s.hasValidate,
 			}
 			info.CanCreate = len(info.CreateDefinitions) > 0
+			info.CanDeploy = len(info.DeployDefinitions) > 0
 			if info.TemplateRepo == "" {
 				if spec, ok := defaultCreateDefinition(info.CreateDefinitions); ok {
 					info.TemplateRepo = strings.TrimSpace(spec.DockerComposeRepo)

@@ -489,5 +489,6 @@ func init() {
 	configCmd.AddCommand(setContextCmd)
 	configCmd.AddCommand(useContextCmd)
 	configCmd.AddCommand(deleteContextCmd)
+	configCmd.GroupID = "setup"
 	RootCmd.AddCommand(configCmd)
 }

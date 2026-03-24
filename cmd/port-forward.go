@@ -151,5 +151,6 @@ func forward(client *ssh.Client, localConn net.Conn, remoteAddr string, errw io.
 }
 
 func init() {
+	portForwardCmd.GroupID = "troubleshoot"
 	RootCmd.AddCommand(portForwardCmd)
 }
