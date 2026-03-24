@@ -18,7 +18,11 @@ import (
 
 var RootCmd = &cobra.Command{
 	Use:   "sitectl",
-	Short: "Interact with your docker compose site",
+	Short: "Manage Docker Compose sites across local and remote environments",
+	Long: `sitectl manages Docker Compose-based sites across local and remote environments.
+
+Run it with no arguments to open the interactive dashboard. Use subcommands to manage
+contexts, run compose operations, toggle components, forward ports, and collect diagnostics.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		level := slog.LevelInfo
 		ll, err := cmd.Flags().GetString("log-level")

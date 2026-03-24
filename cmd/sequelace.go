@@ -14,7 +14,11 @@ import (
 
 var sequelAceCmd = &cobra.Command{
 	Use:   "sequelace",
-	Short: "Connect to your MySQL/Mariadb database using Sequel Ace (Mac OS only)",
+	Short: "Open the site database in Sequel Ace (macOS only)",
+	Long: `Open a direct connection to the site's MySQL/MariaDB container in Sequel Ace.
+
+For remote contexts, sitectl establishes an SSH tunnel before launching Sequel Ace so the
+database port is never exposed on the host. This command is macOS only.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if runtime.GOOS != "darwin" {
 			return fmt.Errorf("sequelace is only supported on mac OS")
@@ -54,5 +58,5 @@ var sequelAceCmd = &cobra.Command{
 func init() {
 	RootCmd.AddCommand(sequelAceCmd)
 
-	sequelAceCmd.Flags().String("sequel-ace-path", "/Applications/Sequel Ace.app/Contents/MacOS/Sequel Ace", "Full path to your Sequel Ace app")
+	sequelAceCmd.Flags().String("sequel-ace-path", "/Applications/Sequel Ace.app/Contents/MacOS/Sequel Ace", "Path to the Sequel Ace binary.")
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/libops/sitectl/internal/debugreport"
+	"github.com/libops/sitectl/pkg/plugin/debugui"
 )
 
 func TestEvaluateLogConfigDetectsUnboundedJSONFileLogs(t *testing.T) {
@@ -28,7 +29,7 @@ func TestLogSummaryRowsIncludeRecommendationWhenLogsNeedAttention(t *testing.T) 
 		},
 	})
 
-	rendered := formatDebugRows(rows)
+	rendered := debugui.FormatRows(rows)
 	if strings.Contains(rendered, "Total logs") {
 		t.Fatalf("expected log summary without total log size, got:\n%s", rendered)
 	}
@@ -58,7 +59,7 @@ func TestLogSummaryRowsStayCompact(t *testing.T) {
 		},
 	})
 
-	rendered := formatDebugRows(rows)
+	rendered := debugui.FormatRows(rows)
 	if strings.Contains(rendered, "drupal: driver=") {
 		t.Fatalf("expected compact output without per-container detail, got:\n%s", rendered)
 	}
@@ -68,7 +69,7 @@ func TestLogSummaryRowsStayCompact(t *testing.T) {
 }
 
 func TestImageSummaryRowsWarnWhenThresholdExceeded(t *testing.T) {
-	rendered := formatDebugRows(imageSummaryRows(imageDiagnostics{
+	rendered := debugui.FormatRows(imageSummaryRows(imageDiagnostics{
 		TotalBytes: imageSizeWarningThreshold + 1,
 		ImageCount: 42,
 	}))
@@ -82,7 +83,7 @@ func TestImageSummaryRowsWarnWhenThresholdExceeded(t *testing.T) {
 }
 
 func TestHostSummaryRowsIncludeRequestedStats(t *testing.T) {
-	rendered := formatDebugRows(hostSummaryRows(debugreport.HostDiagnostics{
+	rendered := debugui.FormatRows(hostSummaryRows(debugreport.HostDiagnostics{
 		CPUCount:           8,
 		MemoryBytes:        16 * 1024 * 1024 * 1024,
 		SwapBytes:          2 * 1024 * 1024 * 1024,

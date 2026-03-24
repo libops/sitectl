@@ -1,7 +1,7 @@
 package config
 
 import (
-	"log/slog"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -14,28 +14,28 @@ type Config struct {
 	CronSpecs      []CronSpec `yaml:"cron-specs,omitempty"`
 }
 
-func ConfigFilePath() string {
+func ConfigFilePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		slog.Error("Unable to detect home directory", "err", err)
-		os.Exit(1)
+		return "", fmt.Errorf("unable to detect home directory: %w", err)
 	}
 
 	baseDir := filepath.Join(home, ".sitectl")
-	_, err = os.Stat(baseDir)
-	if os.IsNotExist(err) {
-		err = os.Mkdir(baseDir, 0700)
-		if err != nil {
-			slog.Error("Unable to create ~/.sitectl directory", "err", err)
-			os.Exit(1)
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		if err := os.Mkdir(baseDir, 0700); err != nil {
+			return "", fmt.Errorf("unable to create ~/.sitectl directory: %w", err)
 		}
 	}
 
-	return filepath.Join(baseDir, "config.yaml")
+	return filepath.Join(baseDir, "config.yaml"), nil
 }
 
 func Load() (*Config, error) {
-	data, err := os.ReadFile(ConfigFilePath())
+	path, err := ConfigFilePath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return &Config{}, nil
 	}
@@ -45,11 +45,15 @@ func Load() (*Config, error) {
 }
 
 func Save(cfg *Config) error {
+	path, err := ConfigFilePath()
+	if err != nil {
+		return err
+	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(ConfigFilePath(), data, 0600)
+	return os.WriteFile(path, data, 0600)
 }
 
 func Current() (string, error) {

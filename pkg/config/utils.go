@@ -180,13 +180,9 @@ func isDockerSocketAlive(socket string) bool {
 }
 
 func SetCommandFlags(flags *pflag.FlagSet) {
-	path, err := os.Getwd()
-	if err != nil {
-		slog.Error("Unable to get current working directory", "err", err)
-		os.Exit(1)
+	if path, err := os.Getwd(); err == nil {
+		_ = godotenv.Load(filepath.Join(path, ".env"))
 	}
-	env := filepath.Join(path, ".env")
-	_ = godotenv.Load(env)
 
 	key := filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa")
 

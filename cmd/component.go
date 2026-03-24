@@ -49,13 +49,22 @@ var (
 
 var componentCmd = &cobra.Command{
 	Use:   "component",
-	Short: "Describe and reconcile stack components for the active context",
+	Short: "Inspect and manage stack components for the active context",
+	Long: `Components are optional stack features — such as Fcrepo or Blazegraph — that can be toggled on or off.
+
+sitectl dispatches component commands to the plugin associated with the active context. The plugin
+provides the component registry; sitectl provides a consistent entry point regardless of which stack
+you are working with.`,
 }
 
 var componentDescribeCmd = &cobra.Command{
 	Use:     "describe",
 	Aliases: []string{"status"},
-	Short:   "Describe the current component state",
+	Short:   "Show the current state of each component",
+	Long: `Show the current state of each component registered by the active context's plugin.
+
+Each component is reported as on, off, or drifted. A drifted component means the project files no
+longer match the last recorded state — run reconcile to bring them back into alignment.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName, owner, name, err := resolveComponentOwner(cmd, componentDescribeName)
 		if err != nil {
@@ -86,7 +95,11 @@ var componentDescribeCmd = &cobra.Command{
 var componentReconcileCmd = &cobra.Command{
 	Use:     "reconcile",
 	Aliases: []string{"review", "align"},
-	Short:   "Review and reconcile component state",
+	Short:   "Detect and repair component configuration drift",
+	Long: `Inspect each component and apply any changes needed to bring the project back into alignment.
+
+By default the command is interactive and asks before applying changes. Pass --report to preview
+what would change without applying it.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName, owner, name, err := resolveComponentOwner(cmd, componentReconcileName)
 		if err != nil {
@@ -119,8 +132,14 @@ var componentReconcileCmd = &cobra.Command{
 
 var componentSetCmd = &cobra.Command{
 	Use:   "set <component> [disposition]",
-	Short: "Set a component disposition",
-	Args:  cobra.RangeArgs(1, 2),
+	Short: "Enable, disable, or reconfigure a component",
+	Long: `Set the state or disposition of a named component in the active context's plugin.
+
+Prefix the component name with the plugin namespace to target it directly:
+
+  sitectl component set isle/fcrepo off
+  sitectl component set isle/blazegraph off`,
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName, owner, name, err := resolveComponentOwner(cmd, args[0])
 		if err != nil {
@@ -157,25 +176,25 @@ var componentSetCmd = &cobra.Command{
 func init() {
 	pluginSDK = plugin.NewSDK(plugin.Metadata{Name: "sitectl"})
 
-	componentDescribeCmd.Flags().StringVarP(&componentDescribeName, "component", "c", "", "Namespaced component to describe, for example isle/fcrepo")
-	componentDescribeCmd.Flags().StringVar(&componentDescribePath, "path", "", "Project path override")
-	componentDescribeCmd.Flags().StringVar(&componentDescribeDrupalRoot, "drupal-rootfs", "", "Drupal rootfs path override")
-	componentDescribeCmd.Flags().BoolVar(&componentDescribeVerbose, "verbose", false, "Include verbose component details")
-	componentDescribeCmd.Flags().StringVar(&componentDescribeFormat, "format", "", "Output format override")
+	componentDescribeCmd.Flags().StringVarP(&componentDescribeName, "component", "c", "", "Component to describe, e.g. isle/fcrepo. Defaults to all components.")
+	componentDescribeCmd.Flags().StringVar(&componentDescribePath, "path", "", "Path to the project directory. Defaults to the active context project directory.")
+	componentDescribeCmd.Flags().StringVar(&componentDescribeDrupalRoot, "drupal-rootfs", "", "Path to the Drupal web root, relative to --path.")
+	componentDescribeCmd.Flags().BoolVar(&componentDescribeVerbose, "verbose", false, "Show additional details for each component.")
+	componentDescribeCmd.Flags().StringVar(&componentDescribeFormat, "format", "", "Output format (default: table).")
 
-	componentReconcileCmd.Flags().StringVarP(&componentReconcileName, "component", "c", "", "Namespaced component to reconcile, for example isle/fcrepo")
-	componentReconcileCmd.Flags().StringVar(&componentReconcilePath, "path", "", "Project path override")
-	componentReconcileCmd.Flags().StringVar(&componentReconcileDrupalRoot, "drupal-rootfs", "", "Drupal rootfs path override")
-	componentReconcileCmd.Flags().BoolVar(&componentReconcileReport, "report", false, "Render a report instead of applying changes")
-	componentReconcileCmd.Flags().BoolVar(&componentReconcileVerbose, "verbose", false, "Include verbose component details")
-	componentReconcileCmd.Flags().StringVar(&componentReconcileFormat, "format", "", "Output format override")
+	componentReconcileCmd.Flags().StringVarP(&componentReconcileName, "component", "c", "", "Component to reconcile, e.g. isle/fcrepo. Defaults to all components.")
+	componentReconcileCmd.Flags().StringVar(&componentReconcilePath, "path", "", "Path to the project directory. Defaults to the active context project directory.")
+	componentReconcileCmd.Flags().StringVar(&componentReconcileDrupalRoot, "drupal-rootfs", "", "Path to the Drupal web root, relative to --path.")
+	componentReconcileCmd.Flags().BoolVar(&componentReconcileReport, "report", false, "Preview changes without applying them.")
+	componentReconcileCmd.Flags().BoolVar(&componentReconcileVerbose, "verbose", false, "Show additional details for each component.")
+	componentReconcileCmd.Flags().StringVar(&componentReconcileFormat, "format", "", "Output format (default: table).")
 
-	componentSetCmd.Flags().StringVar(&componentSetPath, "path", "", "Project path override")
-	componentSetCmd.Flags().StringVar(&componentSetDrupalRoot, "drupal-rootfs", "", "Drupal rootfs path override")
-	componentSetCmd.Flags().StringVar(&componentSetState, "state", "", "Explicit state override")
-	componentSetCmd.Flags().StringVar(&componentSetDisposition, "disposition", "", "Explicit disposition override")
-	componentSetCmd.Flags().StringVar(&componentSetTLSMode, "tls-mode", "", "TLS mode override")
-	componentSetCmd.Flags().BoolVar(&componentSetYolo, "yolo", false, "Apply without confirmation")
+	componentSetCmd.Flags().StringVar(&componentSetPath, "path", "", "Path to the project directory. Defaults to the active context project directory.")
+	componentSetCmd.Flags().StringVar(&componentSetDrupalRoot, "drupal-rootfs", "", "Path to the Drupal web root, relative to --path.")
+	componentSetCmd.Flags().StringVar(&componentSetState, "state", "", "State to apply (on, off).")
+	componentSetCmd.Flags().StringVar(&componentSetDisposition, "disposition", "", "Disposition to apply (enabled, disabled, superceded, distributed).")
+	componentSetCmd.Flags().StringVar(&componentSetTLSMode, "tls-mode", "", "TLS mode (http, self-managed, mkcert, letsencrypt).")
+	componentSetCmd.Flags().BoolVar(&componentSetYolo, "yolo", false, "Skip the confirmation prompt.")
 
 	componentCmd.AddCommand(componentDescribeCmd)
 	componentCmd.AddCommand(componentReconcileCmd)

@@ -64,7 +64,11 @@ func TestLoadEmptyConfig(t *testing.T) {
 func TestConfigFilePath(t *testing.T) {
 	home := os.Getenv("HOME")
 	expected := filepath.Join(home, ".sitectl", "config.yaml")
-	if path := ConfigFilePath(); path != expected {
+	path, err := ConfigFilePath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != expected {
 		t.Errorf("expected config file path %s, got %s", expected, path)
 	}
 }

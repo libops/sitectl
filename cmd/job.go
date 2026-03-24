@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/helpers"
 	corejob "github.com/libops/sitectl/pkg/job"
 	"github.com/libops/sitectl/pkg/plugin"
 	"github.com/spf13/cobra"
@@ -20,11 +21,19 @@ import (
 var jobCmd = &cobra.Command{
 	Use:   "job",
 	Short: "List and run plugin-defined jobs",
+	Long: `Jobs are plugin-defined operations that run against a specific context — backups, imports,
+and other maintenance tasks. Plugins register jobs when loaded for the active context.
+
+Use list to see what jobs are available, then run to execute one.`,
 }
 
 var jobListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List available jobs for the active or selected context",
+	Long: `List jobs registered by the plugins associated with the active context.
+
+Each job shows its name, owning plugin, and a short description. Use the name with
+job run to execute it.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName, err := config.ResolveCurrentContextName(cmd.Flags())
 		if err != nil {
@@ -57,7 +66,7 @@ var jobExecCmd = &cobra.Command{
 	DisableFlagParsing: true,
 	Args:               cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		filteredArgs, contextName, err := pluginContextArgs(args)
+		filteredArgs, contextName, err := helpers.GetContextFromArgs(cmd, args)
 		if err != nil {
 			return err
 		}
@@ -147,32 +156,6 @@ func resolveJobOwner(ctx config.Context, raw string) (string, string, error) {
 		return "", "", fmt.Errorf("job %q is ambiguous; qualify it as plugin/job (%s)", name, strings.Join(owners, ", "))
 	}
 	return matches[0].Plugin, matches[0].Name, nil
-}
-
-func pluginContextArgs(args []string) ([]string, string, error) {
-	contextName, err := RootCmd.PersistentFlags().GetString("context")
-	if err != nil {
-		return nil, "", err
-	}
-	filtered := make([]string, 0, len(args))
-	skipNext := false
-	for _, arg := range args {
-		if skipNext {
-			contextName = arg
-			skipNext = false
-			continue
-		}
-		if arg == "--context" {
-			skipNext = true
-			continue
-		}
-		if strings.HasPrefix(arg, "--context=") {
-			contextName = strings.TrimSpace(strings.TrimPrefix(arg, "--context="))
-			continue
-		}
-		filtered = append(filtered, arg)
-	}
-	return filtered, contextName, nil
 }
 
 func init() {

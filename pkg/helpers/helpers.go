@@ -2,19 +2,12 @@ package helpers
 
 import (
 	"fmt"
-	"log/slog"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
 )
-
-func ExitOnError(err error) {
-	slog.Error(err.Error())
-	os.Exit(1)
-}
 
 // FirstNonEmpty returns the first non-empty (after trimming whitespace) string
 // from the provided values, or empty string if all are empty.

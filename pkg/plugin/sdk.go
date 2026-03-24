@@ -17,7 +17,6 @@ import (
 	"github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
-	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/libops/sitectl/pkg/validate"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -125,7 +124,7 @@ func (s *SDK) addCommonFlags() {
 	s.RootCmd.PersistentFlags().String("log-level", ll, "The logging level for the command")
 	c, err := config.Current()
 	if err != nil {
-		helpers.ExitOnError(fmt.Errorf("unable to fetch current context: %v", err))
+		slog.Warn("unable to fetch current context, defaulting to empty", "err", err)
 	}
 
 	s.RootCmd.PersistentFlags().String("context", c, "The sitectl context to use. See sitectl config --help for more info")
@@ -166,19 +165,21 @@ func (s *SDK) GetMetadataCommand() *cobra.Command {
 		Use:    "plugin-info",
 		Short:  "Display plugin metadata",
 		Hidden: true, // Hidden from normal help, used for plugin discovery
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("Name: %s\n", s.Metadata.Name)
-			fmt.Printf("Version: %s\n", s.Metadata.Version)
-			fmt.Printf("Description: %s\n", s.Metadata.Description)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Name: %s\n", s.Metadata.Name)
+			fmt.Fprintf(out, "Version: %s\n", s.Metadata.Version)
+			fmt.Fprintf(out, "Description: %s\n", s.Metadata.Description)
 			if s.Metadata.Author != "" {
-				fmt.Printf("Author: %s\n", s.Metadata.Author)
+				fmt.Fprintf(out, "Author: %s\n", s.Metadata.Author)
 			}
 			if s.Metadata.TemplateRepo != "" {
-				fmt.Printf("Template-Repo: %s\n", s.Metadata.TemplateRepo)
+				fmt.Fprintf(out, "Template-Repo: %s\n", s.Metadata.TemplateRepo)
 			}
 			if len(s.Metadata.Includes) > 0 {
-				fmt.Printf("Includes: %s\n", strings.Join(s.Metadata.Includes, ","))
+				fmt.Fprintf(out, "Includes: %s\n", strings.Join(s.Metadata.Includes, ","))
 			}
+			return nil
 		},
 	}
 }

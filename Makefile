@@ -1,4 +1,4 @@
-.PHONY: build deps lint test docker integration-test plugins install-plugins publish-aptly-repo install
+.PHONY: build deps lint test docker integration-test plugins install-plugins publish-aptly-repo install docs-snippets
 
 BINARY_NAME=sitectl
 DOCS_PORT ?= 3000
@@ -32,3 +32,6 @@ test: build
 
 publish-aptly-repo:
 	bash ./scripts/publish-aptly-repo.sh
+
+docs-snippets:
+	go run ./scripts/gen-docs-snippets/

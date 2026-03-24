@@ -107,23 +107,23 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 
 			remoteEndpoint := fmt.Sprintf("%s:%d", serviceIp, remotePort)
 			go func(listener net.Listener, lp, remoteAddr string) {
-				fmt.Printf("Forwarding localhost:%s -> %s via SSH\n", lp, remoteAddr)
+				fmt.Fprintf(cmd.OutOrStdout(), "Forwarding localhost:%s -> %s via SSH\n", lp, remoteAddr)
 				for {
 					localConn, err := listener.Accept()
 					if err != nil {
 						if strings.Contains(err.Error(), "use of closed network connection") {
 							return
 						}
-						fmt.Fprintf(os.Stderr, "error accepting connection on port %s: %v\n", lp, err)
+						fmt.Fprintf(cmd.ErrOrStderr(), "error accepting connection on port %s: %v\n", lp, err)
 						return
 					}
-					go forward(cli.SshCli, localConn, remoteAddr)
+					go forward(cli.SshCli, localConn, remoteAddr, cmd.ErrOrStderr())
 				}
 			}(listener, localPortStr, remoteEndpoint)
 		}
 
 		<-done
-		fmt.Println("Shutting down port forwards...")
+		fmt.Fprintln(cmd.OutOrStdout(), "Shutting down port forwards...")
 		for _, listener := range listeners {
 			listener.Close()
 		}
@@ -131,22 +131,22 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 	},
 }
 
-func forward(client *ssh.Client, localConn net.Conn, remoteAddr string) {
+func forward(client *ssh.Client, localConn net.Conn, remoteAddr string, errw io.Writer) {
 	defer localConn.Close()
 	remoteConn, err := client.Dial("tcp", remoteAddr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to dial remote address %s: %v\n", remoteAddr, err)
+		fmt.Fprintf(errw, "failed to dial remote address %s: %v\n", remoteAddr, err)
 		return
 	}
 	defer remoteConn.Close()
 
 	go func() {
 		if _, err := io.Copy(remoteConn, localConn); err != nil {
-			fmt.Fprintf(os.Stderr, "error while copying local to remote: %v\n", err)
+			fmt.Fprintf(errw, "error while copying local to remote: %v\n", err)
 		}
 	}()
 	if _, err := io.Copy(localConn, remoteConn); err != nil {
-		fmt.Fprintf(os.Stderr, "error while copying remote to local: %v\n", err)
+		fmt.Fprintf(errw, "error while copying remote to local: %v\n", err)
 	}
 }
 
