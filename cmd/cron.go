@@ -478,5 +478,6 @@ func init() {
 	cronCmd.AddCommand(cronRunCmd)
 	cronCmd.AddCommand(cronInstalledCmd)
 	cronCmd.AddCommand(cronRenderSystemdCmd)
+	cronCmd.GroupID = "ops"
 	RootCmd.AddCommand(cronCmd)
 }

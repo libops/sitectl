@@ -32,6 +32,7 @@ var createCmd = &cobra.Command{
 }
 
 func init() {
+	createCmd.GroupID = "setup"
 	RootCmd.AddCommand(createCmd)
 }
 

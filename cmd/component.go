@@ -199,6 +199,7 @@ func init() {
 	componentCmd.AddCommand(componentDescribeCmd)
 	componentCmd.AddCommand(componentReconcileCmd)
 	componentCmd.AddCommand(componentSetCmd)
+	componentCmd.GroupID = "advanced"
 	RootCmd.AddCommand(componentCmd)
 }
 

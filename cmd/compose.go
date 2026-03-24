@@ -134,5 +134,6 @@ Examples:
 }
 
 func init() {
+	composeCmd.GroupID = "ops"
 	RootCmd.AddCommand(composeCmd)
 }

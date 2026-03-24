@@ -161,6 +161,7 @@ func resolveJobOwner(ctx config.Context, raw string) (string, string, error) {
 func init() {
 	jobCmd.AddCommand(jobListCmd)
 	jobCmd.AddCommand(jobExecCmd)
+	jobCmd.GroupID = "ops"
 	RootCmd.AddCommand(jobCmd)
 }
 
