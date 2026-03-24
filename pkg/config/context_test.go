@@ -17,7 +17,11 @@ func writeConfig(cfg *Config, t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal config: %v", err)
 	}
-	err = os.WriteFile(ConfigFilePath(), data, 0644)
+	cfgPath, err := ConfigFilePath()
+	if err != nil {
+		t.Fatalf("failed to get config file path: %v", err)
+	}
+	err = os.WriteFile(cfgPath, data, 0644)
 	if err != nil {
 		t.Fatalf("failed to write config file: %v", err)
 	}

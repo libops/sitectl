@@ -113,13 +113,8 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 }
 
 func pluginSupportsCreate(pluginPath string) bool {
-	cmd := exec.Command(pluginPath, "create", "--help")
-	if output, err := cmd.CombinedOutput(); err == nil {
-		return true
-	} else if strings.Contains(strings.ToLower(string(output)), "unknown command") {
-		return false
-	}
-	return false
+	_, err := exec.Command(pluginPath, "create", "--help").Output()
+	return err == nil
 }
 
 func ParsePluginInfoOutput(output string) InstalledPlugin {

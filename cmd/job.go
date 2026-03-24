@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/helpers"
 	corejob "github.com/libops/sitectl/pkg/job"
 	"github.com/libops/sitectl/pkg/plugin"
 	"github.com/spf13/cobra"
@@ -57,7 +58,7 @@ var jobExecCmd = &cobra.Command{
 	DisableFlagParsing: true,
 	Args:               cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		filteredArgs, contextName, err := pluginContextArgs(args)
+		filteredArgs, contextName, err := helpers.GetContextFromArgs(cmd, args)
 		if err != nil {
 			return err
 		}
@@ -147,32 +148,6 @@ func resolveJobOwner(ctx config.Context, raw string) (string, string, error) {
 		return "", "", fmt.Errorf("job %q is ambiguous; qualify it as plugin/job (%s)", name, strings.Join(owners, ", "))
 	}
 	return matches[0].Plugin, matches[0].Name, nil
-}
-
-func pluginContextArgs(args []string) ([]string, string, error) {
-	contextName, err := RootCmd.PersistentFlags().GetString("context")
-	if err != nil {
-		return nil, "", err
-	}
-	filtered := make([]string, 0, len(args))
-	skipNext := false
-	for _, arg := range args {
-		if skipNext {
-			contextName = arg
-			skipNext = false
-			continue
-		}
-		if arg == "--context" {
-			skipNext = true
-			continue
-		}
-		if strings.HasPrefix(arg, "--context=") {
-			contextName = strings.TrimSpace(strings.TrimPrefix(arg, "--context="))
-			continue
-		}
-		filtered = append(filtered, arg)
-	}
-	return filtered, contextName, nil
 }
 
 func init() {

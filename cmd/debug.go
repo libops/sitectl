@@ -13,7 +13,6 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	dockerimage "github.com/docker/docker/api/types/image"
@@ -23,6 +22,7 @@ import (
 	"github.com/libops/sitectl/pkg/docker"
 	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/libops/sitectl/pkg/plugin"
+	"github.com/libops/sitectl/pkg/plugin/debugui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -36,30 +36,6 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 const (
 	imageSizeWarningThreshold = int64(20 * 1024 * 1024 * 1024)
 	dockerPruneDocsURL        = "https://docs.docker.com/engine/manage-resources/pruning/"
-)
-
-var (
-	debugPanelStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#112235")).
-			Padding(1, 2)
-	debugTitleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#98C1D9"))
-	debugMutedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#9FB3C8"))
-	debugSectionDividerStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("#29425E"))
-	debugStatusOKStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#7BD389"))
-	debugStatusWarningStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#F4C95D"))
-	debugStatusFailedStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#F28482"))
-	debugRowStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#112235"))
 )
 
 var debugCmd = &cobra.Command{
@@ -177,7 +153,7 @@ func progressEnabled() bool {
 
 func renderCoreDebug(runCtx context.Context, ctx config.Context) string {
 	slog.Debug("starting core debug", "context", ctx.Name, "docker_host_type", ctx.DockerHostType)
-	meta := []debugRow{
+	meta := []debugui.Row{
 		{Label: "Generated", Value: time.Now().UTC().Format(time.RFC3339)},
 		{Label: "Context", Value: ctx.Name},
 		{Label: "Plugin owner", Value: helpers.FirstNonEmpty(ctx.Plugin, "core")},
@@ -185,23 +161,23 @@ func renderCoreDebug(runCtx context.Context, ctx config.Context) string {
 		{Label: "Project dir", Value: ctx.ProjectDir},
 	}
 	if strings.TrimSpace(ctx.ProjectName) != "" {
-		meta = append(meta, debugRow{Label: "Project name", Value: ctx.ProjectName})
+		meta = append(meta, debugui.Row{Label: "Project name", Value: ctx.ProjectName})
 	}
 	if strings.TrimSpace(ctx.ComposeProjectName) != "" {
-		meta = append(meta, debugRow{Label: "Compose project", Value: ctx.ComposeProjectName})
+		meta = append(meta, debugui.Row{Label: "Compose project", Value: ctx.ComposeProjectName})
 	}
 	if strings.TrimSpace(ctx.DockerSocket) != "" {
-		meta = append(meta, debugRow{Label: "Docker socket", Value: ctx.DockerSocket})
+		meta = append(meta, debugui.Row{Label: "Docker socket", Value: ctx.DockerSocket})
 	}
 
 	coreBody := []string{
-		debugMutedStyle.Render("General Docker configuration and host-level diagnostics for this context."),
+		debugui.Muted("General Docker configuration and host-level diagnostics for this context."),
 		"",
-		debugDivider(),
+		debugui.Divider(),
 		"",
-		debugTitleStyle.Render("General"),
+		debugui.Title("General"),
 		"",
-		formatDebugRows(meta),
+		debugui.FormatRows(meta),
 	}
 	var sharedSession *debugreport.Session
 	if ctx.DockerHostType == config.ContextRemote {
@@ -235,33 +211,33 @@ func renderCoreDebug(runCtx context.Context, ctx config.Context) string {
 		composeDiagnostics = debugreport.CollectComposeDiagnostics(runCtx, &ctx)
 		logDiagnostics, logErr, imageDiagnostics, imageErr = collectCoreDockerDiagnostics(runCtx, &ctx)
 	}
-	coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Host Resources"), "", formatDebugRows(hostSummaryRows(hostDiagnostics, ctx.ProjectDir)))
-	coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Compose Services"), "", formatDebugRows(composeSummaryRows(composeDiagnostics)))
+	coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Host Resources"), "", debugui.FormatRows(hostSummaryRows(hostDiagnostics, ctx.ProjectDir)))
+	coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Compose Services"), "", debugui.FormatRows(composeSummaryRows(composeDiagnostics)))
 	if logErr == nil {
 		slog.Debug("collected log diagnostics", "context", ctx.Name, "containers", len(logDiagnostics.Containers))
-		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows(logSummaryRows(logDiagnostics)))
+		coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Log Summary"), "", debugui.FormatRows(logSummaryRows(logDiagnostics)))
 		if debugVerbose {
-			coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Details"), "", renderLogDetailsBody(logDiagnostics))
+			coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Log Details"), "", renderLogDetailsBody(logDiagnostics))
 		}
 	} else {
 		slog.Debug("log diagnostics failed", "context", ctx.Name, "error", logErr)
-		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Log Summary"), "", formatDebugRows([]debugRow{
-			{Label: "Log status", Value: renderStatus("warning")},
+		coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Log Summary"), "", debugui.FormatRows([]debugui.Row{
+			{Label: "Log status", Value: debugui.Status("warning")},
 			{Label: "Log diagnostics", Value: logErr.Error()},
 		}))
 	}
 	if imageErr == nil {
 		slog.Debug("collected image diagnostics", "context", ctx.Name, "images", imageDiagnostics.ImageCount, "total_bytes", imageDiagnostics.TotalBytes)
-		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Image Summary"), "", formatDebugRows(imageSummaryRows(imageDiagnostics)))
+		coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Image Summary"), "", debugui.FormatRows(imageSummaryRows(imageDiagnostics)))
 	} else {
 		slog.Debug("image diagnostics failed", "context", ctx.Name, "error", imageErr)
-		coreBody = append(coreBody, "", debugDivider(), "", debugTitleStyle.Render("Image Summary"), "", formatDebugRows([]debugRow{
-			{Label: "Image status", Value: renderStatus("warning")},
+		coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Image Summary"), "", debugui.FormatRows([]debugui.Row{
+			{Label: "Image status", Value: debugui.Status("warning")},
 			{Label: "Image diagnostics", Value: imageErr.Error()},
 		}))
 	}
 	slog.Debug("finished core debug", "context", ctx.Name)
-	return renderDebugPanel("sitectl", strings.Join(coreBody, "\n"))
+	return debugui.RenderPanel("sitectl", strings.Join(coreBody, "\n"))
 }
 
 type logDiagnostics struct {
@@ -306,7 +282,7 @@ type debugSpinnerModel struct {
 
 func newDebugSpinnerModel() debugSpinnerModel {
 	return debugSpinnerModel{
-		spin:   spinner.New(spinner.WithSpinner(spinner.Line), spinner.WithStyle(debugMutedStyle)),
+		spin:   spinner.New(spinner.WithSpinner(spinner.Line), spinner.WithStyle(debugui.MutedStyle)),
 		title:  "Preparing Debug Bundle",
 		detail: "Starting diagnostic collection",
 	}
@@ -427,32 +403,32 @@ func collectCoreDockerDiagnostics(runCtx context.Context, ctxCfg *config.Context
 	return logs, logErr, images, imageErr
 }
 
-func imageSummaryRows(diagnostics imageDiagnostics) []debugRow {
+func imageSummaryRows(diagnostics imageDiagnostics) []debugui.Row {
 	state := "ok"
-	rows := []debugRow{
-		{Label: "Image status", Value: renderStatus(state)},
+	rows := []debugui.Row{
+		{Label: "Image status", Value: debugui.Status(state)},
 		{Label: "Total images", Value: humanBytes(diagnostics.TotalBytes)},
 		{Label: "Image count", Value: strconv.Itoa(diagnostics.ImageCount)},
 	}
 	if diagnostics.TotalBytes >= imageSizeWarningThreshold {
 		state = "warning"
-		rows[0].Value = renderStatus(state)
+		rows[0].Value = debugui.Status(state)
 		rows = append(rows,
-			debugRow{Label: "Recommendation", Value: "run docker system prune -af periodically on development hosts"},
-			debugRow{Label: "Docs", Value: dockerPruneDocsURL},
+			debugui.Row{Label: "Recommendation", Value: "run docker system prune -af periodically on development hosts"},
+			debugui.Row{Label: "Docs", Value: dockerPruneDocsURL},
 		)
 	}
 	return rows
 }
 
-func hostSummaryRows(diagnostics debugreport.HostDiagnostics, projectDir string) []debugRow {
+func hostSummaryRows(diagnostics debugreport.HostDiagnostics, projectDir string) []debugui.Row {
 	status := "ok"
 	if len(diagnostics.Issues) > 0 {
 		status = "warning"
 	}
 
-	rows := []debugRow{
-		{Label: "Host status", Value: renderStatus(status)},
+	rows := []debugui.Row{
+		{Label: "Host status", Value: debugui.Status(status)},
 		{Label: "CPUs", Value: renderDebugValue(intValueOrUnknown(diagnostics.CPUCount))},
 		{Label: "Memory", Value: renderDebugValue(bytesValueOrUnknown(diagnostics.MemoryBytes))},
 		{Label: "Swap", Value: renderDebugValue(bytesValueOrUnknown(diagnostics.SwapBytes))},
@@ -460,26 +436,26 @@ func hostSummaryRows(diagnostics debugreport.HostDiagnostics, projectDir string)
 		{Label: "OS version", Value: renderDebugValue(diagnostics.OSVersion)},
 	}
 	if len(diagnostics.Issues) > 0 {
-		rows = append(rows, debugRow{Label: "Diagnostics", Value: strings.Join(diagnostics.Issues, "\n")})
+		rows = append(rows, debugui.Row{Label: "Diagnostics", Value: strings.Join(diagnostics.Issues, "\n")})
 	}
 	return rows
 }
 
-func composeSummaryRows(diagnostics debugreport.ComposeDiagnostics) []debugRow {
+func composeSummaryRows(diagnostics debugreport.ComposeDiagnostics) []debugui.Row {
 	status := "ok"
 	if len(diagnostics.Issues) > 0 {
 		status = "warning"
 	}
 
-	rows := []debugRow{
-		{Label: "Compose status", Value: renderStatus(status)},
+	rows := []debugui.Row{
+		{Label: "Compose status", Value: debugui.Status(status)},
 		{Label: "Compose file", Value: renderDebugValue(diagnostics.ComposePath)},
 	}
 	if len(diagnostics.Services) == 0 {
-		rows = append(rows, debugRow{Label: "Services", Value: "none found"})
+		rows = append(rows, debugui.Row{Label: "Services", Value: "none found"})
 	} else {
 		for _, service := range diagnostics.Services {
-			rows = append(rows, debugRow{Label: service.Service, Value: renderDebugValue(service.Image)})
+			rows = append(rows, debugui.Row{Label: service.Service, Value: renderDebugValue(service.Image)})
 		}
 	}
 	if len(diagnostics.BindMounts) > 0 {
@@ -490,11 +466,11 @@ func composeSummaryRows(diagnostics debugreport.ComposeDiagnostics) []debugRow {
 			} else {
 				value += ": " + humanBytes(mount.AvailableBytes) + " available"
 			}
-			rows = append(rows, debugRow{Label: "Bind mount", Value: value})
+			rows = append(rows, debugui.Row{Label: "Bind mount", Value: value})
 		}
 	}
 	if len(diagnostics.Issues) > 0 {
-		rows = append(rows, debugRow{Label: "Diagnostics", Value: strings.Join(diagnostics.Issues, "\n")})
+		rows = append(rows, debugui.Row{Label: "Diagnostics", Value: strings.Join(diagnostics.Issues, "\n")})
 	}
 	return rows
 }
@@ -567,7 +543,7 @@ func evaluateLogConfig(driver string, options map[string]string) (rotated bool, 
 	}
 }
 
-func logSummaryRows(diagnostics logDiagnostics) []debugRow {
+func logSummaryRows(diagnostics logDiagnostics) []debugui.Row {
 	totalState := "ok"
 
 	logHandling := "file-backed container logs appear capped"
@@ -583,12 +559,12 @@ func logSummaryRows(diagnostics logDiagnostics) []debugRow {
 		logHandling = fmt.Sprintf("%d container(s) are using unbounded file-backed logs", diagnostics.UnboundedCount)
 	}
 
-	rows := []debugRow{
-		{Label: "Log status", Value: renderStatus(totalState)},
+	rows := []debugui.Row{
+		{Label: "Log status", Value: debugui.Status(totalState)},
 		{Label: "Log handling", Value: logHandling},
 	}
 	if diagnostics.UnboundedCount > 0 {
-		rows = append(rows, debugRow{
+		rows = append(rows, debugui.Row{
 			Label: "Recommendation",
 			Value: `for non-local environments, configure Docker log rotation with max-size and max-file, or ship logs to syslog, journald, or another central driver
 
@@ -614,86 +590,6 @@ func renderLogDetailsBody(diagnostics logDiagnostics) string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
-}
-
-type debugRow struct {
-	Label string
-	Value string
-}
-
-func renderDebugPanel(title, body string) string {
-	header := debugTitleStyle.Render(strings.TrimSpace(title))
-	content := header
-	if strings.TrimSpace(body) != "" {
-		content += "\n\n" + body
-	}
-	return debugPanelStyle.Width(debugPanelWidth()).Render(content)
-}
-
-func formatDebugRows(rows []debugRow) string {
-	labelWidth := 0
-	for _, row := range rows {
-		if len(strings.TrimSpace(row.Label)) > labelWidth {
-			labelWidth = len(strings.TrimSpace(row.Label))
-		}
-	}
-
-	lines := make([]string, 0, len(rows))
-	rowWidth := debugContentWidth()
-	for _, row := range rows {
-		label := strings.TrimSpace(row.Label)
-		value := strings.TrimSpace(row.Value)
-		if label == "" {
-			lines = append(lines, renderDebugRow(rowWidth, "", value))
-			continue
-		}
-		lines = append(lines, renderDebugRow(rowWidth, fmt.Sprintf("%-*s", labelWidth, label), value))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderDebugRow(width int, label, value string) string {
-	valueWidth := max(0, width-lipgloss.Width(label)-2)
-	row := label
-	if strings.TrimSpace(label) != "" {
-		row += "  "
-	}
-	row += lipgloss.NewStyle().
-		Width(valueWidth).
-		Background(lipgloss.Color("#112235")).
-		Render(value)
-	return debugRowStyle.Width(width).Render(row)
-}
-
-func debugPanelWidth() int {
-	if columns, err := strconv.Atoi(strings.TrimSpace(os.Getenv("COLUMNS"))); err == nil && columns > 0 {
-		return max(40, columns)
-	}
-	if width, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && width > 0 {
-		return max(40, width)
-	}
-	return 100
-}
-
-func debugContentWidth() int {
-	return max(20, debugPanelWidth()-4)
-}
-
-func debugDivider() string {
-	return debugSectionDividerStyle.Width(debugContentWidth()).Render(strings.Repeat("─", debugContentWidth()))
-}
-
-func renderStatus(state string) string {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "ok":
-		return debugStatusOKStyle.Render("OK")
-	case "warning":
-		return debugStatusWarningStyle.Render("WARNING")
-	case "failed":
-		return debugStatusFailedStyle.Render("FAILED")
-	default:
-		return debugMutedStyle.Render(strings.ToUpper(strings.TrimSpace(state)))
-	}
 }
 
 func humanBytes(size int64) string {

@@ -79,7 +79,7 @@ Examples:
 			"--help",
 		}
 		if len(filteredArgs) == 0 || !slices.Contains(validCommands, filteredArgs[0]) {
-			helpers.ExitOnError(fmt.Errorf("unknown docker compose command: %s", filteredArgs[0]))
+			return fmt.Errorf("unknown docker compose command: %s", filteredArgs[0])
 		}
 
 		context, err := config.GetContext(sitectlContext)
@@ -90,10 +90,10 @@ Examples:
 		if context.DockerHostType == config.ContextLocal {
 			hasComposeProject, err := context.HasComposeProject()
 			if err != nil {
-				helpers.ExitOnError(fmt.Errorf("failed to inspect compose project in %s: %v", context.ProjectDir, err))
+				return fmt.Errorf("failed to inspect compose project in %s: %w", context.ProjectDir, err)
 			}
 			if !hasComposeProject {
-				helpers.ExitOnError(fmt.Errorf("no compose project file found in %s (expected one of docker-compose.yml, docker-compose.yaml, compose.yml, compose.yaml)", context.ProjectDir))
+				return fmt.Errorf("no compose project file found in %s (expected one of docker-compose.yml, docker-compose.yaml, compose.yml, compose.yaml)", context.ProjectDir)
 			}
 			if err := context.EnsureTrackedComposeOverrideSymlink(); err != nil {
 				return err

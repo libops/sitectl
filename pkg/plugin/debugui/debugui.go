@@ -15,6 +15,10 @@ type Row struct {
 	Value string
 }
 
+// MutedStyle is the lipgloss style used for de-emphasised text.
+// Exposed for callers that need the raw Style (e.g. spinner.WithStyle).
+var MutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9FB3C8"))
+
 var (
 	panelStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("#112235")).
@@ -22,8 +26,7 @@ var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#98C1D9"))
-	mutedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#9FB3C8"))
+	mutedStyle          = MutedStyle
 	sectionDividerStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#29425E"))
 	statusOKStyle = lipgloss.NewStyle().

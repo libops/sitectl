@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"log/slog"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -43,74 +41,76 @@ You can have a default context which will be used when running sitectl commands,
 var viewConfigCmd = &cobra.Command{
 	Use:   "view",
 	Short: "Print your sitectl config",
-	Run: func(cmd *cobra.Command, args []string) {
-		path := config.ConfigFilePath()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path, err := config.ConfigFilePath()
+		if err != nil {
+			return err
+		}
 		info, err := os.Stat(path)
 		if err != nil {
 			if os.IsNotExist(err) {
-				fmt.Printf("File %q does not exist.\n", path)
-				return
+				fmt.Fprintf(cmd.OutOrStdout(), "File %q does not exist.\n", path)
+				return nil
 			}
-			log.Fatalf("Error checking file: %v", err)
+			return fmt.Errorf("error checking file: %w", err)
 		}
-
-		// Check if it's a regular file.
 		if !info.Mode().IsRegular() {
-			log.Fatalf("%q is not a regular file", path)
+			return fmt.Errorf("%q is not a regular file", path)
 		}
-
 		data, err := os.ReadFile(path)
 		if err != nil {
-			log.Fatalf("Error reading file: %v", err)
+			return fmt.Errorf("error reading file: %w", err)
 		}
-
-		fmt.Println(string(data))
+		fmt.Fprintln(cmd.OutOrStdout(), string(data))
+		return nil
 	},
 }
 
 var currentContextCmd = &cobra.Command{
 	Use:   "current-context",
 	Short: "Display the current site context",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := config.Current()
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if c == "" {
-			fmt.Println("No current context is set")
+			fmt.Fprintln(cmd.OutOrStdout(), "No current context is set")
 		} else {
-			fmt.Println("Current context:", c)
+			fmt.Fprintln(cmd.OutOrStdout(), "Current context:", c)
 		}
+		return nil
 	},
 }
 
 var getContextsCmd = &cobra.Command{
 	Use:   "get-contexts",
 	Short: "List all site contexts",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if len(cfg.Contexts) == 0 {
-			fmt.Println("No contexts available")
-			return
+			fmt.Fprintln(cmd.OutOrStdout(), "No contexts available")
+			return nil
 		}
 		writeContextTable(cmd.OutOrStdout(), cfg)
+		return nil
 	},
 }
 
 var getSitesCmd = &cobra.Command{
 	Use:   "get-sites",
 	Short: "List configured sites and their environments",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if len(cfg.Contexts) == 0 {
 			fmt.Fprintln(cmd.OutOrStdout(), "No sites available")
-			return
+			return nil
 		}
 
 		sites := map[string][]config.Context{}
@@ -152,6 +152,7 @@ var getSitesCmd = &cobra.Command{
 			)
 		}
 		_ = w.Flush()
+		return nil
 	},
 }
 
@@ -159,14 +160,14 @@ var getEnvironmentsCmd = &cobra.Command{
 	Use:   "get-environments [site]",
 	Short: "List environments grouped by site",
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if len(cfg.Contexts) == 0 {
 			fmt.Fprintln(cmd.OutOrStdout(), "No environments available")
-			return
+			return nil
 		}
 
 		siteFilter := ""
@@ -187,7 +188,7 @@ var getEnvironmentsCmd = &cobra.Command{
 			} else {
 				fmt.Fprintf(cmd.OutOrStdout(), "No environments found for site %q\n", siteFilter)
 			}
-			return
+			return nil
 		}
 
 		sort.Slice(contexts, func(i, j int) bool {
@@ -221,6 +222,7 @@ var getEnvironmentsCmd = &cobra.Command{
 			)
 		}
 		_ = w.Flush()
+		return nil
 	},
 }
 
@@ -308,12 +310,11 @@ var setContextCmd = &cobra.Command{
 			cc.SSHKeyPath = ""
 			cc.DockerSocket = config.GetDefaultLocalDockerSocket(cc.DockerSocket)
 		default:
-			slog.Error("Unknown context type", "type", cc.DockerHostType)
-			os.Exit(1)
+			return fmt.Errorf("unknown context type %q", cc.DockerHostType)
 		}
 
 		if err = config.SaveContext(cc, defaultContext); err != nil {
-			helpers.ExitOnError(err)
+			return err
 		}
 
 		return nil
@@ -324,11 +325,11 @@ var useContextCmd = &cobra.Command{
 	Use:   "use-context [context-name]",
 	Short: "Switch to the specified context",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 		cfg, err := config.Load()
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		found := false
 		for _, ctx := range cfg.Contexts {
@@ -338,13 +339,14 @@ var useContextCmd = &cobra.Command{
 			}
 		}
 		if !found {
-			log.Fatalf("Context %s not found", name)
+			return fmt.Errorf("context %q not found", name)
 		}
 		cfg.CurrentContext = name
 		if err = config.Save(cfg); err != nil {
-			log.Fatal(err)
+			return err
 		}
-		fmt.Println("Switched to context:", name)
+		fmt.Fprintln(cmd.OutOrStdout(), "Switched to context:", name)
+		return nil
 	},
 }
 
@@ -352,18 +354,15 @@ var deleteContextCmd = &cobra.Command{
 	Use:   "delete-context [context-name]",
 	Short: "Delete a site context",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 		cfg, err := config.Load()
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
-
 		if cfg.CurrentContext == name {
-			slog.Error("Cannot delete the current context. You can update it or create a new context with `sitectl config set-context`")
-			return
+			return fmt.Errorf("cannot delete the current context; switch to another context first")
 		}
-
 		found := false
 		var newContexts []config.Context
 		for _, ctx := range cfg.Contexts {
@@ -374,14 +373,14 @@ var deleteContextCmd = &cobra.Command{
 			newContexts = append(newContexts, ctx)
 		}
 		if !found {
-			log.Fatalf("Context %s not found", name)
+			return fmt.Errorf("context %q not found", name)
 		}
 		cfg.Contexts = newContexts
-
 		if err = config.Save(cfg); err != nil {
-			log.Fatal(err)
+			return err
 		}
-		fmt.Printf("Deleted context: %s\n", name)
+		fmt.Fprintf(cmd.OutOrStdout(), "Deleted context: %s\n", name)
+		return nil
 	},
 }
 
