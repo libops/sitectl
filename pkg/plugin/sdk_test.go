@@ -81,12 +81,16 @@ func TestContextPluginSupportsBuiltinHierarchy(t *testing.T) {
 
 func TestPluginIncludesMergesBuiltinAndInstalledWithoutDuplicates(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PATH", dir)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	script := `#!/bin/sh
-if [ "$1" = "plugin-info" ]; then
-  echo "Name: isle"
-  echo "Includes: drupal,libops"
+if [ "$1" = "__plugin-metadata" ]; then
+  cat <<'YAML'
+name: isle
+includes:
+  - drupal
+  - libops
+YAML
   exit 0
 fi
 if [ "$1" = "create" ] && [ "$2" = "--help" ]; then
@@ -105,12 +109,14 @@ exit 1
 
 func TestInvokePluginCommandCapturePassesContextAndLogLevel(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PATH", dir)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("COLUMNS", "123")
 
 	script := `#!/bin/sh
-if [ "$1" = "plugin-info" ]; then
-  echo "Name: child"
+if [ "$1" = "__plugin-metadata" ]; then
+  cat <<'YAML'
+name: child
+YAML
   exit 0
 fi
 if [ "$1" = "create" ] && [ "$2" = "--help" ]; then
@@ -139,11 +145,13 @@ printf 'COLUMNS=%s\n' "$COLUMNS"
 
 func TestInvokePluginCommandCaptureReturnsStderrDetail(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PATH", dir)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	script := `#!/bin/sh
-if [ "$1" = "plugin-info" ]; then
-  echo "Name: broken"
+if [ "$1" = "__plugin-metadata" ]; then
+  cat <<'YAML'
+name: broken
+YAML
   exit 0
 fi
 echo "something went wrong" >&2
@@ -163,10 +171,10 @@ exit 2
 
 func TestInvokePluginCommandCaptureCanMirrorLiveStderr(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PATH", dir)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	script := `#!/bin/sh
-if [ "$1" = "plugin-info" ]; then
+if [ "$1" = "__plugin-metadata" ]; then
   echo "Name: noisy"
   exit 0
 fi
@@ -207,18 +215,22 @@ func TestInvokeIncludedPluginCommandRejectsUnincludedPlugin(t *testing.T) {
 
 func TestInvokeIncludedPluginsCollectsTrimmedOutputs(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PATH", dir)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	writePluginScript(t, dir, "sitectl-drupal", `#!/bin/sh
-if [ "$1" = "plugin-info" ]; then
-  echo "Name: drupal"
+if [ "$1" = "__plugin-metadata" ]; then
+  cat <<'YAML'
+name: drupal
+YAML
   exit 0
 fi
 echo "  drupal output  "
 `)
 	writePluginScript(t, dir, "sitectl-libops", `#!/bin/sh
-if [ "$1" = "plugin-info" ]; then
-  echo "Name: libops"
+if [ "$1" = "__plugin-metadata" ]; then
+  cat <<'YAML'
+name: libops
+YAML
   exit 0
 fi
 echo ""

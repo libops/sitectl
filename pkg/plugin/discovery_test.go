@@ -6,30 +6,6 @@ import (
 	"testing"
 )
 
-func TestParsePluginInfoOutput(t *testing.T) {
-	output := `Name: isle
-Version: 1.2.3
-Description: Islandora support
-Author: LibOps
-Template-Repo: https://github.com/islandora-devops/isle-site-template
-Includes: drupal,libops
-`
-
-	info := ParsePluginInfoOutput(output)
-	if info.Name != "isle" {
-		t.Fatalf("expected name isle, got %q", info.Name)
-	}
-	if info.TemplateRepo != "https://github.com/islandora-devops/isle-site-template" {
-		t.Fatalf("expected template repo to be parsed, got %q", info.TemplateRepo)
-	}
-	if info.Description != "Islandora support" {
-		t.Fatalf("expected description to be parsed, got %q", info.Description)
-	}
-	if len(info.Includes) != 2 || info.Includes[0] != "drupal" || info.Includes[1] != "libops" {
-		t.Fatalf("expected includes to be parsed, got %v", info.Includes)
-	}
-}
-
 func TestDiscoverInstalledFromPathFallsBackToBuiltinTemplateRepo(t *testing.T) {
 	dir := t.TempDir()
 	pathEnv := dir
@@ -55,17 +31,17 @@ func TestDiscoverInstalledFromPathDetectsCreateDefinitions(t *testing.T) {
 	pathEnv := dir
 
 	script := `#!/bin/sh
-if [ "$1" = "__create" ] && [ "$2" = "list" ]; then
+if [ "$1" = "__plugin-metadata" ]; then
   cat <<'YAML'
-- name: default
-  description: Demo stack
-  default: true
-  docker_compose_repo: https://github.com/example/demo
+name: demo
+description: Demo plugin
+cancreate: true
+createdefinitions:
+  - name: default
+    description: Demo stack
+    default: true
+    docker_compose_repo: https://github.com/example/demo
 YAML
-  exit 0
-fi
-if [ "$1" = "plugin-info" ]; then
-  echo "Name: demo"
   exit 0
 fi
 exit 1

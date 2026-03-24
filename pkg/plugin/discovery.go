@@ -1,12 +1,13 @@
 package plugin
 
 import (
-	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	yaml "gopkg.in/yaml.v3"
 )
@@ -32,7 +33,12 @@ func DiscoverInstalled() []InstalledPlugin {
 	return DiscoverInstalledFromPath(os.Getenv("PATH"))
 }
 
+func DiscoverInstalledLightweight() []InstalledPlugin {
+	return DiscoverInstalledLightweightFromPath(os.Getenv("PATH"))
+}
+
 func DiscoverInstalledFromPath(pathEnv string) []InstalledPlugin {
+	started := time.Now()
 	seen := map[string]bool{}
 	discovered := make([]InstalledPlugin, 0)
 
@@ -62,6 +68,47 @@ func DiscoverInstalledFromPath(pathEnv string) []InstalledPlugin {
 		}
 	}
 
+	slog.Debug("completed full plugin discovery", "count", len(discovered), "duration", time.Since(started))
+	return discovered
+}
+
+func DiscoverInstalledLightweightFromPath(pathEnv string) []InstalledPlugin {
+	started := time.Now()
+	seen := map[string]bool{}
+	discovered := make([]InstalledPlugin, 0)
+
+	for _, dir := range filepath.SplitList(pathEnv) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if !strings.HasPrefix(name, "sitectl-") || name == "sitectl" {
+				continue
+			}
+
+			pluginName := strings.TrimPrefix(name, "sitectl-")
+			if pluginName == "" || seen[pluginName] {
+				continue
+			}
+			seen[pluginName] = true
+
+			path := filepath.Join(dir, name)
+			discovered = append(discovered, InstalledPlugin{
+				Name:        pluginName,
+				BinaryName:  name,
+				Path:        path,
+				Description: fmt.Sprintf("the %s plugin", pluginName),
+			})
+		}
+	}
+
+	slog.Debug("completed lightweight plugin discovery", "count", len(discovered), "duration", time.Since(started))
 	return discovered
 }
 
@@ -75,29 +122,32 @@ func FindInstalled(name string) (InstalledPlugin, bool) {
 }
 
 func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) InstalledPlugin {
-	createDefinitions := pluginCreateDefinitions(pluginPath)
+	started := time.Now()
 	info := InstalledPlugin{
-		Name:              pluginName,
-		BinaryName:        binaryName,
-		Path:              pluginPath,
-		Description:       fmt.Sprintf("the %s plugin", pluginName),
-		CanCreate:         len(createDefinitions) > 0,
-		CreateDefinitions: createDefinitions,
+		Name:        pluginName,
+		BinaryName:  binaryName,
+		Path:        pluginPath,
+		Description: fmt.Sprintf("the %s plugin", pluginName),
 	}
 	if repo := builtinTemplateRepos[pluginName]; repo != "" {
 		info.TemplateRepo = repo
 	}
-	if spec, ok := defaultCreateDefinition(createDefinitions); ok && strings.TrimSpace(spec.DockerComposeRepo) != "" {
-		info.TemplateRepo = spec.DockerComposeRepo
-	}
 
-	cmd := exec.Command(pluginPath, "plugin-info")
+	cmd := exec.Command(pluginPath, "__plugin-metadata")
 	output, err := cmd.Output()
 	if err != nil {
+		slog.Debug("plugin metadata command failed", "plugin", pluginName, "path", pluginPath, "duration", time.Since(started), "err", err)
 		return info
 	}
 
-	parsed := ParsePluginInfoOutput(string(output))
+	var parsed InstalledPlugin
+	if err := yaml.Unmarshal(output, &parsed); err != nil {
+		slog.Debug("plugin metadata unmarshal failed", "plugin", pluginName, "path", pluginPath, "duration", time.Since(started), "err", err)
+		return info
+	}
+	for i := range parsed.CreateDefinitions {
+		parsed.CreateDefinitions[i] = normalizeCreateSpec(parsed.CreateDefinitions[i])
+	}
 	if parsed.Name == "" {
 		parsed.Name = pluginName
 	}
@@ -113,30 +163,16 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 	if parsed.TemplateRepo == "" {
 		parsed.TemplateRepo = info.TemplateRepo
 	}
+	if parsed.TemplateRepo == "" {
+		if spec, ok := defaultCreateDefinition(parsed.CreateDefinitions); ok && strings.TrimSpace(spec.DockerComposeRepo) != "" {
+			parsed.TemplateRepo = spec.DockerComposeRepo
+		}
+	}
 	if !parsed.CanCreate {
-		parsed.CanCreate = info.CanCreate
+		parsed.CanCreate = len(parsed.CreateDefinitions) > 0
 	}
-	if len(parsed.CreateDefinitions) == 0 {
-		parsed.CreateDefinitions = info.CreateDefinitions
-	}
-
+	slog.Debug("inspected plugin metadata", "plugin", pluginName, "path", pluginPath, "can_create", parsed.CanCreate, "includes", len(parsed.Includes), "create_definitions", len(parsed.CreateDefinitions), "duration", time.Since(started))
 	return parsed
-}
-
-func pluginCreateDefinitions(pluginPath string) []CreateSpec {
-	cmd := exec.Command(pluginPath, "__create", "list")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-	var specs []CreateSpec
-	if err := yaml.Unmarshal(output, &specs); err != nil {
-		return nil
-	}
-	for i := range specs {
-		specs[i] = normalizeCreateSpec(specs[i])
-	}
-	return specs
 }
 
 func defaultCreateDefinition(specs []CreateSpec) (CreateSpec, bool) {
@@ -149,48 +185,4 @@ func defaultCreateDefinition(specs []CreateSpec) (CreateSpec, bool) {
 		}
 	}
 	return specs[0], true
-}
-
-func ParsePluginInfoOutput(output string) InstalledPlugin {
-	var info InstalledPlugin
-
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		key, value, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(strings.ToLower(key))
-		value = strings.TrimSpace(value)
-
-		switch key {
-		case "name":
-			info.Name = value
-		case "version":
-			info.Version = value
-		case "description":
-			info.Description = value
-		case "author":
-			info.Author = value
-		case "template-repo":
-			info.TemplateRepo = value
-		case "includes":
-			if value == "" {
-				continue
-			}
-			for _, include := range strings.Split(value, ",") {
-				include = strings.TrimSpace(include)
-				if include == "" {
-					continue
-				}
-				info.Includes = append(info.Includes, include)
-			}
-		}
-	}
-
-	return info
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // Metadata contains information about a plugin
@@ -57,6 +58,7 @@ type SDK struct {
 	jobRootCmd        *cobra.Command
 	creates           []RegisteredCreate
 	createRootCmd     *cobra.Command
+	componentDefs     []component.Definition
 }
 
 // NewSDK creates a new plugin SDK instance
@@ -161,27 +163,34 @@ func (s *SDK) SetVersionInfo(version, commit, date string) {
 	s.RootCmd.Version = formatted
 }
 
-// GetMetadataCommand returns a command that displays plugin metadata
-func (s *SDK) GetMetadataCommand() *cobra.Command {
+// GetDiscoveryMetadataCommand returns a single cheap metadata payload for plugin discovery.
+func (s *SDK) GetDiscoveryMetadataCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:    "plugin-info",
-		Short:  "Display plugin metadata",
-		Hidden: true, // Hidden from normal help, used for plugin discovery
+		Use:    "__plugin-metadata",
+		Short:  "Display plugin discovery metadata",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Name: %s\n", s.Metadata.Name)
-			fmt.Fprintf(out, "Version: %s\n", s.Metadata.Version)
-			fmt.Fprintf(out, "Description: %s\n", s.Metadata.Description)
-			if s.Metadata.Author != "" {
-				fmt.Fprintf(out, "Author: %s\n", s.Metadata.Author)
+			info := InstalledPlugin{
+				Name:              s.Metadata.Name,
+				BinaryName:        cmd.Root().Name(),
+				Description:       s.Metadata.Description,
+				Author:            s.Metadata.Author,
+				TemplateRepo:      strings.TrimSpace(s.Metadata.TemplateRepo),
+				Includes:          append([]string{}, s.Metadata.Includes...),
+				CreateDefinitions: s.CreateDefinitions(),
 			}
-			if s.Metadata.TemplateRepo != "" {
-				fmt.Fprintf(out, "Template-Repo: %s\n", s.Metadata.TemplateRepo)
+			info.CanCreate = len(info.CreateDefinitions) > 0
+			if info.TemplateRepo == "" {
+				if spec, ok := defaultCreateDefinition(info.CreateDefinitions); ok {
+					info.TemplateRepo = strings.TrimSpace(spec.DockerComposeRepo)
+				}
 			}
-			if len(s.Metadata.Includes) > 0 {
-				fmt.Fprintf(out, "Includes: %s\n", strings.Join(s.Metadata.Includes, ","))
+			data, err := yaml.Marshal(info)
+			if err != nil {
+				return fmt.Errorf("marshal plugin discovery metadata: %w", err)
 			}
-			return nil
+			_, err = cmd.OutOrStdout().Write(data)
+			return err
 		},
 	}
 }
