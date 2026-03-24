@@ -3,16 +3,16 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -146,9 +146,23 @@ func init() {
 func runDebugCollectionWithProgress(cmd *cobra.Command, contextName string, ctx config.Context) (string, error) {
 	debugProgressUIActive = true
 	defer func() { debugProgressUIActive = false }()
-	progress := newDebugProgressLine(cmd.ErrOrStderr())
-	defer progress.Close()
-	return collectDebugReport(cmd.Context(), contextName, ctx, progress.Report)
+
+	p := tea.NewProgram(newDebugSpinnerModel(), tea.WithOutput(cmd.ErrOrStderr()))
+
+	go func() {
+		reporter := debugProgressReporter(func(title, detail string) {
+			p.Send(debugProgressUpdateMsg{title: title, detail: detail})
+		})
+		result, err := collectDebugReport(cmd.Context(), contextName, ctx, reporter)
+		p.Send(debugProgressDoneMsg{result: result, err: err})
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return "", fmt.Errorf("running debug progress: %w", err)
+	}
+	done := finalModel.(debugSpinnerModel)
+	return done.result, done.err
 }
 
 func reportProgress(reporter debugProgressReporter, title, detail string) {
@@ -272,98 +286,64 @@ type imageDiagnostics struct {
 
 type debugProgressReporter func(title, detail string)
 
-type debugProgressLine struct {
-	out    *os.File
-	frames []string
-	index  int
-	title  string
-	detail string
-	mu     sync.Mutex
-	done   chan struct{}
-	once   sync.Once
+// debugProgressUpdateMsg carries a status update for the spinner TUI.
+type debugProgressUpdateMsg struct{ title, detail string }
+
+// debugProgressDoneMsg signals collection has finished and carries the result.
+type debugProgressDoneMsg struct {
+	result string
+	err    error
 }
 
-func newDebugProgressLine(w io.Writer) *debugProgressLine {
-	file, ok := w.(*os.File)
-	if !ok {
-		return &debugProgressLine{frames: []string{".", "o", "O", "o"}}
-	}
-	progress := &debugProgressLine{
-		out:    file,
-		frames: []string{"-", "\\", "|", "/"},
+type debugSpinnerModel struct {
+	spin     spinner.Model
+	title    string
+	detail   string
+	result   string
+	err      error
+	quitting bool
+}
+
+func newDebugSpinnerModel() debugSpinnerModel {
+	return debugSpinnerModel{
+		spin:   spinner.New(spinner.WithSpinner(spinner.Line), spinner.WithStyle(debugMutedStyle)),
 		title:  "Preparing Debug Bundle",
 		detail: "Starting diagnostic collection",
-		done:   make(chan struct{}),
-	}
-	go progress.animate(120 * time.Millisecond)
-	return progress
-}
-
-func (p *debugProgressLine) Report(title, detail string) {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	p.title = strings.TrimSpace(title)
-	p.detail = strings.TrimSpace(detail)
-	p.renderLocked()
-	p.mu.Unlock()
-}
-
-func (p *debugProgressLine) Close() {
-	if p == nil || p.out == nil {
-		return
-	}
-	p.once.Do(func() {
-		close(p.done)
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		fmt.Fprint(p.out, "\r\033[2K")
-	})
-}
-
-func (p *debugProgressLine) animate(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			p.mu.Lock()
-			p.renderLocked()
-			p.mu.Unlock()
-		case <-p.done:
-			return
-		}
 	}
 }
 
-func (p *debugProgressLine) renderLocked() {
-	if p.out == nil {
-		return
-	}
-	frame := p.frames[p.index%len(p.frames)]
-	p.index++
-	line := fmt.Sprintf("\r%s %s", frame, strings.TrimSpace(strings.Join([]string{p.title, p.detail}, " - ")))
-	fmt.Fprint(p.out, truncateDebugProgress(line))
+func (m debugSpinnerModel) Init() tea.Cmd {
+	return m.spin.Tick
 }
 
-func truncateDebugProgress(line string) string {
-	width := debugPanelWidth()
-	if width <= 0 {
-		return line
+func (m debugSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+	case debugProgressUpdateMsg:
+		m.title = strings.TrimSpace(msg.title)
+		m.detail = strings.TrimSpace(msg.detail)
+		return m, nil
+	case debugProgressDoneMsg:
+		m.result = msg.result
+		m.err = msg.err
+		m.quitting = true
+		return m, tea.Quit
 	}
-	plain := ansiPattern.ReplaceAllString(line, "")
-	if lipgloss.Width(plain) <= width {
-		return line
+	return m, nil
+}
+
+func (m debugSpinnerModel) View() tea.View {
+	if m.quitting {
+		return tea.NewView("")
 	}
-	runes := []rune(plain)
-	if len(runes) <= width {
-		return string(runes)
+	label := m.title
+	if m.detail != "" {
+		label += " - " + m.detail
 	}
-	if width <= 1 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-1]) + "…"
+	return tea.NewView(m.spin.View() + " " + label + "\n")
 }
 
 func collectLogDiagnosticsWithClient(runCtx context.Context, ctxCfg *config.Context, cli *docker.DockerClient) (logDiagnostics, error) {
