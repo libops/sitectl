@@ -1,9 +1,12 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"os/user"
@@ -278,7 +281,12 @@ func (c *Context) DialSSH() (*ssh.Client, error) {
 		Timeout:         5 * time.Second,
 	}
 
-	sshAddr := fmt.Sprintf("%s:%d", c.SSHHostname, c.SSHPort)
+	sshAddr := net.JoinHostPort(c.SSHHostname, strconv.Itoa(int(c.SSHPort)))
+	sshConfig.HostKeyAlgorithms = knownHostKeyAlgorithms(hostKeyCallback, sshAddr)
+	if len(sshConfig.HostKeyAlgorithms) > 0 {
+		slog.Debug("Restricting SSH host key algorithms from known_hosts", "host", sshAddr, "algorithms", sshConfig.HostKeyAlgorithms)
+	}
+
 	slog.Debug("Dialing " + sshAddr)
 	client, err := ssh.Dial("tcp", sshAddr, sshConfig)
 	if err != nil {
@@ -300,6 +308,45 @@ func (c *Context) DialSSH() (*ssh.Client, error) {
 	}
 
 	return client, nil
+}
+
+func knownHostKeyAlgorithms(hostKeyCallback ssh.HostKeyCallback, hostWithPort string) []string {
+	if hostKeyCallback == nil {
+		return nil
+	}
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil
+	}
+
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		return nil
+	}
+
+	err = hostKeyCallback(hostWithPort, &net.TCPAddr{}, signer.PublicKey())
+	if err == nil {
+		return nil
+	}
+
+	var keyErr *knownhosts.KeyError
+	if !errors.As(err, &keyErr) || len(keyErr.Want) == 0 {
+		return nil
+	}
+
+	algorithms := make([]string, 0, len(keyErr.Want))
+	seen := make(map[string]struct{}, len(keyErr.Want))
+	for _, knownKey := range keyErr.Want {
+		algorithm := knownKey.Key.Type()
+		if _, ok := seen[algorithm]; ok {
+			continue
+		}
+		seen[algorithm] = struct{}{}
+		algorithms = append(algorithms, algorithm)
+	}
+
+	return algorithms
 }
 
 func defaultKnownHostsPath() (string, error) {
