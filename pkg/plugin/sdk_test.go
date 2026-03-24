@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/validate"
 )
@@ -261,3 +263,30 @@ func writePluginScript(t *testing.T, dir, name, script string) {
 		t.Fatalf("WriteFile(%s) error = %v", name, err)
 	}
 }
+
+func TestRegisterCreateRunnerExposesDefinitions(t *testing.T) {
+	sdk := NewSDK(Metadata{Name: "isle"})
+	sdk.RegisterCreateRunner(CreateSpec{
+		Name:              "default",
+		Description:       "Create an ISLE stack",
+		Default:           true,
+		DockerComposeRepo: "https://github.com/example/isle",
+	}, createRunnerStub{})
+
+	defs := sdk.CreateDefinitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected 1 create definition, got %d", len(defs))
+	}
+	if defs[0].Name != "default" {
+		t.Fatalf("expected default create definition, got %+v", defs[0])
+	}
+	if sdk.createRootCmd == nil {
+		t.Fatal("expected hidden create root command to be registered")
+	}
+}
+
+type createRunnerStub struct{}
+
+func (createRunnerStub) BindFlags(cmd *cobra.Command) {}
+
+func (createRunnerStub) Run(cmd *cobra.Command) error { return nil }

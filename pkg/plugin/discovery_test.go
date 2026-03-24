@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -49,13 +50,18 @@ func TestDiscoverInstalledFromPathFallsBackToBuiltinTemplateRepo(t *testing.T) {
 	}
 }
 
-func TestDiscoverInstalledFromPathDetectsCreateCommand(t *testing.T) {
+func TestDiscoverInstalledFromPathDetectsCreateDefinitions(t *testing.T) {
 	dir := t.TempDir()
 	pathEnv := dir
 
 	script := `#!/bin/sh
-if [ "$1" = "create" ] && [ "$2" = "--help" ]; then
-  echo "create help"
+if [ "$1" = "__create" ] && [ "$2" = "list" ]; then
+  cat <<'YAML'
+- name: default
+  description: Demo stack
+  default: true
+  docker_compose_repo: https://github.com/example/demo
+YAML
   exit 0
 fi
 if [ "$1" = "plugin-info" ]; then
@@ -73,6 +79,15 @@ exit 1
 		t.Fatalf("expected one plugin, got %d", len(plugins))
 	}
 	if !plugins[0].CanCreate {
-		t.Fatalf("expected plugin create command to be detected")
+		t.Fatalf("expected plugin create definitions to be detected")
+	}
+	if len(plugins[0].CreateDefinitions) != 1 {
+		t.Fatalf("expected one create definition, got %d", len(plugins[0].CreateDefinitions))
+	}
+	if plugins[0].CreateDefinitions[0].Name != "default" {
+		t.Fatalf("expected default create definition, got %+v", plugins[0].CreateDefinitions[0])
+	}
+	if !strings.Contains(plugins[0].TemplateRepo, "github.com/example/demo") {
+		t.Fatalf("expected template repo from create definition, got %q", plugins[0].TemplateRepo)
 	}
 }

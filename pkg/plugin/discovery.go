@@ -7,18 +7,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	yaml "gopkg.in/yaml.v3"
 )
 
 type InstalledPlugin struct {
-	Name         string
-	BinaryName   string
-	Path         string
-	Version      string
-	Description  string
-	Author       string
-	TemplateRepo string
-	CanCreate    bool
-	Includes     []string
+	Name              string
+	BinaryName        string
+	Path              string
+	Version           string
+	Description       string
+	Author            string
+	TemplateRepo      string
+	CanCreate         bool
+	Includes          []string
+	CreateDefinitions []CreateSpec
 }
 
 var builtinTemplateRepos = map[string]string{
@@ -72,15 +75,20 @@ func FindInstalled(name string) (InstalledPlugin, bool) {
 }
 
 func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) InstalledPlugin {
+	createDefinitions := pluginCreateDefinitions(pluginPath)
 	info := InstalledPlugin{
-		Name:        pluginName,
-		BinaryName:  binaryName,
-		Path:        pluginPath,
-		Description: fmt.Sprintf("the %s plugin", pluginName),
-		CanCreate:   pluginSupportsCreate(pluginPath),
+		Name:              pluginName,
+		BinaryName:        binaryName,
+		Path:              pluginPath,
+		Description:       fmt.Sprintf("the %s plugin", pluginName),
+		CanCreate:         len(createDefinitions) > 0,
+		CreateDefinitions: createDefinitions,
 	}
 	if repo := builtinTemplateRepos[pluginName]; repo != "" {
 		info.TemplateRepo = repo
+	}
+	if spec, ok := defaultCreateDefinition(createDefinitions); ok && strings.TrimSpace(spec.DockerComposeRepo) != "" {
+		info.TemplateRepo = spec.DockerComposeRepo
 	}
 
 	cmd := exec.Command(pluginPath, "plugin-info")
@@ -108,13 +116,39 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 	if !parsed.CanCreate {
 		parsed.CanCreate = info.CanCreate
 	}
+	if len(parsed.CreateDefinitions) == 0 {
+		parsed.CreateDefinitions = info.CreateDefinitions
+	}
 
 	return parsed
 }
 
-func pluginSupportsCreate(pluginPath string) bool {
-	_, err := exec.Command(pluginPath, "create", "--help").Output()
-	return err == nil
+func pluginCreateDefinitions(pluginPath string) []CreateSpec {
+	cmd := exec.Command(pluginPath, "__create", "list")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var specs []CreateSpec
+	if err := yaml.Unmarshal(output, &specs); err != nil {
+		return nil
+	}
+	for i := range specs {
+		specs[i] = normalizeCreateSpec(specs[i])
+	}
+	return specs
+}
+
+func defaultCreateDefinition(specs []CreateSpec) (CreateSpec, bool) {
+	if len(specs) == 0 {
+		return CreateSpec{}, false
+	}
+	for _, spec := range specs {
+		if spec.Default {
+			return spec, true
+		}
+	}
+	return specs[0], true
 }
 
 func ParsePluginInfoOutput(output string) InstalledPlugin {
