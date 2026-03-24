@@ -157,7 +157,7 @@ func renderSnippet(cmd *cobra.Command) string {
 				} else {
 					defVal = "`" + defVal + "`"
 				}
-				b.WriteString(fmt.Sprintf("| `%s` | %s | %s |\n", flagStr, defVal, f.Usage))
+				fmt.Fprintf(&b, "| `%s` | %s | %s |\n", flagStr, defVal, f.Usage)
 			}
 		}
 	}
