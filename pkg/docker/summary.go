@@ -13,6 +13,7 @@ import (
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/helpers"
 )
 
 type ServiceSummary struct {
@@ -102,10 +103,10 @@ func SummarizeProjectWithClient(ctx context.Context, cli DockerAPI, ctxCfg *conf
 	}
 
 	for _, container := range containers {
-		service := firstNonEmpty(container.Labels["com.docker.compose.service"], trimContainerName(container.Names))
+		service := helpers.FirstNonEmpty(container.Labels["com.docker.compose.service"], TrimContainerName(container.Names))
 		item := ServiceSummary{
 			Service: service,
-			Name:    trimContainerName(container.Names),
+			Name:    TrimContainerName(container.Names),
 			State:   container.State,
 			Status:  container.Status,
 			Healthy: strings.Contains(strings.ToLower(container.Status), "healthy"),
@@ -257,15 +258,15 @@ func parseComposePSOutput(output string) (ProjectSummary, error) {
 			continue
 		}
 		item := ServiceSummary{
-			Service: firstNonEmpty(composeField(row, "service")),
-			Name:    firstNonEmpty(composeField(row, "name")),
-			State:   strings.ToLower(firstNonEmpty(composeField(row, "state"), "unknown")),
-			Status:  firstNonEmpty(composeField(row, "status")),
+			Service: helpers.FirstNonEmpty(composeField(row, "service")),
+			Name:    helpers.FirstNonEmpty(composeField(row, "name")),
+			State:   strings.ToLower(helpers.FirstNonEmpty(composeField(row, "state"), "unknown")),
+			Status:  helpers.FirstNonEmpty(composeField(row, "status")),
 		}
 		if item.Service == "" {
 			item.Service = item.Name
 		}
-		item.Healthy = strings.Contains(strings.ToLower(firstNonEmpty(composeField(row, "health"), item.Status)), "healthy")
+		item.Healthy = strings.Contains(strings.ToLower(helpers.FirstNonEmpty(composeField(row, "health"), item.Status)), "healthy")
 		summary.Total++
 		if item.State == "running" {
 			summary.Running++
@@ -469,20 +470,11 @@ func finalizeSummary(summary *ProjectSummary) {
 	}
 }
 
-func trimContainerName(names []string) string {
+func TrimContainerName(names []string) string {
 	for _, name := range names {
 		name = strings.TrimPrefix(strings.TrimSpace(name), "/")
 		if name != "" {
 			return name
-		}
-	}
-	return ""
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
 		}
 	}
 	return ""

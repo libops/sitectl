@@ -1,9 +1,6 @@
 package tui
 
 import (
-	"fmt"
-	"strings"
-
 	"charm.land/bubbles/v2/help"
 	"charm.land/lipgloss/v2"
 )
@@ -36,10 +33,6 @@ var (
 			Padding(1, 2).
 			MarginRight(1).
 			MarginBottom(1)
-
-	overlayPanelStyle = panelStyle.
-				BorderForeground(lipgloss.Color("#98C1D9")).
-				Background(lipgloss.Color("#112235"))
 
 	cardStyle = panelStyle.Width(40)
 
@@ -87,28 +80,6 @@ func helpStyles() help.Styles {
 	styles.FullSeparator = styles.ShortSeparator
 	styles.Ellipsis = styles.ShortSeparator
 	return styles
-}
-
-func overlay(base, top string, width int, progress float64) string {
-	if strings.TrimSpace(top) == "" {
-		return base
-	}
-	baseLines := strings.Split(base, "\n")
-	topLines := strings.Split(top, "\n")
-	x := max(2, width/2-lipgloss.Width(top)/2+int((1-progress)*10))
-	y := 4
-
-	for i, line := range topLines {
-		idx := y + i
-		if idx >= len(baseLines) {
-			break
-		}
-		prefixWidth := min(x, lipgloss.Width(baseLines[idx]))
-		prefix := lipgloss.NewStyle().Width(prefixWidth).Render(baseLines[idx])
-		baseLines[idx] = fmt.Sprintf("%s%s", prefix, line)
-	}
-
-	return strings.Join(baseLines, "\n")
 }
 
 func splitWidth(total, columns int) []int {

@@ -115,7 +115,7 @@ var getSitesCmd = &cobra.Command{
 
 		sites := map[string][]config.Context{}
 		for _, ctx := range cfg.Contexts {
-			site := firstNonEmptyString(ctx.Site, "-")
+			site := helpers.FirstNonEmpty(ctx.Site, "-")
 			sites[site] = append(sites[site], ctx)
 		}
 
@@ -132,9 +132,9 @@ var getSitesCmd = &cobra.Command{
 			sort.Slice(contexts, func(i, j int) bool {
 				return contexts[i].Name < contexts[j].Name
 			})
-			plugin := firstNonEmptyString(contexts[0].Plugin, "-")
+			plugin := helpers.FirstNonEmpty(contexts[0].Plugin, "-")
 			envs := uniqueSortedContextValues(contexts, func(ctx config.Context) string {
-				return firstNonEmptyString(ctx.Environment, "-")
+				return helpers.FirstNonEmpty(ctx.Environment, "-")
 			})
 			names := make([]string, 0, len(contexts))
 			for _, ctx := range contexts {
@@ -205,18 +205,18 @@ var getEnvironmentsCmd = &cobra.Command{
 		for _, ctx := range contexts {
 			host := "-"
 			if ctx.DockerHostType == config.ContextRemote {
-				host = firstNonEmptyString(ctx.SSHHostname, "-")
+				host = helpers.FirstNonEmpty(ctx.SSHHostname, "-")
 			}
 			name := ctx.Name
 			if ctx.Name == cfg.CurrentContext {
 				name += " *"
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				firstNonEmptyString(ctx.Site, "-"),
-				firstNonEmptyString(ctx.Environment, "-"),
+				helpers.FirstNonEmpty(ctx.Site, "-"),
+				helpers.FirstNonEmpty(ctx.Environment, "-"),
 				name,
-				firstNonEmptyString(ctx.Plugin, "-"),
-				firstNonEmptyString(string(ctx.DockerHostType), "-"),
+				helpers.FirstNonEmpty(ctx.Plugin, "-"),
+				helpers.FirstNonEmpty(string(ctx.DockerHostType), "-"),
 				host,
 			)
 		}
@@ -589,22 +589,22 @@ func runCreateConfig(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if !f.Changed("project-name") && placeholderProjectName(context.ProjectName) {
-		context.ProjectName = firstNonEmptyString(filepath.Base(context.ProjectDir), "docker-compose")
+		context.ProjectName = helpers.FirstNonEmpty(filepath.Base(context.ProjectDir), "docker-compose")
 	}
 	if strings.TrimSpace(context.ProjectName) == "" {
-		context.ProjectName = firstNonEmptyString(filepath.Base(context.ProjectDir), "docker-compose")
+		context.ProjectName = helpers.FirstNonEmpty(filepath.Base(context.ProjectDir), "docker-compose")
 	}
 	if !f.Changed("compose-project-name") && strings.TrimSpace(context.ComposeProjectName) == "" {
-		context.ComposeProjectName = firstNonEmptyString(config.DetectComposeProjectName(context.ProjectDir), context.ProjectName)
+		context.ComposeProjectName = helpers.FirstNonEmpty(config.DetectComposeProjectName(context.ProjectDir), context.ProjectName)
 	}
 	if !f.Changed("compose-network") && strings.TrimSpace(context.ComposeNetwork) == "" {
 		context.ComposeNetwork = config.DetectComposeNetworkName(context.ProjectDir, context.EffectiveComposeProjectName())
 	}
 	if !f.Changed("site") && placeholderProjectName(context.Site) {
-		context.Site = firstNonEmptyString(filepath.Base(context.ProjectDir), context.ProjectName, context.Name)
+		context.Site = helpers.FirstNonEmpty(filepath.Base(context.ProjectDir), context.ProjectName, context.Name)
 	}
 	if strings.TrimSpace(context.Site) == "" {
-		context.Site = firstNonEmptyString(filepath.Base(context.ProjectDir), context.ProjectName, context.Name)
+		context.Site = helpers.FirstNonEmpty(filepath.Base(context.ProjectDir), context.ProjectName, context.Name)
 	}
 
 	if context.DockerHostType == config.ContextRemote {
@@ -663,17 +663,17 @@ func promptContextPlugin(defaultPlugin string) (string, error) {
 		choices = append(choices, corecomponent.Choice{
 			Value:   name,
 			Label:   name,
-			Help:    firstNonEmptyString(discovered.Description, "Use the "+name+" plugin for this site."),
+			Help:    helpers.FirstNonEmpty(discovered.Description, "Use the "+name+" plugin for this site."),
 			Aliases: nil,
 		})
 	}
 	if len(choices) == 1 {
-		return firstNonEmptyString(defaultPlugin, "core"), nil
+		return helpers.FirstNonEmpty(defaultPlugin, "core"), nil
 	}
 	selected, err := createConfigPromptChoice(
 		"plugin",
 		choices,
-		firstNonEmptyString(strings.TrimSpace(defaultPlugin), "core"),
+		helpers.FirstNonEmpty(strings.TrimSpace(defaultPlugin), "core"),
 		createConfigInput,
 		strings.Split(corecomponent.RenderSection("plugin", "If this project belongs to a known sitectl plugin, pick it here. For example, an Islandora stack would usually use the isle plugin."), "\n")...,
 	)
@@ -747,7 +747,7 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 
 	projectDir, err := promptRequiredValueWithDefault(
 		"Full directory path to the remote project (directory where docker-compose.yml is located)",
-		firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ProjectDir })),
+		helpers.FirstNonEmpty(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ProjectDir })),
 	)
 	if err != nil {
 		return nil, err
@@ -759,17 +759,17 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 	}
 	defaultKey := filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa")
 	hostname := ""
-	sshUser := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.SSHUser }), currentUser, "root")
+	sshUser := helpers.FirstNonEmpty(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.SSHUser }), currentUser, "root")
 	sshPort := remoteContextUint(previousRemote, func(ctx *config.Context) uint { return ctx.SSHPort }, 22)
-	sshKey := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.SSHKeyPath }), defaultKey)
-	dockerSocket := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.DockerSocket }), "/var/run/docker.sock")
-	projectName := firstNonEmptyString(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ProjectName }), localCtx.ProjectName, "docker-compose")
-	composeProjectName := firstNonEmptyString(
+	sshKey := helpers.FirstNonEmpty(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.SSHKeyPath }), defaultKey)
+	dockerSocket := helpers.FirstNonEmpty(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.DockerSocket }), "/var/run/docker.sock")
+	projectName := helpers.FirstNonEmpty(remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ProjectName }), localCtx.ProjectName, "docker-compose")
+	composeProjectName := helpers.FirstNonEmpty(
 		remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ComposeProjectName }),
 		localCtx.EffectiveComposeProjectName(),
 		projectName,
 	)
-	composeNetwork := firstNonEmptyString(
+	composeNetwork := helpers.FirstNonEmpty(
 		remoteContextValue(previousRemote, func(ctx *config.Context) string { return ctx.ComposeNetwork }),
 		localCtx.ComposeNetwork,
 		localCtx.EffectiveComposeNetwork(),
@@ -794,12 +794,12 @@ func promptRemoteEnvironmentContext(localCtx, previousRemote *config.Context) (*
 
 		remoteCtx := &config.Context{
 			Name:                   name,
-			Site:                   firstNonEmptyString(localCtx.Site, localCtx.ProjectName, localCtx.Name),
-			Plugin:                 firstNonEmptyString(localCtx.Plugin, "core"),
+			Site:                   helpers.FirstNonEmpty(localCtx.Site, localCtx.ProjectName, localCtx.Name),
+			Plugin:                 helpers.FirstNonEmpty(localCtx.Plugin, "core"),
 			DockerHostType:         config.ContextRemote,
 			Environment:            environment,
 			ProjectDir:             strings.TrimSpace(projectDir),
-			ProjectName:            firstNonEmptyString(localCtx.ProjectName, "docker-compose"),
+			ProjectName:            helpers.FirstNonEmpty(localCtx.ProjectName, "docker-compose"),
 			ComposeProjectName:     composeProjectName,
 			ComposeNetwork:         composeNetwork,
 			SSHHostname:            strings.TrimSpace(hostname),
@@ -945,18 +945,18 @@ func validateRemoteDockerAccess(ctx *config.Context) error {
 			if promptErr != nil {
 				return promptErr
 			}
-			projectName, promptErr := promptRequiredValueWithDefault("Logical project name", firstNonEmptyString(ctx.ProjectName, "docker-compose"))
+			projectName, promptErr := promptRequiredValueWithDefault("Logical project name", helpers.FirstNonEmpty(ctx.ProjectName, "docker-compose"))
 			if promptErr != nil {
 				return promptErr
 			}
-			dockerSocket, promptErr := promptRequiredValueWithDefault("Docker socket", firstNonEmptyString(ctx.DockerSocket, "/var/run/docker.sock"))
+			dockerSocket, promptErr := promptRequiredValueWithDefault("Docker socket", helpers.FirstNonEmpty(ctx.DockerSocket, "/var/run/docker.sock"))
 			if promptErr != nil {
 				return promptErr
 			}
 			ctx.ProjectDir = projectDir
 			ctx.ProjectName = projectName
-			ctx.ComposeProjectName = firstNonEmptyString(ctx.ComposeProjectName, projectName)
-			ctx.ComposeNetwork = firstNonEmptyString(config.DetectContextComposeNetwork(ctx), ctx.ComposeNetwork, ctx.EffectiveComposeNetwork())
+			ctx.ComposeProjectName = helpers.FirstNonEmpty(ctx.ComposeProjectName, projectName)
+			ctx.ComposeNetwork = helpers.FirstNonEmpty(config.DetectContextComposeNetwork(ctx), ctx.ComposeNetwork, ctx.EffectiveComposeNetwork())
 			ctx.DockerSocket = dockerSocket
 			continue
 		}
@@ -1012,15 +1012,6 @@ func suggestedEnvironmentContextName(localCtx *config.Context, environment strin
 	return base
 }
 
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
 func writeContextTable(out io.Writer, cfg *config.Config) {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "CURRENT\tCONTEXT\tSITE\tPLUGIN\tENVIRONMENT\tTYPE\tPROJECT")
@@ -1032,11 +1023,11 @@ func writeContextTable(out io.Writer, cfg *config.Config) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			activeMark,
 			ctx.Name,
-			firstNonEmptyString(ctx.Site, "-"),
-			firstNonEmptyString(ctx.Plugin, "-"),
-			firstNonEmptyString(ctx.Environment, "-"),
-			firstNonEmptyString(string(ctx.DockerHostType), "-"),
-			firstNonEmptyString(ctx.ProjectName, "-"),
+			helpers.FirstNonEmpty(ctx.Site, "-"),
+			helpers.FirstNonEmpty(ctx.Plugin, "-"),
+			helpers.FirstNonEmpty(ctx.Environment, "-"),
+			helpers.FirstNonEmpty(string(ctx.DockerHostType), "-"),
+			helpers.FirstNonEmpty(ctx.ProjectName, "-"),
 		)
 	}
 	_ = w.Flush()

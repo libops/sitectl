@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/spf13/pflag"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -218,11 +219,11 @@ func (c *Context) ReadSmallFile(filename string) (string, error) {
 }
 
 func (c Context) EffectiveComposeProjectName() string {
-	return firstNonEmpty(c.ComposeProjectName, c.ProjectName)
+	return helpers.FirstNonEmpty(c.ComposeProjectName, c.ProjectName)
 }
 
 func (c Context) EffectiveComposeNetwork() string {
-	return firstNonEmpty(c.ComposeNetwork, c.EffectiveComposeProjectName()+"_default")
+	return helpers.FirstNonEmpty(c.ComposeNetwork, c.EffectiveComposeProjectName()+"_default")
 }
 
 func (c *Context) DialSSH() (*ssh.Client, error) {

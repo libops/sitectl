@@ -24,6 +24,7 @@ import (
 	"github.com/libops/sitectl/internal/tuitour"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
+	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/libops/sitectl/pkg/plugin"
 	zone "github.com/lrstanley/bubblezone/v2"
 )
@@ -39,17 +40,6 @@ const (
 	screenDashboard screenMode = iota
 	screenLogs
 	screenTour
-)
-
-type overlayMode int
-
-const (
-	overlayNone overlayMode = iota
-	overlayActions
-	overlaySettings
-	overlayChooser
-	overlayInfo
-	overlayCommands
 )
 
 type refreshTickMsg time.Time
@@ -99,11 +89,7 @@ type keyMap struct {
 	Right    key.Binding
 	Up       key.Binding
 	Down     key.Binding
-	Actions  key.Binding
-	Settings key.Binding
-	NewApp   key.Binding
 	Command  key.Binding
-	Palette  key.Binding
 	Terminal key.Binding
 	Refresh  key.Binding
 	Enter    key.Binding
@@ -117,11 +103,7 @@ func defaultKeyMap() keyMap {
 		Right:    key.NewBinding(key.WithKeys("right", "l", "tab"), key.WithHelp("l/right", "next site")),
 		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("k/up", "env up")),
 		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("j/down", "env down")),
-		Actions:  key.NewBinding(key.WithKeys("ctrl+a"), key.WithHelp("ctrl+a", "actions")),
-		Settings: key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "settings")),
-		NewApp:   key.NewBinding(key.WithKeys("ctrl+n"), key.WithHelp("ctrl+n", "choose app")),
 		Command:  key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "command bar")),
-		Palette:  key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "palette")),
 		Terminal: key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "run in terminal")),
 		Refresh:  key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "refresh")),
 		Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
@@ -131,11 +113,11 @@ func defaultKeyMap() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Left, k.Up, k.Command, k.Palette, k.Refresh, k.Terminal, k.Back, k.Quit}
+	return []key.Binding{k.Left, k.Up, k.Command, k.Refresh, k.Terminal, k.Back, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Left, k.Right, k.Up, k.Down}, {k.Command, k.Palette, k.Refresh}, {k.Actions, k.Settings, k.NewApp, k.Terminal, k.Enter, k.Back, k.Quit}}
+	return [][]key.Binding{{k.Left, k.Right, k.Up, k.Down}, {k.Command, k.Refresh, k.Terminal, k.Enter, k.Back, k.Quit}}
 }
 
 type dashboardModel struct {
@@ -150,8 +132,7 @@ type dashboardModel struct {
 	width     int
 	height    int
 
-	screen  screenMode
-	overlay overlayMode
+	screen screenMode
 
 	loading    bool
 	loadingLog bool
@@ -160,8 +141,6 @@ type dashboardModel struct {
 	logsErr    error
 
 	lastMessage string
-	infoTitle   string
-	infoBody    string
 	logsTitle   string
 	logTarget   string
 	detailBody  string
@@ -172,16 +151,12 @@ type dashboardModel struct {
 	historyNet    map[string][]float64
 	lastNetSample map[string]networkSample
 
-	help          help.Model
-	keys          keyMap
-	spin          spinner.Model
-	detail        viewport.Model
-	logs          viewport.Model
-	actions       list.Model
-	settings      list.Model
-	chooser       list.Model
-	commands      list.Model
-	commandParent string
+	help    help.Model
+	keys    keyMap
+	spin    spinner.Model
+	detail  viewport.Model
+	logs    viewport.Model
+	chooser list.Model
 
 	commandInput     textinput.Model
 	commandRunning   bool
@@ -245,17 +220,7 @@ func newDashboardModel(cfg *config.Config, plugins []plugin.InstalledPlugin) *da
 	m.logsBody = "No logs loaded."
 	m.logs.SetContent(m.logsBody)
 	m.logsTitle = "Logs"
-	m.actions = newMenuModel("Actions", []menuItem{
-		{title: "Refresh", desc: "Reload summary for the selected environment", action: "refresh"},
-		{title: "Logs", desc: "Open a log view for this environment", action: "logs"},
-		{title: "Choose App", desc: "Open the plugin-backed app chooser", action: "chooser"},
-	})
-	m.settings = newMenuModel("Settings", []menuItem{
-		{title: "Context Details", desc: "Inspect context configuration for the selected environment", action: "context-info"},
-		{title: "Plugin Details", desc: "Inspect the selected plugin and template repo", action: "plugin-info"},
-	})
 	m.chooser = newMenuModel(chooserTitle(m.sites), chooserItems(m.sites, m.plugins))
-	m.commands = newMenuModel("Commands", commandPaletteItems("", m.selectedContextName(), m.selectedSiteName(), m.selectedPluginName()))
 	m.commandInput = textinput.New()
 	m.commandInput.Prompt = "sitectl --context " + m.selectedContextName() + " "
 	m.commandInput.Placeholder = "compose ps"
@@ -380,7 +345,6 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logsErr = nil
 		m.logsTitle = "Logs"
 		m.screen = screenDashboard
-		m.overlay = overlayNone
 		m.chooser = newMenuModel(chooserTitle(m.sites), chooserItems(m.sites, m.plugins))
 		m.refreshCommandSuggestions()
 		m.syncLayout()
@@ -396,9 +360,6 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.MouseMsg:
-		if m.overlay != overlayNone {
-			return m.updateOverlay(msg)
-		}
 		if release, ok := msg.(tea.MouseReleaseMsg); ok {
 			return m.handleMouseRelease(release)
 		}
@@ -419,9 +380,6 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 
-	if m.overlay != overlayNone {
-		return m.updateOverlay(msg)
-	}
 	if m.screen == screenLogs {
 		var cmd tea.Cmd
 		m.logs, cmd = m.logs.Update(msg)
@@ -450,7 +408,7 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.overlay == overlayNone && m.commandInput.Focused() {
+	if m.commandInput.Focused() {
 		switch {
 		case msg.String() == "ctrl+c":
 			if strings.TrimSpace(m.commandInput.Value()) != "" {
@@ -491,26 +449,12 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Back):
-		if m.overlay != overlayNone {
-			if m.overlay == overlayInfo {
-				m.syncDetailContent()
-			}
-			m.overlay = overlayNone
-			return m, nil
-		}
 		if m.screen == screenLogs {
 			m.screen = screenDashboard
 			m.syncLayout()
 			return m, nil
 		}
 		return m, tea.Quit
-	}
-
-	if m.overlay != overlayNone {
-		if msg.String() == "enter" {
-			return m.handleOverlaySelection()
-		}
-		return m.updateOverlay(msg)
 	}
 
 	if m.screen == screenLogs {
@@ -556,22 +500,8 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.envIndex++
 			return m.reloadSelected()
 		}
-	case key.Matches(msg, m.keys.Actions):
-		m.overlay = overlayActions
-		return m, nil
-	case key.Matches(msg, m.keys.Settings):
-		m.overlay = overlaySettings
-		return m, nil
-	case key.Matches(msg, m.keys.NewApp):
-		m.overlay = overlayChooser
-		return m, nil
 	case key.Matches(msg, m.keys.Command):
 		m.commandInput.Focus()
-		return m, nil
-	case key.Matches(msg, m.keys.Palette):
-		m.commandParent = ""
-		m.commands = newMenuModel("Commands", commandPaletteItems("", m.selectedContextName(), m.selectedSiteName(), m.selectedPluginName()))
-		m.overlay = overlayCommands
 		return m, nil
 	case key.Matches(msg, m.keys.Refresh):
 		if ctx, ok := m.selectedContext(); ok {
@@ -632,144 +562,7 @@ func (m *dashboardModel) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model,
 		}
 	}
 
-	if z := zone.Get("chip:actions"); z != nil && z.InBounds(msg) {
-		m.overlay = overlayActions
-	}
-	if z := zone.Get("chip:settings"); z != nil && z.InBounds(msg) {
-		m.overlay = overlaySettings
-	}
-	if z := zone.Get("chip:new"); z != nil && z.InBounds(msg) {
-		m.overlay = overlayChooser
-	}
-	if z := zone.Get("chip:refresh"); z != nil && z.InBounds(msg) {
-		if ctx, ok := m.selectedContext(); ok {
-			m.loading = true
-			return m, loadSummaryCmd(ctx)
-		}
-	}
-	if z := zone.Get("chip:command"); z != nil && z.InBounds(msg) {
-		m.commandInput.Focus()
-		return m, nil
-	}
-	if z := zone.Get("chip:palette"); z != nil && z.InBounds(msg) {
-		m.commandParent = ""
-		m.commands = newMenuModel("Commands", commandPaletteItems("", m.selectedContextName(), m.selectedSiteName(), m.selectedPluginName()))
-		m.overlay = overlayCommands
-	}
-
 	return m, nil
-}
-
-func (m *dashboardModel) updateOverlay(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch m.overlay {
-	case overlayActions:
-		var cmd tea.Cmd
-		m.actions, cmd = m.actions.Update(msg)
-		return m, cmd
-	case overlaySettings:
-		var cmd tea.Cmd
-		m.settings, cmd = m.settings.Update(msg)
-		return m, cmd
-	case overlayChooser:
-		var cmd tea.Cmd
-		m.chooser, cmd = m.chooser.Update(msg)
-		return m, cmd
-	case overlayCommands:
-		var cmd tea.Cmd
-		m.commands, cmd = m.commands.Update(msg)
-		return m, cmd
-	case overlayInfo:
-		var cmd tea.Cmd
-		m.detail, cmd = m.detail.Update(msg)
-		return m, cmd
-	default:
-		return m, nil
-	}
-}
-
-func (m *dashboardModel) handleOverlaySelection() (tea.Model, tea.Cmd) {
-	var item menuItem
-	switch m.overlay {
-	case overlayActions:
-		selected, _ := m.actions.SelectedItem().(menuItem)
-		item = selected
-	case overlaySettings:
-		selected, _ := m.settings.SelectedItem().(menuItem)
-		item = selected
-	case overlayChooser:
-		selected, _ := m.chooser.SelectedItem().(menuItem)
-		item = selected
-	case overlayCommands:
-		selected, _ := m.commands.SelectedItem().(menuItem)
-		item = selected
-	}
-
-	switch item.action {
-	case "refresh":
-		m.overlay = overlayNone
-		if ctx, ok := m.selectedContext(); ok {
-			m.loading = true
-			return m, loadSummaryCmd(ctx)
-		}
-	case "logs":
-		m.overlay = overlayNone
-		return m.openLogs()
-	case "chooser":
-		m.overlay = overlayChooser
-		return m, nil
-	case "context-info":
-		if ctx, ok := m.selectedContext(); ok {
-			m.infoTitle = "Context Details"
-			m.infoBody = renderContextInfo(ctx)
-			m.detailBody = m.infoBody
-			m.detail.SetContent(m.detailBody)
-			m.detail.GotoTop()
-			m.overlay = overlayInfo
-			return m, nil
-		}
-	case "plugin-info":
-		if ctx, ok := m.selectedContext(); ok {
-			m.infoTitle = "Plugin Details"
-			m.infoBody = renderPluginInfo(findPlugin(m.plugins, ctx.Plugin), ctx.Plugin)
-			m.detail.SetContent(m.infoBody)
-			m.detail.GotoTop()
-			m.overlay = overlayInfo
-			return m, nil
-		}
-	default:
-		if item.action == "config-create" || strings.HasPrefix(item.action, "plugin:") {
-			m.overlay = overlayNone
-			return m.executeChooserAction(item.action)
-		}
-		if strings.HasPrefix(item.action, "palette:") {
-			parent := strings.TrimPrefix(item.action, "palette:")
-			m.commandParent = parent
-			m.commands = newMenuModel(commandPaletteTitle(parent), commandPaletteItems(parent, m.selectedContextName(), m.selectedSiteName(), m.selectedPluginName()))
-			return m, nil
-		}
-		if strings.HasPrefix(item.action, "fill:") {
-			m.commandInput.SetValue(strings.TrimPrefix(item.action, "fill:"))
-			m.overlay = overlayNone
-			m.commandInput.Focus()
-			return m, nil
-		}
-	}
-
-	m.overlay = overlayNone
-	return m, nil
-}
-
-func (m *dashboardModel) openLogs() (tea.Model, tea.Cmd) {
-	ctx, ok := m.selectedContext()
-	if !ok {
-		return m, nil
-	}
-	m.logTarget = ""
-	m.screen = screenLogs
-	m.loadingLog = true
-	m.logsTitle = "Logs | tail 20 | auto-refresh"
-	m.syncLayout()
-	return m, loadLogsCmd(ctx)
 }
 
 func (m *dashboardModel) openContainerLogs(containerName string) (tea.Model, tea.Cmd) {
@@ -823,7 +616,6 @@ func (m *dashboardModel) render() string {
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		m.renderTabs(),
-		m.renderHeaderChips(),
 		m.renderTitle(),
 		m.renderResourceHeader(),
 		m.renderMainArea(),
@@ -835,11 +627,7 @@ func (m *dashboardModel) render() string {
 		body = lipgloss.JoinVertical(lipgloss.Left, body, subtleStyle.Render(m.lastMessage))
 	}
 
-	rendered := docStyle.Render(body)
-	if m.overlay != overlayNone {
-		return overlay(rendered, m.renderOverlay(), m.width, 1)
-	}
-	return rendered
+	return docStyle.Render(body)
 }
 
 func (m *dashboardModel) renderTabs() string {
@@ -853,18 +641,6 @@ func (m *dashboardModel) renderTabs() string {
 		tabs = append(tabs, zone.Mark("tab:"+site.Name, tab))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Left, tabs...)
-}
-
-func (m *dashboardModel) renderHeaderChips() string {
-	chips := []string{
-		zone.Mark("chip:actions", chipStyle.Render("[ctrl+a] Actions")),
-		zone.Mark("chip:settings", chipStyle.Render("[ctrl+s] Settings")),
-		zone.Mark("chip:new", chipStyle.Render("[ctrl+n] Choose App")),
-		zone.Mark("chip:command", chipStyle.Render("[/] Command")),
-		zone.Mark("chip:palette", chipStyle.Render("[ctrl+p] Palette")),
-		zone.Mark("chip:refresh", chipStyle.Render("[ctrl+r] Refresh")),
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Left, chips...)
 }
 
 func (m *dashboardModel) renderTitle() string {
@@ -987,7 +763,7 @@ func (m *dashboardModel) renderEnvironmentCards(width int) string {
 		lines := []string{strings.ToUpper(envLabel(ctx)), ctx.Name}
 		if selected {
 			cardWidth = selectedWidth
-			statusText := strings.ToUpper(firstNonEmpty(m.summary.Status, "unknown"))
+			statusText := strings.ToUpper(helpers.FirstNonEmpty(m.summary.Status, "unknown"))
 			containersText := fmt.Sprintf(
 				"containers: %d total, %d running, %d stopped",
 				m.summary.Total,
@@ -1004,7 +780,7 @@ func (m *dashboardModel) renderEnvironmentCards(width int) string {
 				fmt.Sprintf("healthy: %d", m.summary.Healthy),
 			)
 		} else {
-			lines = append(lines, firstNonEmpty(ctx.Plugin, "core"))
+			lines = append(lines, helpers.FirstNonEmpty(ctx.Plugin, "core"))
 		}
 		if ctx.Name == m.currentContext {
 			lines = append(lines, accentStyle.Render("current"))
@@ -1031,30 +807,6 @@ func (m *dashboardModel) renderDetailsPanel(width int) string {
 	return panelStyle.Width(panelWidth).Height(panelHeight).Render(
 		sectionTitleStyle.MarginBottom(0).Render("Selected Environment Status") + "\n" + content,
 	)
-}
-
-func (m *dashboardModel) renderOverlay() string {
-	title := "Menu"
-	content := ""
-	switch m.overlay {
-	case overlayActions:
-		title = "Actions"
-		content = m.actions.View()
-	case overlaySettings:
-		title = "Settings"
-		content = m.settings.View()
-	case overlayChooser:
-		title = "Choose An App"
-		content = m.chooser.View()
-	case overlayInfo:
-		title = m.infoTitle
-		overlayWidth := min(72, max(48, m.width-12))
-		content = renderViewportWithScrollbar(m.detail, m.detailBody, overlayWidth-6)
-	case overlayCommands:
-		title = commandPaletteTitle(m.commandParent)
-		content = m.commands.View()
-	}
-	return overlayPanelStyle.Width(min(72, max(48, m.width-12))).Render(sectionTitleStyle.Render(title) + "\n" + content)
 }
 
 func (m *dashboardModel) renderOnboarding() string {
@@ -1117,12 +869,8 @@ func (m *dashboardModel) syncLayout() {
 	m.logs.SetWidth(max(30, m.width-hpad-8))
 	m.logs.SetHeight(logHeight)
 
-	menuWidth := min(58, max(36, m.width/2))
-	menuHeight := min(18, max(10, m.height/2))
-	m.actions.SetSize(menuWidth, menuHeight)
-	m.settings.SetSize(menuWidth, menuHeight)
-	m.chooser.SetSize(menuWidth, menuHeight)
-	m.commands.SetSize(menuWidth, menuHeight)
+	chooserWidth := min(72, max(48, m.width-12))
+	m.chooser.SetSize(chooserWidth, min(18, max(10, m.height/2)))
 	m.commandInput.SetWidth(max(20, m.width-18))
 	m.commandInput.Prompt = "sitectl --context " + m.selectedContextName() + " "
 
@@ -1136,11 +884,6 @@ func (m *dashboardModel) syncDetailContent() {
 	_, ok := m.selectedContext()
 	if !ok {
 		m.detailBody = "No context selected."
-		m.detail.SetContent(m.detailBody)
-		return
-	}
-	if m.overlay == overlayInfo && strings.TrimSpace(m.infoBody) != "" {
-		m.detailBody = m.infoBody
 		m.detail.SetContent(m.detailBody)
 		return
 	}
@@ -1163,10 +906,10 @@ func (m *dashboardModel) syncDetailContent() {
 		for _, service := range m.summary.Services {
 			line := fmt.Sprintf(
 				"  %-36s  %6.1f%%  %-22s  %s",
-				truncateMetricText(firstNonEmpty(service.Name, service.Service), 36),
+				truncateMetricText(helpers.FirstNonEmpty(service.Name, service.Service), 36),
 				service.CPUPercent,
 				truncateMetricText(containerMemorySummary(service), 22),
-				truncateMetricText(firstNonEmpty(service.Status, service.State), 12),
+				truncateMetricText(helpers.FirstNonEmpty(service.Status, service.State), 12),
 			)
 			lines = append(lines, zone.Mark(containerZoneID(service.Name), line))
 		}
@@ -1215,6 +958,7 @@ func newMenuModel(title string, items []menuItem) list.Model {
 	}
 	m := list.New(converted, delegate, 48, 12)
 	m.Title = title
+	m.SetShowTitle(false)
 	m.SetFilteringEnabled(false)
 	m.SetShowStatusBar(false)
 	m.SetShowHelp(false)
@@ -1307,7 +1051,7 @@ func groupContexts(cfg *config.Config) []siteGroup {
 
 	siteMap := map[string][]config.Context{}
 	for _, ctx := range cfg.Contexts {
-		siteName := firstNonEmpty(ctx.Site, ctx.ProjectName, ctx.Name, "default")
+		siteName := helpers.FirstNonEmpty(ctx.Site, ctx.ProjectName, ctx.Name, "default")
 		siteMap[siteName] = append(siteMap[siteName], ctx)
 	}
 
@@ -1360,7 +1104,7 @@ func defaultEnvIndex(contexts []config.Context, current string) int {
 }
 
 func envLabel(ctx config.Context) string {
-	return firstNonEmpty(ctx.Environment, "unknown")
+	return helpers.FirstNonEmpty(ctx.Environment, "unknown")
 }
 
 func envSortRank(value string) int {
@@ -1377,24 +1121,6 @@ func envSortRank(value string) int {
 	default:
 		return 4
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func findPlugin(plugins []plugin.InstalledPlugin, name string) plugin.InstalledPlugin {
-	for _, p := range plugins {
-		if p.Name == name {
-			return p
-		}
-	}
-	return plugin.InstalledPlugin{Name: name}
 }
 
 func (m *dashboardModel) selectedContextName() string {
@@ -1420,9 +1146,6 @@ func (m *dashboardModel) selectedPluginName() string {
 
 func (m *dashboardModel) refreshCommandSuggestions() {
 	m.commandInput.SetSuggestions(commandSuggestions(m.selectedContextName(), m.selectedSiteName(), m.selectedPluginName()))
-	if m.commandParent != "" {
-		m.commands = newMenuModel(commandPaletteTitle(m.commandParent), commandPaletteItems(m.commandParent, m.selectedContextName(), m.selectedSiteName(), m.selectedPluginName()))
-	}
 }
 
 func (m *dashboardModel) hasContexts() bool {
@@ -1462,107 +1185,6 @@ func (m *dashboardModel) handleOnboardingSelection() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m.executeChooserAction(selected.action)
-}
-
-func renderContextInfo(ctx config.Context) string {
-	lines := []string{
-		fmt.Sprintf("Name: %s", ctx.Name),
-		fmt.Sprintf("Site: %s", firstNonEmpty(ctx.Site, "-")),
-		fmt.Sprintf("Environment: %s", envLabel(ctx)),
-		fmt.Sprintf("Plugin: %s", firstNonEmpty(ctx.Plugin, "-")),
-		fmt.Sprintf("Docker Host Type: %s", firstNonEmpty(string(ctx.DockerHostType), "-")),
-		fmt.Sprintf("Project Name: %s", firstNonEmpty(ctx.ProjectName, "-")),
-		fmt.Sprintf("Compose Project: %s", firstNonEmpty(ctx.EffectiveComposeProjectName(), "-")),
-		fmt.Sprintf("Compose Network: %s", firstNonEmpty(ctx.EffectiveComposeNetwork(), "-")),
-		fmt.Sprintf("Project Dir: %s", firstNonEmpty(ctx.ProjectDir, "-")),
-		fmt.Sprintf("Docker Socket: %s", firstNonEmpty(ctx.DockerSocket, "-")),
-	}
-	if ctx.DockerHostType == config.ContextRemote {
-		lines = append(lines,
-			fmt.Sprintf("SSH Host: %s", firstNonEmpty(ctx.SSHHostname, "-")),
-			fmt.Sprintf("SSH User: %s", firstNonEmpty(ctx.SSHUser, "-")),
-			fmt.Sprintf("SSH Port: %d", ctx.SSHPort),
-		)
-	}
-	if len(ctx.ComposeFile) > 0 {
-		lines = append(lines, "", "Compose Files:")
-		for _, file := range ctx.ComposeFile {
-			lines = append(lines, "  "+file)
-		}
-	}
-	if len(ctx.EnvFile) > 0 {
-		lines = append(lines, "", "Env Files:")
-		for _, file := range ctx.EnvFile {
-			lines = append(lines, "  "+file)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderPluginInfo(p plugin.InstalledPlugin, fallbackName string) string {
-	name := firstNonEmpty(p.Name, fallbackName, "unknown")
-	lines := []string{
-		fmt.Sprintf("Name: %s", name),
-		fmt.Sprintf("Description: %s", firstNonEmpty(p.Description, "-")),
-		fmt.Sprintf("Version: %s", firstNonEmpty(p.Version, "-")),
-		fmt.Sprintf("Author: %s", firstNonEmpty(p.Author, "-")),
-		fmt.Sprintf("Binary: %s", firstNonEmpty(p.BinaryName, "-")),
-		fmt.Sprintf("Path: %s", firstNonEmpty(p.Path, "-")),
-		fmt.Sprintf("Template Repo: %s", firstNonEmpty(p.TemplateRepo, "-")),
-	}
-	return strings.Join(lines, "\n")
-}
-
-func commandPaletteTitle(parent string) string {
-	if strings.TrimSpace(parent) == "" {
-		return "Commands"
-	}
-	return strings.ToUpper(parent[:1]) + parent[1:] + " Commands"
-}
-
-func commandPaletteItems(parent, contextName, siteName, pluginName string) []menuItem {
-	switch parent {
-	case "compose":
-		return []menuItem{
-			{title: "ps", desc: "Show compose service status", action: "fill:compose ps"},
-			{title: "logs", desc: "Fetch recent compose logs", action: "fill:compose logs --tail 80 --no-color"},
-			{title: "up", desc: "Start services in detached mode", action: "fill:compose up"},
-			{title: "down", desc: "Stop and remove services", action: "fill:compose down"},
-			{title: "restart", desc: "Restart all services", action: "fill:compose restart"},
-			{title: "exec", desc: "Open a shell in a service container", action: "fill:compose exec -it drupal bash"},
-		}
-	case "config":
-		return []menuItem{
-			{title: "validate", desc: "Validate the selected context", action: "fill:config validate"},
-			{title: "current-context", desc: "Show active context resolution", action: "fill:config current-context"},
-			{title: "get-environments", desc: "List environments for this site", action: "fill:config get-environments " + siteName},
-			{title: "get-sites", desc: "List configured sites", action: "fill:config get-sites"},
-		}
-	case "port-forward":
-		return []menuItem{
-			{title: "traefik", desc: "Forward a common HTTP admin port", action: "fill:port-forward 8080:traefik:8080"},
-			{title: "solr", desc: "Forward Solr admin for a remote site", action: "fill:port-forward 8983:solr:8983"},
-		}
-	case "plugin":
-		return []menuItem{
-			{title: pluginName, desc: "Open plugin help", action: "fill:" + pluginName + " --help"},
-		}
-	default:
-		items := []menuItem{
-			{title: "compose", desc: "Docker Compose commands for the selected environment", action: "palette:compose"},
-			{title: "config", desc: "Context-aware configuration commands", action: "palette:config"},
-			{title: "make", desc: "Run project make targets through sitectl", action: "fill:make"},
-			{title: "port-forward", desc: "Forward ports to remote services", action: "palette:port-forward"},
-			{title: "sequelace", desc: "Open database tooling for this context", action: "fill:sequelace"},
-		}
-		if strings.TrimSpace(pluginName) != "" && pluginName != "core" {
-			items = append(items, menuItem{title: pluginName, desc: "Plugin-specific commands", action: "palette:plugin"})
-		}
-		if strings.TrimSpace(contextName) != "" {
-			items = append(items, menuItem{title: "help", desc: "Show sitectl help", action: "fill:--help"})
-		}
-		return items
-	}
 }
 
 func commandSuggestions(contextName, siteName, pluginName string) []string {
@@ -2039,10 +1661,10 @@ func renderContainerHeader(summary docker.ProjectSummary, containerName string) 
 		}
 		return fmt.Sprintf(
 			"Container: %s | CPU %.1f%% | Mem %s | %s",
-			firstNonEmpty(service.Name, service.Service),
+			helpers.FirstNonEmpty(service.Name, service.Service),
 			service.CPUPercent,
 			containerMemorySummary(service),
-			firstNonEmpty(service.Status, service.State),
+			helpers.FirstNonEmpty(service.Status, service.State),
 		)
 	}
 	return "Container: " + containerName

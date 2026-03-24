@@ -14,6 +14,7 @@ import (
 	"github.com/kballard/go-shellquote"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
+	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	yaml "gopkg.in/yaml.v3"
@@ -460,7 +461,7 @@ func availableDiskBytes(ctxCfg *config.Context) (int64, error) {
 }
 
 func availableDiskBytesAtPathWithSession(ctxCfg *config.Context, session *Session, path string) (int64, error) {
-	trimmedPath := firstNonEmpty(strings.TrimSpace(path), "/")
+	trimmedPath := helpers.FirstNonEmpty(strings.TrimSpace(path), "/")
 	if ctxCfg.DockerHostType == config.ContextLocal {
 		return localAvailableDiskBytes(trimmedPath)
 	}
@@ -546,15 +547,6 @@ func parseOSRelease(data string) string {
 			continue
 		}
 		return strings.Trim(strings.TrimPrefix(line, "PRETTY_NAME="), `"`)
-	}
-	return ""
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
 	}
 	return ""
 }

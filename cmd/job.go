@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/libops/sitectl/pkg/config"
 	corejob "github.com/libops/sitectl/pkg/job"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -183,19 +184,35 @@ func init() {
 func runJobCommand(cmd *cobra.Command, contextName, owner, name string, jobArgs []string) (string, error) {
 	invocation := append([]string{"--context", contextName, "__job", name}, jobArgs...)
 	if stderrFile, ok := cmd.ErrOrStderr().(*os.File); ok && term.IsTerminal(int(stderrFile.Fd())) {
-		progress := newDebugProgressLine(cmd.ErrOrStderr())
-		progress.Report("Running Job", fmt.Sprintf("%s on %s", name, contextName))
-		defer progress.Close()
-		return pluginSDK.InvokePluginCommand(owner, invocation, plugin.CommandExecOptions{
-			Context: RootCmd.Context(),
-			Capture: true,
-		})
+		return runJobWithProgress(cmd, owner, name, contextName, invocation)
 	}
-
 	return pluginSDK.InvokePluginCommand(owner, invocation, plugin.CommandExecOptions{
 		Context: RootCmd.Context(),
 		Capture: true,
 	})
+}
+
+func runJobWithProgress(cmd *cobra.Command, owner, name, contextName string, invocation []string) (string, error) {
+	m := newDebugSpinnerModel()
+	m.title = "Running Job"
+	m.detail = fmt.Sprintf("%s on %s", name, contextName)
+
+	p := tea.NewProgram(m, tea.WithOutput(cmd.ErrOrStderr()))
+
+	go func() {
+		result, err := pluginSDK.InvokePluginCommand(owner, invocation, plugin.CommandExecOptions{
+			Context: RootCmd.Context(),
+			Capture: true,
+		})
+		p.Send(debugProgressDoneMsg{result: result, err: err})
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return "", fmt.Errorf("running job progress: %w", err)
+	}
+	done := finalModel.(debugSpinnerModel)
+	return done.result, done.err
 }
 
 func requestsHelp(args []string) bool {
