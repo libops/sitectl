@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"charm.land/fang/v2"
 	"github.com/libops/sitectl/pkg/config"
@@ -86,7 +87,10 @@ func init() {
 }
 
 func discoverAndRegisterPlugins() {
-	for _, discovered := range plugin.DiscoverInstalled() {
+	started := time.Now()
+	discoveredPlugins := plugin.DiscoverInstalledLightweight()
+	slog.Debug("registering discovered plugin commands", "count", len(discoveredPlugins), "duration", time.Since(started))
+	for _, discovered := range discoveredPlugins {
 		pluginName := discovered.Name
 		pluginPath := discovered.Path
 		binaryName := discovered.BinaryName

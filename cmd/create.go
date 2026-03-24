@@ -59,12 +59,29 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no create definitions found; install a sitectl-* plugin that registers one")
 	}
 
+	forwarded := []string{}
+	if !createArgsContainFlag(args, "type") {
+		targetType, err := promptForCreateTarget()
+		if err != nil {
+			return err
+		}
+		forwarded = append(forwarded, "--type", string(targetType))
+	}
+
 	owner, spec, remaining, err := resolveCreateInvocation(plugins, args)
 	if err != nil {
 		return err
 	}
+	if !createArgsContainFlag(remaining, "checkout-source") && !createArgsContainFlag(args, "checkout-source") {
+		checkoutSource, sourceErr := promptForCheckoutSource(createForwardedTargetType(args, forwarded))
+		if sourceErr != nil {
+			return sourceErr
+		}
+		forwarded = append(forwarded, "--checkout-source", string(checkoutSource))
+	}
 
-	_, err = pluginSDK.InvokePluginCommand(owner, append([]string{"__create", spec.Name}, remaining...), plugin.CommandExecOptions{
+	invokeArgs := append([]string{"__create", spec.Name}, append(forwarded, remaining...)...)
+	_, err = pluginSDK.InvokePluginCommand(owner, invokeArgs, plugin.CommandExecOptions{
 		Context: RootCmd.Context(),
 		Stdin:   cmd.InOrStdin(),
 		Stdout:  cmd.OutOrStdout(),
@@ -122,6 +139,44 @@ func resolveCreateInvocation(plugins []plugin.InstalledPlugin, args []string) (s
 
 	owner, spec, err := resolveCreateDefinitionByName(plugins, target)
 	return owner, spec, remaining, err
+}
+
+func promptForCreateTarget() (config.ContextType, error) {
+	selected, err := createPromptChoice(
+		"create target",
+		[]corecomponent.Choice{
+			{Value: string(config.ContextLocal), Label: "local", Help: "Run this stack on your local machine."},
+			{Value: string(config.ContextRemote), Label: "remote", Help: "Run this stack on a remote machine over SSH."},
+		},
+		string(config.ContextLocal),
+		createPromptInput,
+		strings.Split(corecomponent.RenderSection("Target machine", "Choose where this stack will run."), "\n")...,
+	)
+	if err != nil {
+		return "", err
+	}
+	return config.ContextType(strings.TrimSpace(selected)), nil
+}
+
+func promptForCheckoutSource(targetType config.ContextType) (plugin.CheckoutSource, error) {
+	defaultChoice := string(plugin.CheckoutSourceTemplate)
+	if targetType == config.ContextRemote {
+		defaultChoice = string(plugin.CheckoutSourceExisting)
+	}
+	selected, err := createPromptChoice(
+		"checkout source",
+		[]corecomponent.Choice{
+			{Value: string(plugin.CheckoutSourceTemplate), Label: "template", Help: "Clone the template repository as a fresh install."},
+			{Value: string(plugin.CheckoutSourceExisting), Label: "existing", Help: "Use a repo or checkout that already exists."},
+		},
+		defaultChoice,
+		createPromptInput,
+		strings.Split(corecomponent.RenderSection("Project source", "Choose whether to create from the template repository or use an existing checkout."), "\n")...,
+	)
+	if err != nil {
+		return "", err
+	}
+	return plugin.CheckoutSource(strings.TrimSpace(selected)), nil
 }
 
 func promptForCreatePlugin(plugins []plugin.InstalledPlugin) (plugin.InstalledPlugin, error) {
@@ -257,4 +312,32 @@ func helpersFirstCreateRepo(installed plugin.InstalledPlugin, spec plugin.Create
 		return installed.TemplateRepo
 	}
 	return "-"
+}
+
+func createArgsContainFlag(args []string, name string) bool {
+	longFlag := "--" + name
+	for i, arg := range args {
+		if arg == longFlag {
+			return true
+		}
+		if strings.HasPrefix(arg, longFlag+"=") {
+			return true
+		}
+		if i > 0 && args[i-1] == longFlag {
+			return true
+		}
+	}
+	return false
+}
+
+func createForwardedTargetType(args, forwarded []string) config.ContextType {
+	for i, arg := range append([]string{}, append(forwarded, args...)...) {
+		if arg == "--type" && i+1 < len(append([]string{}, append(forwarded, args...)...)) {
+			return config.ContextType(strings.TrimSpace(append([]string{}, append(forwarded, args...)...)[i+1]))
+		}
+		if strings.HasPrefix(arg, "--type=") {
+			return config.ContextType(strings.TrimSpace(strings.TrimPrefix(arg, "--type=")))
+		}
+	}
+	return config.ContextLocal
 }
