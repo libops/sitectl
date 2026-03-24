@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/spf13/pflag"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"gopkg.in/yaml.v3"
 )
 
@@ -335,6 +339,69 @@ func TestDefaultKnownHostsPathUsesHomeSSHDirectory(t *testing.T) {
 	want := filepath.Join(tempHome, ".ssh", "known_hosts")
 	if path != want {
 		t.Fatalf("defaultKnownHostsPath() = %q, want %q", path, want)
+	}
+}
+
+func TestKnownHostKeyAlgorithmsReturnsKnownAlgorithms(t *testing.T) {
+	tempDir := t.TempDir()
+	knownHostsPath := filepath.Join(tempDir, "known_hosts")
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate host key: %v", err)
+	}
+
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatalf("failed to create signer: %v", err)
+	}
+
+	line := knownhosts.Line([]string{"example.com"}, signer.PublicKey())
+	if err := os.WriteFile(knownHostsPath, []byte(line), 0600); err != nil {
+		t.Fatalf("failed to write known_hosts file: %v", err)
+	}
+
+	callback, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		t.Fatalf("failed to create known_hosts callback: %v", err)
+	}
+
+	algorithms := knownHostKeyAlgorithms(callback, "example.com:22")
+	if len(algorithms) != 1 {
+		t.Fatalf("expected 1 algorithm, got %d: %v", len(algorithms), algorithms)
+	}
+	if algorithms[0] != ssh.KeyAlgoED25519 {
+		t.Fatalf("expected %q, got %q", ssh.KeyAlgoED25519, algorithms[0])
+	}
+}
+
+func TestKnownHostKeyAlgorithmsReturnsNilForUnknownHost(t *testing.T) {
+	tempDir := t.TempDir()
+	knownHostsPath := filepath.Join(tempDir, "known_hosts")
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate host key: %v", err)
+	}
+
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatalf("failed to create signer: %v", err)
+	}
+
+	line := knownhosts.Line([]string{"example.com"}, signer.PublicKey())
+	if err := os.WriteFile(knownHostsPath, []byte(line), 0600); err != nil {
+		t.Fatalf("failed to write known_hosts file: %v", err)
+	}
+
+	callback, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		t.Fatalf("failed to create known_hosts callback: %v", err)
+	}
+
+	algorithms := knownHostKeyAlgorithms(callback, "other.example.com:22")
+	if algorithms != nil {
+		t.Fatalf("expected nil algorithms for unknown host, got %v", algorithms)
 	}
 }
 
