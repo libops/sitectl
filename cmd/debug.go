@@ -40,7 +40,14 @@ const (
 
 var debugCmd = &cobra.Command{
 	Use:   "debug",
-	Short: "Collect a text support bundle for the active context",
+	Short: "Collect a diagnostic bundle for the active context",
+	Long: `Collect a diagnostic bundle for the active context and print it to stdout.
+
+The bundle includes: host resource summary, Compose service status, container log driver
+configuration, Docker image inventory, and plugin-specific diagnostics contributed by the
+context's plugin.
+
+Use --output to write the bundle to a file instead of printing to stdout.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName, err := config.ResolveCurrentContextName(cmd.Flags())
 		if err != nil {
@@ -114,8 +121,8 @@ func collectDebugReport(runCtx context.Context, contextName string, ctx config.C
 }
 
 func init() {
-	debugCmd.Flags().StringVarP(&debugOutputPath, "output", "o", "", "Write the debug report to a file instead of stdout")
-	debugCmd.Flags().BoolVarP(&debugVerbose, "verbose", "v", false, "Include verbose diagnostic details")
+	debugCmd.Flags().StringVarP(&debugOutputPath, "output", "o", "", "Write the bundle to a file instead of stdout.")
+	debugCmd.Flags().BoolVarP(&debugVerbose, "verbose", "v", false, "Include additional diagnostic details.")
 	RootCmd.AddCommand(debugCmd)
 }
 

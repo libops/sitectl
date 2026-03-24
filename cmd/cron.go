@@ -31,20 +31,29 @@ var (
 
 var cronCmd = &cobra.Command{
 	Use:   "cron",
-	Short: "Manage scheduled cron-style jobs",
+	Short: "Manage scheduled cron jobs",
+	Long: `Cron specs define scheduled jobs for a sitectl context. Each spec records which context
+to run on, what schedule to use, which job components to run, and where to store output.
+
+Use render-systemd to turn a spec into systemd units you can install on the host.`,
 }
 
 var cronAddCmd = &cobra.Command{
 	Use:   "add NAME",
 	Args:  cobra.ExactArgs(1),
 	Short: "Create or update a cron spec",
+	Long: `Create or update a cron spec with the given name.
+
+A cron spec stores the schedule, target context, job components, output directory, and
+retention policy for a scheduled job. Once saved, use render-systemd to generate the
+systemd units and install them on the host.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(args[0])
 		if name == "" {
 			return fmt.Errorf("cron spec name is required")
 		}
 		if strings.TrimSpace(cronSpecContext) == "" {
-			return fmt.Errorf("--context is required")
+			return fmt.Errorf("--cron-context is required")
 		}
 		if strings.TrimSpace(cronSpecSchedule) == "" {
 			return fmt.Errorf("--schedule is required")
@@ -178,7 +187,11 @@ var cronRunCmd = &cobra.Command{
 var cronRenderSystemdCmd = &cobra.Command{
 	Use:   "render-systemd NAME",
 	Args:  cobra.ExactArgs(1),
-	Short: "Render setup instructions and systemd units for a cron spec",
+	Short: "Print systemd unit files and install instructions for a cron spec",
+	Long: `Print the systemd .service and .timer unit files for the named cron spec, along with
+step-by-step instructions for installing them on the target host.
+
+For remote contexts, copy the units to the host manually and install them there.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		spec, err := config.GetCronSpec(args[0])
 		if err != nil {
@@ -450,13 +463,13 @@ func cronPluginsForContext(root string) []string {
 }
 
 func init() {
-	cronAddCmd.Flags().StringVar(&cronSpecContext, "context", "", "Context to run the cron job on")
-	cronAddCmd.Flags().StringVar(&cronSpecSchedule, "schedule", "", "systemd OnCalendar value, for example daily or *-*-* 03:00:00")
-	cronAddCmd.Flags().StringVar(&cronSpecOutputDir, "output-dir", "", "Host directory where dated outputs are stored")
-	cronAddCmd.Flags().StringSliceVar(&cronSpecComponents, "component", nil, "Cron component to include; repeat to select multiple components")
-	cronAddCmd.Flags().IntVar(&cronSpecRetentionDays, "retention-days", 14, "Delete non-monthly artifacts older than this many days")
-	cronAddCmd.Flags().BoolVar(&cronSpecPreserveFirstOfMonth, "preserve-first-of-month", true, "Keep dated artifacts created on day 01 when pruning")
-	cronAddCmd.Flags().BoolVar(&cronSpecDockerPrune, "docker-prune", false, "Run docker system prune -af after a successful cron run")
+	cronAddCmd.Flags().StringVar(&cronSpecContext, "cron-context", "", "sitectl context this cron spec will execute against.")
+	cronAddCmd.Flags().StringVar(&cronSpecSchedule, "schedule", "", "systemd OnCalendar expression, e.g. daily or *-*-* 03:00:00.")
+	cronAddCmd.Flags().StringVar(&cronSpecOutputDir, "output-dir", "", "Host directory where dated output artifacts are stored.")
+	cronAddCmd.Flags().StringSliceVar(&cronSpecComponents, "component", nil, "Job component to include. Repeat to select multiple.")
+	cronAddCmd.Flags().IntVar(&cronSpecRetentionDays, "retention-days", 14, "Delete non-monthly artifacts older than this many days.")
+	cronAddCmd.Flags().BoolVar(&cronSpecPreserveFirstOfMonth, "preserve-first-of-month", true, "Keep artifacts created on day 01 of the month when pruning.")
+	cronAddCmd.Flags().BoolVar(&cronSpecDockerPrune, "docker-prune", false, "Run docker system prune -af after a successful run.")
 
 	cronCmd.AddCommand(cronAddCmd)
 	cronCmd.AddCommand(cronListCmd)

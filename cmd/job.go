@@ -21,11 +21,19 @@ import (
 var jobCmd = &cobra.Command{
 	Use:   "job",
 	Short: "List and run plugin-defined jobs",
+	Long: `Jobs are plugin-defined operations that run against a specific context — backups, imports,
+and other maintenance tasks. Plugins register jobs when loaded for the active context.
+
+Use list to see what jobs are available, then run to execute one.`,
 }
 
 var jobListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List available jobs for the active or selected context",
+	Long: `List jobs registered by the plugins associated with the active context.
+
+Each job shows its name, owning plugin, and a short description. Use the name with
+job run to execute it.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName, err := config.ResolveCurrentContextName(cmd.Flags())
 		if err != nil {
