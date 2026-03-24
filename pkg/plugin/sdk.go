@@ -55,6 +55,8 @@ type SDK struct {
 	sshClient         *ssh.Client
 	jobs              []RegisteredJob
 	jobRootCmd        *cobra.Command
+	creates           []RegisteredCreate
+	createRootCmd     *cobra.Command
 }
 
 // NewSDK creates a new plugin SDK instance
