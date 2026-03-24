@@ -24,6 +24,7 @@ import (
 	"github.com/libops/sitectl/internal/tuitour"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
+	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/libops/sitectl/pkg/plugin"
 	zone "github.com/lrstanley/bubblezone/v2"
 )
@@ -987,7 +988,7 @@ func (m *dashboardModel) renderEnvironmentCards(width int) string {
 		lines := []string{strings.ToUpper(envLabel(ctx)), ctx.Name}
 		if selected {
 			cardWidth = selectedWidth
-			statusText := strings.ToUpper(firstNonEmpty(m.summary.Status, "unknown"))
+			statusText := strings.ToUpper(helpers.FirstNonEmpty(m.summary.Status, "unknown"))
 			containersText := fmt.Sprintf(
 				"containers: %d total, %d running, %d stopped",
 				m.summary.Total,
@@ -1004,7 +1005,7 @@ func (m *dashboardModel) renderEnvironmentCards(width int) string {
 				fmt.Sprintf("healthy: %d", m.summary.Healthy),
 			)
 		} else {
-			lines = append(lines, firstNonEmpty(ctx.Plugin, "core"))
+			lines = append(lines, helpers.FirstNonEmpty(ctx.Plugin, "core"))
 		}
 		if ctx.Name == m.currentContext {
 			lines = append(lines, accentStyle.Render("current"))
@@ -1163,10 +1164,10 @@ func (m *dashboardModel) syncDetailContent() {
 		for _, service := range m.summary.Services {
 			line := fmt.Sprintf(
 				"  %-36s  %6.1f%%  %-22s  %s",
-				truncateMetricText(firstNonEmpty(service.Name, service.Service), 36),
+				truncateMetricText(helpers.FirstNonEmpty(service.Name, service.Service), 36),
 				service.CPUPercent,
 				truncateMetricText(containerMemorySummary(service), 22),
-				truncateMetricText(firstNonEmpty(service.Status, service.State), 12),
+				truncateMetricText(helpers.FirstNonEmpty(service.Status, service.State), 12),
 			)
 			lines = append(lines, zone.Mark(containerZoneID(service.Name), line))
 		}
@@ -1307,7 +1308,7 @@ func groupContexts(cfg *config.Config) []siteGroup {
 
 	siteMap := map[string][]config.Context{}
 	for _, ctx := range cfg.Contexts {
-		siteName := firstNonEmpty(ctx.Site, ctx.ProjectName, ctx.Name, "default")
+		siteName := helpers.FirstNonEmpty(ctx.Site, ctx.ProjectName, ctx.Name, "default")
 		siteMap[siteName] = append(siteMap[siteName], ctx)
 	}
 
@@ -1360,7 +1361,7 @@ func defaultEnvIndex(contexts []config.Context, current string) int {
 }
 
 func envLabel(ctx config.Context) string {
-	return firstNonEmpty(ctx.Environment, "unknown")
+	return helpers.FirstNonEmpty(ctx.Environment, "unknown")
 }
 
 func envSortRank(value string) int {
@@ -1377,15 +1378,6 @@ func envSortRank(value string) int {
 	default:
 		return 4
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func findPlugin(plugins []plugin.InstalledPlugin, name string) plugin.InstalledPlugin {
@@ -1467,20 +1459,20 @@ func (m *dashboardModel) handleOnboardingSelection() (tea.Model, tea.Cmd) {
 func renderContextInfo(ctx config.Context) string {
 	lines := []string{
 		fmt.Sprintf("Name: %s", ctx.Name),
-		fmt.Sprintf("Site: %s", firstNonEmpty(ctx.Site, "-")),
+		fmt.Sprintf("Site: %s", helpers.FirstNonEmpty(ctx.Site, "-")),
 		fmt.Sprintf("Environment: %s", envLabel(ctx)),
-		fmt.Sprintf("Plugin: %s", firstNonEmpty(ctx.Plugin, "-")),
-		fmt.Sprintf("Docker Host Type: %s", firstNonEmpty(string(ctx.DockerHostType), "-")),
-		fmt.Sprintf("Project Name: %s", firstNonEmpty(ctx.ProjectName, "-")),
-		fmt.Sprintf("Compose Project: %s", firstNonEmpty(ctx.EffectiveComposeProjectName(), "-")),
-		fmt.Sprintf("Compose Network: %s", firstNonEmpty(ctx.EffectiveComposeNetwork(), "-")),
-		fmt.Sprintf("Project Dir: %s", firstNonEmpty(ctx.ProjectDir, "-")),
-		fmt.Sprintf("Docker Socket: %s", firstNonEmpty(ctx.DockerSocket, "-")),
+		fmt.Sprintf("Plugin: %s", helpers.FirstNonEmpty(ctx.Plugin, "-")),
+		fmt.Sprintf("Docker Host Type: %s", helpers.FirstNonEmpty(string(ctx.DockerHostType), "-")),
+		fmt.Sprintf("Project Name: %s", helpers.FirstNonEmpty(ctx.ProjectName, "-")),
+		fmt.Sprintf("Compose Project: %s", helpers.FirstNonEmpty(ctx.EffectiveComposeProjectName(), "-")),
+		fmt.Sprintf("Compose Network: %s", helpers.FirstNonEmpty(ctx.EffectiveComposeNetwork(), "-")),
+		fmt.Sprintf("Project Dir: %s", helpers.FirstNonEmpty(ctx.ProjectDir, "-")),
+		fmt.Sprintf("Docker Socket: %s", helpers.FirstNonEmpty(ctx.DockerSocket, "-")),
 	}
 	if ctx.DockerHostType == config.ContextRemote {
 		lines = append(lines,
-			fmt.Sprintf("SSH Host: %s", firstNonEmpty(ctx.SSHHostname, "-")),
-			fmt.Sprintf("SSH User: %s", firstNonEmpty(ctx.SSHUser, "-")),
+			fmt.Sprintf("SSH Host: %s", helpers.FirstNonEmpty(ctx.SSHHostname, "-")),
+			fmt.Sprintf("SSH User: %s", helpers.FirstNonEmpty(ctx.SSHUser, "-")),
 			fmt.Sprintf("SSH Port: %d", ctx.SSHPort),
 		)
 	}
@@ -1500,15 +1492,15 @@ func renderContextInfo(ctx config.Context) string {
 }
 
 func renderPluginInfo(p plugin.InstalledPlugin, fallbackName string) string {
-	name := firstNonEmpty(p.Name, fallbackName, "unknown")
+	name := helpers.FirstNonEmpty(p.Name, fallbackName, "unknown")
 	lines := []string{
 		fmt.Sprintf("Name: %s", name),
-		fmt.Sprintf("Description: %s", firstNonEmpty(p.Description, "-")),
-		fmt.Sprintf("Version: %s", firstNonEmpty(p.Version, "-")),
-		fmt.Sprintf("Author: %s", firstNonEmpty(p.Author, "-")),
-		fmt.Sprintf("Binary: %s", firstNonEmpty(p.BinaryName, "-")),
-		fmt.Sprintf("Path: %s", firstNonEmpty(p.Path, "-")),
-		fmt.Sprintf("Template Repo: %s", firstNonEmpty(p.TemplateRepo, "-")),
+		fmt.Sprintf("Description: %s", helpers.FirstNonEmpty(p.Description, "-")),
+		fmt.Sprintf("Version: %s", helpers.FirstNonEmpty(p.Version, "-")),
+		fmt.Sprintf("Author: %s", helpers.FirstNonEmpty(p.Author, "-")),
+		fmt.Sprintf("Binary: %s", helpers.FirstNonEmpty(p.BinaryName, "-")),
+		fmt.Sprintf("Path: %s", helpers.FirstNonEmpty(p.Path, "-")),
+		fmt.Sprintf("Template Repo: %s", helpers.FirstNonEmpty(p.TemplateRepo, "-")),
 	}
 	return strings.Join(lines, "\n")
 }
@@ -2039,10 +2031,10 @@ func renderContainerHeader(summary docker.ProjectSummary, containerName string) 
 		}
 		return fmt.Sprintf(
 			"Container: %s | CPU %.1f%% | Mem %s | %s",
-			firstNonEmpty(service.Name, service.Service),
+			helpers.FirstNonEmpty(service.Name, service.Service),
 			service.CPUPercent,
 			containerMemorySummary(service),
-			firstNonEmpty(service.Status, service.State),
+			helpers.FirstNonEmpty(service.Status, service.State),
 		)
 	}
 	return "Container: " + containerName

@@ -10,6 +10,7 @@ import (
 
 	corecomponent "github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/helpers"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -96,11 +97,11 @@ func WriteReports(out io.Writer, reports []Report, format string) error {
 
 func writeSections(out io.Writer, reports []Report) error {
 	for i, report := range reports {
-		title := firstNonEmpty(report.Context, "validation")
+		title := helpers.FirstNonEmpty(report.Context, "validation")
 		body := []string{
-			fmt.Sprintf("Site: `%s`", firstNonEmpty(report.Site, "-")),
-			fmt.Sprintf("Plugin: `%s`", firstNonEmpty(report.Plugin, "-")),
-			fmt.Sprintf("Environment: `%s`", firstNonEmpty(report.Environment, "-")),
+			fmt.Sprintf("Site: `%s`", helpers.FirstNonEmpty(report.Site, "-")),
+			fmt.Sprintf("Plugin: `%s`", helpers.FirstNonEmpty(report.Plugin, "-")),
+			fmt.Sprintf("Environment: `%s`", helpers.FirstNonEmpty(report.Environment, "-")),
 			fmt.Sprintf("Valid: `%t`", report.Valid),
 		}
 		fmt.Fprintln(out, corecomponent.RenderSection(title, strings.Join(body, "\n")))
@@ -134,13 +135,13 @@ func writeTable(out io.Writer, reports []Report) error {
 				detail += "fix: " + strings.TrimSpace(result.FixHint)
 			}
 			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				firstNonEmpty(report.Context, "-"),
-				firstNonEmpty(report.Site, "-"),
-				firstNonEmpty(report.Plugin, "-"),
-				firstNonEmpty(report.Environment, "-"),
-				firstNonEmpty(result.Name, "-"),
-				firstNonEmpty(result.Status, "-"),
-				firstNonEmpty(detail, "-"),
+				helpers.FirstNonEmpty(report.Context, "-"),
+				helpers.FirstNonEmpty(report.Site, "-"),
+				helpers.FirstNonEmpty(report.Plugin, "-"),
+				helpers.FirstNonEmpty(report.Environment, "-"),
+				helpers.FirstNonEmpty(result.Name, "-"),
+				helpers.FirstNonEmpty(result.Status, "-"),
+				helpers.FirstNonEmpty(detail, "-"),
 			)
 		}
 	}
@@ -160,15 +161,6 @@ func normalizeFormat(format string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(format))
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }
 
 func SortResults(results []Result) {

@@ -16,6 +16,17 @@ func ExitOnError(err error) {
 	os.Exit(1)
 }
 
+// FirstNonEmpty returns the first non-empty (after trimming whitespace) string
+// from the provided values, or empty string if all are empty.
+func FirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // open a URL from the terminal
 func OpenURL(url string) error {
 	var cmd *exec.Cmd

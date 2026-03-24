@@ -21,6 +21,7 @@ import (
 	"github.com/libops/sitectl/internal/debugreport"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
+	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/libops/sitectl/pkg/plugin"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -165,7 +166,7 @@ func renderCoreDebug(runCtx context.Context, ctx config.Context) string {
 	meta := []debugRow{
 		{Label: "Generated", Value: time.Now().UTC().Format(time.RFC3339)},
 		{Label: "Context", Value: ctx.Name},
-		{Label: "Plugin owner", Value: firstNonEmpty(ctx.Plugin, "core")},
+		{Label: "Plugin owner", Value: helpers.FirstNonEmpty(ctx.Plugin, "core")},
 		{Label: "Docker host type", Value: string(ctx.DockerHostType)},
 		{Label: "Project dir", Value: ctx.ProjectDir},
 	}
@@ -385,8 +386,8 @@ func collectLogDiagnosticsWithClient(runCtx context.Context, ctxCfg *config.Cont
 		if err := runCtx.Err(); err != nil {
 			return logDiagnostics{}, err
 		}
-		name := trimContainerName(summary.Names)
-		service := firstNonEmpty(summary.Labels["com.docker.compose.service"], name)
+		name := docker.TrimContainerName(summary.Names)
+		service := helpers.FirstNonEmpty(summary.Labels["com.docker.compose.service"], name)
 		inspect, err := cli.CLI.ContainerInspect(runCtx, name)
 		if err != nil {
 			return logDiagnostics{}, err
@@ -728,29 +729,10 @@ func humanBytes(size int64) string {
 	return fmt.Sprintf("%.1f%ciB", float64(size)/float64(div), "KMGTPE"[exp])
 }
 
-func trimContainerName(names []string) string {
-	for _, name := range names {
-		trimmed := strings.TrimPrefix(strings.TrimSpace(name), "/")
-		if trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
 func renderPlainDebugReport(value string) string {
 	lines := strings.Split(ansiPattern.ReplaceAllString(value, ""), "\n")
 	for i := range lines {
 		lines[i] = strings.TrimRight(lines[i], " \t")
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }

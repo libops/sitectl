@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/libops/sitectl/pkg/helpers"
 )
 
 type InputFunc func(question ...string) (string, error)
@@ -87,13 +89,13 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 		return nil, fmt.Errorf("project directory cannot be empty")
 	}
 
-	projectName := firstNonEmpty(opts.ProjectName, existing.ProjectName, opts.DefaultProjectName, "docker-compose")
-	composeProjectName := firstNonEmpty(opts.ComposeProjectName, existing.ComposeProjectName, DetectComposeProjectName(projectDir), projectName)
-	composeNetwork := firstNonEmpty(opts.ComposeNetwork, existing.ComposeNetwork, DetectComposeNetworkName(projectDir, composeProjectName))
-	site := firstNonEmpty(opts.Site, existing.Site, opts.DefaultSite, projectName, name)
-	plugin := firstNonEmpty(opts.Plugin, existing.Plugin, opts.DefaultPlugin, "core")
-	environment := firstNonEmpty(opts.Environment, existing.Environment, "local")
-	dockerSocket := GetDefaultLocalDockerSocket(firstNonEmpty(opts.DockerSocket, existing.DockerSocket, "/var/run/docker.sock"))
+	projectName := helpers.FirstNonEmpty(opts.ProjectName, existing.ProjectName, opts.DefaultProjectName, "docker-compose")
+	composeProjectName := helpers.FirstNonEmpty(opts.ComposeProjectName, existing.ComposeProjectName, DetectComposeProjectName(projectDir), projectName)
+	composeNetwork := helpers.FirstNonEmpty(opts.ComposeNetwork, existing.ComposeNetwork, DetectComposeNetworkName(projectDir, composeProjectName))
+	site := helpers.FirstNonEmpty(opts.Site, existing.Site, opts.DefaultSite, projectName, name)
+	plugin := helpers.FirstNonEmpty(opts.Plugin, existing.Plugin, opts.DefaultPlugin, "core")
+	environment := helpers.FirstNonEmpty(opts.Environment, existing.Environment, "local")
+	dockerSocket := GetDefaultLocalDockerSocket(helpers.FirstNonEmpty(opts.DockerSocket, existing.DockerSocket, "/var/run/docker.sock"))
 
 	ctx := &Context{
 		Name:                name,
@@ -106,8 +108,8 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 		ComposeProjectName:  composeProjectName,
 		ComposeNetwork:      composeNetwork,
 		ProjectDir:          projectDir,
-		DrupalRootfs:        firstNonEmpty(opts.DrupalRootfs, existing.DrupalRootfs),
-		DrupalContainerRoot: firstNonEmpty(opts.DrupalContainerRoot, existing.DrupalContainerRoot),
+		DrupalRootfs:        helpers.FirstNonEmpty(opts.DrupalRootfs, existing.DrupalRootfs),
+		DrupalContainerRoot: helpers.FirstNonEmpty(opts.DrupalContainerRoot, existing.DrupalContainerRoot),
 	}
 
 	if err := SaveContext(ctx, opts.SetDefault); err != nil {
@@ -122,7 +124,7 @@ func resolveLocalContextName(existing Context, opts LocalContextCreateOptions, i
 		return strings.TrimSpace(opts.Name), nil
 	}
 
-	baseName := firstNonEmpty(existing.Name, opts.DefaultName)
+	baseName := helpers.FirstNonEmpty(existing.Name, opts.DefaultName)
 	if strings.TrimSpace(baseName) == "" {
 		return "", fmt.Errorf("context name cannot be empty")
 	}
@@ -198,7 +200,7 @@ func resolveLocalProjectDir(existing Context, opts LocalContextCreateOptions, in
 	if err != nil {
 		return "", err
 	}
-	defaultDir := firstNonEmpty(existing.ProjectDir, opts.DefaultProjectDir, cwd)
+	defaultDir := helpers.FirstNonEmpty(existing.ProjectDir, opts.DefaultProjectDir, cwd)
 	prompt := opts.ProjectDirPrompt
 	if len(prompt) == 0 {
 		prompt = []string{fmt.Sprintf("Full directory path to the project (directory where docker-compose.yml is located) [%s]: ", defaultDir)}
@@ -300,15 +302,6 @@ func ValidateExistingComposeProjectDir(projectDir string) error {
 		return fmt.Errorf("project directory %q does not look like a docker compose project", projectDir)
 	}
 	return nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func isAffirmative(value string) bool {
