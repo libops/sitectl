@@ -18,7 +18,7 @@ jobs:
       id-token: write
     secrets: inherit
     with:
-      go-version: ">=1.25.8"
+      go-version: ">=1.26.1"
       publish-package-repo: true
       package-name: sitectl
       package-repo-prefix: sitectl
