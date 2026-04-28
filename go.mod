@@ -4,11 +4,11 @@ go 1.26.1
 
 require (
 	charm.land/bubbles/v2 v2.1.0
-	charm.land/bubbletea/v2 v2.0.2
+	charm.land/bubbletea/v2 v2.0.6
 	charm.land/fang/v2 v2.0.1
 	charm.land/glamour/v2 v2.0.0
-	charm.land/lipgloss/v2 v2.0.2
-	github.com/NimbleMarkets/ntcharts/v2 v2.0.0
+	charm.land/lipgloss/v2 v2.0.3
+	github.com/NimbleMarkets/ntcharts/v2 v2.0.3
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/joho/godotenv v1.5.1
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
@@ -16,9 +16,9 @@ require (
 	github.com/pkg/sftp v1.13.10
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	golang.org/x/crypto v0.49.0
-	golang.org/x/sys v0.42.0
-	golang.org/x/term v0.41.0
+	golang.org/x/crypto v0.50.0
+	golang.org/x/sys v0.43.0
+	golang.org/x/term v0.42.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -30,8 +30,8 @@ require (
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
-	github.com/charmbracelet/ultraviolet v0.0.0-20260316091819-b93f6a3b8502 // indirect
-	github.com/charmbracelet/x/ansi v0.11.6 // indirect
+	github.com/charmbracelet/ultraviolet v0.0.0-20260428153724-66037269d7be // indirect
+	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260323091123-df7b1bcffcca // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20260323091123-df7b1bcffcca // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
@@ -53,8 +53,8 @@ require (
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kr/fs v0.1.0 // indirect
-	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mattn/go-runewidth v0.0.21 // indirect
+	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
+	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/sys/atomicwriter v0.1.0 // indirect
@@ -82,7 +82,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.42.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20251213004720-97cd9d5aeac2 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251213004720-97cd9d5aeac2 // indirect
