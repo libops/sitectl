@@ -23,18 +23,20 @@ const (
 )
 
 type CreateSpec struct {
-	Name                string   `yaml:"name"`
-	Plugin              string   `yaml:"plugin,omitempty"`
-	Description         string   `yaml:"description,omitempty"`
-	Default             bool     `yaml:"default,omitempty"`
-	MinCPUCores         float64  `yaml:"min_cpu_cores,omitempty"`
-	MinMemory           string   `yaml:"min_memory,omitempty"`
-	MinDiskSpace        string   `yaml:"min_disk_space,omitempty"`
-	DockerComposeRepo   string   `yaml:"docker_compose_repo,omitempty"`
-	DockerComposeBranch string   `yaml:"docker_compose_branch,omitempty"`
-	DockerComposeInit   []string `yaml:"docker_compose_init,omitempty"`
-	DockerComposeUp     []string `yaml:"docker_compose_up,omitempty"`
-	DockerComposeDown   []string `yaml:"docker_compose_down,omitempty"`
+	Name                 string   `yaml:"name"`
+	Plugin               string   `yaml:"plugin,omitempty"`
+	Description          string   `yaml:"description,omitempty"`
+	Default              bool     `yaml:"default,omitempty"`
+	MinCPUCores          float64  `yaml:"min_cpu_cores,omitempty"`
+	MinMemory            string   `yaml:"min_memory,omitempty"`
+	MinDiskSpace         string   `yaml:"min_disk_space,omitempty"`
+	DockerComposeRepo    string   `yaml:"docker_compose_repo,omitempty"`
+	DockerComposeBranch  string   `yaml:"docker_compose_branch,omitempty"`
+	DockerComposeBuild   []string `yaml:"docker_compose_build,omitempty"`
+	DockerComposeInit    []string `yaml:"docker_compose_init,omitempty"`
+	DockerComposeUp      []string `yaml:"docker_compose_up,omitempty"`
+	DockerComposeDown    []string `yaml:"docker_compose_down,omitempty"`
+	DockerComposeRollout []string `yaml:"docker_compose_rollout,omitempty"`
 }
 
 type RegisteredCreate struct {

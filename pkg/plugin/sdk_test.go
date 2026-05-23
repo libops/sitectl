@@ -302,3 +302,41 @@ type createRunnerStub struct{}
 func (createRunnerStub) BindFlags(cmd *cobra.Command) {}
 
 func (createRunnerStub) Run(cmd *cobra.Command) error { return nil }
+
+func TestRegisterStandardComposeTemplateAddsLifecycleCommands(t *testing.T) {
+	sdk := NewSDK(Metadata{Name: "demo"})
+	sdk.RegisterStandardComposeTemplate(CreateSpec{
+		Name:                 "default",
+		DockerComposeRepo:    "https://github.com/example/demo",
+		DockerComposeBuild:   []string{"make build"},
+		DockerComposeInit:    []string{"make init"},
+		DockerComposeUp:      []string{"make up"},
+		DockerComposeDown:    []string{"make down"},
+		DockerComposeRollout: []string{"make rollout"},
+	}, StandardComposeTemplateOptions{
+		DefaultPath:   "./demo",
+		DefaultPlugin: "demo",
+		DisplayName:   "Demo",
+	})
+
+	defs := sdk.CreateDefinitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected 1 create definition, got %d", len(defs))
+	}
+	if defs[0].DockerComposeRollout[0] != "make rollout" {
+		t.Fatalf("expected rollout command in create definition, got %+v", defs[0].DockerComposeRollout)
+	}
+	for _, name := range []string{"build", "init", "up", "down", "status", "logs", "rollout"} {
+		if _, _, err := sdk.RootCmd.Find([]string{name}); err != nil {
+			t.Fatalf("expected %q command to be registered: %v", name, err)
+		}
+	}
+}
+
+func TestDockerComposeExecCommandQuotesArgs(t *testing.T) {
+	got := DockerComposeExecCommand("wp", "wp", "--path=/var/www/wp", "post", "get", "hello's world")
+	want := "'docker' 'compose' 'exec' '-T' 'wp' 'wp' '--path=/var/www/wp' 'post' 'get' 'hello'\\''s world'"
+	if got != want {
+		t.Fatalf("DockerComposeExecCommand() = %q, want %q", got, want)
+	}
+}
