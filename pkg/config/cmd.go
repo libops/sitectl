@@ -37,7 +37,7 @@ func (c *Context) runCommandContext(ctx context.Context, cmd *exec.Cmd, printOut
 	defer cancel()
 	var output strings.Builder
 	if c.DockerHostType == ContextLocal {
-		cmd = exec.CommandContext(runCtx, cmd.Path, cmd.Args[1:]...)
+		cmd = exec.CommandContext(runCtx, cmd.Path, cmd.Args[1:]...) // #nosec G204 -- command path is selected by sitectl and arguments are forwarded without a shell.
 		cmd.Env = os.Environ()
 		if printOutput {
 			cmd.Stdin = os.Stdin

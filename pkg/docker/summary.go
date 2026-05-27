@@ -130,23 +130,23 @@ func SummarizeProjectWithClient(ctx context.Context, cli DockerAPI, ctxCfg *conf
 func runComposePS(ctxCfg *config.Context) (string, error) {
 	args := composePSArgs(*ctxCfg)
 	if ctxCfg.DockerHostType == config.ContextLocal {
-		cmd := exec.Command("docker", args...)
+		cmd := exec.Command("docker", args...) // #nosec G204 -- docker arguments are assembled by sitectl from context configuration without a shell.
 		cmd.Dir = ctxCfg.ProjectDir
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
-	return ctxCfg.RunQuietCommand(exec.Command("docker", args...))
+	return ctxCfg.RunQuietCommand(exec.Command("docker", args...)) // #nosec G204 -- docker arguments are assembled by sitectl from context configuration without a shell.
 }
 
 func runDockerStats(ctxCfg *config.Context) (string, error) {
 	args := []string{"stats", "--no-stream", "--format", "{{ json . }}"}
 	if ctxCfg.DockerHostType == config.ContextLocal {
-		cmd := exec.Command("docker", args...)
+		cmd := exec.Command("docker", args...) // #nosec G204 -- docker stats arguments are fixed by sitectl without a shell.
 		cmd.Dir = ctxCfg.ProjectDir
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
-	return ctxCfg.RunQuietCommand(exec.Command("docker", args...))
+	return ctxCfg.RunQuietCommand(exec.Command("docker", args...)) // #nosec G204 -- docker stats arguments are fixed by sitectl without a shell.
 }
 
 func runHostMetrics(ctxCfg *config.Context) (string, error) {

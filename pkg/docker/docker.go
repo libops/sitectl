@@ -100,7 +100,7 @@ func GetDockerCliWithSSH(activeCtx *config.Context, sshConn *ssh.Client, ownsSSH
 	)
 	if err != nil {
 		if ownsSSH {
-			sshConn.Close()
+			_ = sshConn.Close()
 		}
 		return nil, fmt.Errorf("error creating Docker client over SSH: %v", err)
 	}

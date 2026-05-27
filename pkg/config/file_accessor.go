@@ -47,7 +47,7 @@ func NewFileAccessorWithSSH(ctx *Context, sshClient *ssh.Client, ownsSSH bool) (
 	sftpClient, err := sftp.NewClient(sshClient)
 	if err != nil {
 		if ownsSSH {
-			sshClient.Close()
+			_ = sshClient.Close()
 		}
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func (a *FileAccessor) ReadFileContext(ctx context.Context, filename string) ([]
 		return nil, err
 	}
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
-		return os.ReadFile(filename)
+		return os.ReadFile(filename) // #nosec G304 -- sitectl file access is scoped by the caller-selected project/context path.
 	}
 	remoteFile, err := a.sftp.Open(filename)
 	if err != nil {
@@ -113,7 +113,7 @@ func (a *FileAccessor) ReadFilesContext(ctx context.Context, paths []string) (ma
 
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
 		for _, path := range missing {
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(path) // #nosec G304 -- sitectl file access is scoped by the caller-selected project/context path.
 			if err != nil {
 				return nil, err
 			}
@@ -163,7 +163,9 @@ func (a *FileAccessor) ReadFilesContext(ctx context.Context, paths []string) (ma
 						return
 					}
 					data, err := readAllLimited(remoteFile, maxRemoteReadBytes)
-					remoteFile.Close()
+					if closeErr := remoteFile.Close(); err == nil {
+						err = closeErr
+					}
 					out <- readResult{path: path, data: data, err: err}
 					if err != nil {
 						cancel()
@@ -219,10 +221,10 @@ func (a *FileAccessor) StatVFS(path string) (*sftp.StatVFS, error) {
 
 func (a *FileAccessor) WriteFile(filename string, data []byte) error {
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
-		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(filename), 0o750); err != nil {
 			return err
 		}
-		return os.WriteFile(filename, data, 0o644)
+		return os.WriteFile(filename, data, 0o600)
 	}
 	if err := mkdirAllRemote(a.sftp, filepath.Dir(filename)); err != nil {
 		return err
@@ -241,7 +243,7 @@ func (a *FileAccessor) MkdirAll(path string) error {
 		return nil
 	}
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
-		return os.MkdirAll(path, 0o755)
+		return os.MkdirAll(path, 0o750)
 	}
 	return mkdirAllRemote(a.sftp, path)
 }
@@ -358,17 +360,17 @@ func (a *FileAccessor) Stat(path string) (fs.FileInfo, error) {
 }
 
 func (a *FileAccessor) UploadFile(source, destination string) error {
-	localFile, err := os.Open(source)
+	localFile, err := os.Open(source) // #nosec G304 -- source is an explicit caller-selected upload path.
 	if err != nil {
 		return err
 	}
 	defer localFile.Close()
 
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
-		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
 			return err
 		}
-		remoteFile, err := os.Create(destination)
+		remoteFile, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- destination is an explicit caller-selected upload target.
 		if err != nil {
 			return err
 		}

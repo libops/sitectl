@@ -12,7 +12,7 @@ type ComposeFile struct {
 }
 
 func LoadComposeFile(path string) (*ComposeFile, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- compose file path is an explicit project configuration path.
 	if err != nil {
 		return nil, fmt.Errorf("read compose file: %w", err)
 	}
@@ -23,7 +23,7 @@ func LoadComposeFile(path string) (*ComposeFile, error) {
 }
 
 func LoadComposeFileOptional(path string) (*ComposeFile, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- compose file path is an explicit project configuration path.
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &ComposeFile{
@@ -46,7 +46,7 @@ func (c *ComposeFile) Save() error {
 		}
 		return nil
 	}
-	return os.WriteFile(c.path, []byte(strings.Join(c.lines, "\n")), 0o644)
+	return os.WriteFile(c.path, []byte(strings.Join(c.lines, "\n")), 0o600)
 }
 
 func (c *ComposeFile) DeleteService(name string) error {

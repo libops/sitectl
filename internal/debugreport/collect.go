@@ -281,7 +281,7 @@ func CollectComposeDiagnosticsWithSession(runCtx context.Context, ctxCfg *config
 		diagnostics.Issues = append(diagnostics.Issues, err.Error())
 		return diagnostics
 	}
-	output, err := session.RunQuietCommandContext(runCtx, exec.Command("docker", composeConfigArgs(*ctxCfg)...))
+	output, err := session.RunQuietCommandContext(runCtx, exec.Command("docker", composeConfigArgs(*ctxCfg)...)) // #nosec G204 -- docker compose config arguments are assembled from context configuration without a shell.
 	if err != nil {
 		diagnostics.Issues = append(diagnostics.Issues, fmt.Sprintf("compose config: %v", err))
 		return diagnostics

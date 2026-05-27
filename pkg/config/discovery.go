@@ -46,7 +46,7 @@ func DetectComposeProjectName(projectDir string) string {
 
 	for _, name := range composeProjectCandidates {
 		path := filepath.Join(projectDir, name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 -- projectDir is the caller-selected compose project root.
 		if err != nil {
 			continue
 		}
@@ -110,7 +110,7 @@ func DetectContextComposeNetwork(ctx *Context) string {
 func readComposeDiscoveryDoc(projectDir string) (composeDiscoveryDoc, bool) {
 	for _, name := range composeProjectCandidates {
 		path := filepath.Join(projectDir, name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 -- projectDir is the caller-selected compose project root.
 		if err != nil {
 			continue
 		}

@@ -110,7 +110,7 @@ func discoverAndRegisterPlugins() {
 			Use:   pluginName,
 			Short: description,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				err := syscall.Exec(pluginPath, append([]string{binaryName}, args...), os.Environ())
+				err := syscall.Exec(pluginPath, append([]string{binaryName}, args...), os.Environ()) // #nosec G204 -- plugin executable comes from sitectl plugin discovery and cobra forwards CLI args.
 				if err != nil {
 					return fmt.Errorf("failed to execute plugin %q: %w", pluginName, err)
 				}

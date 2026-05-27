@@ -52,7 +52,7 @@ var viewConfigCmd = &cobra.Command{
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("%q is not a regular file", path)
 		}
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 -- path is produced by ConfigFilePath under ~/.sitectl.
 		if err != nil {
 			return fmt.Errorf("error reading file: %w", err)
 		}

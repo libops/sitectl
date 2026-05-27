@@ -81,7 +81,9 @@ func NewSDK(metadata Metadata) *SDK {
 			return sdk.setupLogging(cmd)
 		},
 		PersistentPostRun: func(cmd *cobra.Command, args []string) {
-			sdk.Close()
+			if err := sdk.Close(); err != nil {
+				slog.Debug("close sdk", "error", err)
+			}
 		},
 		Annotations: map[string]string{
 			cobra.CommandDisplayNameAnnotation: fmt.Sprintf("sitectl %s", metadata.Name),
@@ -454,7 +456,7 @@ func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts Command
 	if execCtx == nil {
 		execCtx = context.Background()
 	}
-	cmd := exec.CommandContext(execCtx, installed.Path, invocation...)
+	cmd := exec.CommandContext(execCtx, installed.Path, invocation...) // #nosec G204 -- plugin executable comes from sitectl plugin discovery and args are forwarded without a shell.
 	cmd.Env = os.Environ()
 	if width, ok := terminalColumns(); ok {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("COLUMNS=%d", width))

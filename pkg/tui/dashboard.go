@@ -1024,12 +1024,12 @@ func nextRefreshCmd() tea.Cmd {
 func fetchComposeLogs(ctx config.Context) (string, error) {
 	args := composeArgs(ctx, "logs", "--tail", "20", "--timestamps", "--no-color")
 	if ctx.DockerHostType == config.ContextLocal {
-		cmd := exec.Command("docker", args...)
+		cmd := exec.Command("docker", args...) // #nosec G204 -- docker arguments are assembled by sitectl from context configuration without a shell.
 		cmd.Dir = ctx.ProjectDir
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
-	return ctx.RunQuietCommand(exec.Command("docker", args...))
+	return ctx.RunQuietCommand(exec.Command("docker", args...)) // #nosec G204 -- docker arguments are assembled by sitectl from context configuration without a shell.
 }
 
 func composeArgs(ctx config.Context, subcommand ...string) []string {
@@ -1459,7 +1459,7 @@ func runSitectlCaptureCmd(display string, args []string) tea.Cmd {
 		if err != nil {
 			return commandFinishedMsg{Command: display, Err: err}
 		}
-		cmd := exec.Command(exe, args...)
+		cmd := exec.Command(exe, args...) // #nosec G204 -- sitectl intentionally re-executes itself with internally constructed arguments.
 		output, err := cmd.CombinedOutput()
 		return commandFinishedMsg{Command: display, Output: string(output), Err: err}
 	}
@@ -1470,7 +1470,7 @@ func runSitectlInteractiveCmd(display string, args []string) tea.Cmd {
 	if err != nil {
 		return func() tea.Msg { return commandExecFinishedMsg{Command: display, Err: err} }
 	}
-	cmd := exec.Command(exe, args...)
+	cmd := exec.Command(exe, args...) // #nosec G204 -- sitectl intentionally re-executes itself with internally constructed arguments.
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return commandExecFinishedMsg{Command: display, Err: err}
 	})
@@ -1673,10 +1673,10 @@ func renderContainerHeader(summary docker.ProjectSummary, containerName string) 
 func fetchContainerLogs(ctx config.Context, containerName string) (string, error) {
 	args := []string{"logs", "--tail", "20", containerName}
 	if ctx.DockerHostType == config.ContextLocal {
-		cmd := exec.Command("docker", args...)
+		cmd := exec.Command("docker", args...) // #nosec G204 -- docker arguments are assembled by sitectl from selected container state without a shell.
 		cmd.Dir = ctx.ProjectDir
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}
-	return ctx.RunQuietCommand(exec.Command("docker", args...))
+	return ctx.RunQuietCommand(exec.Command("docker", args...)) // #nosec G204 -- docker arguments are assembled by sitectl from selected container state without a shell.
 }

@@ -90,7 +90,7 @@ func ShouldDeleteArtifact(modTime, now time.Time, retentionDays int, preserveFir
 
 func EnsureDatedDestination(root string, now time.Time) (string, error) {
 	out := filepath.Join(root, now.Format("2006"), now.Format("01"), now.Format("02"))
-	if err := os.MkdirAll(out, 0o755); err != nil {
+	if err := os.MkdirAll(out, 0o750); err != nil {
 		return "", err
 	}
 	return out, nil

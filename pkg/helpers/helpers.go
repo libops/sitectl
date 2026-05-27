@@ -25,11 +25,11 @@ func OpenURL(url string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)
+		cmd = exec.Command("cmd", "/c", "start", url) // #nosec G204 -- opens a user-visible URL via the platform launcher.
 	case "darwin":
-		cmd = exec.Command("open", url)
+		cmd = exec.Command("open", url) // #nosec G204 -- opens a user-visible URL via the platform launcher.
 	case "linux":
-		cmd = exec.Command("xdg-open", url)
+		cmd = exec.Command("xdg-open", url) // #nosec G204 -- opens a user-visible URL via the platform launcher.
 	default:
 		return fmt.Errorf("unknown runtime command to open URL")
 	}

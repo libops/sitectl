@@ -125,7 +125,9 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 		<-done
 		fmt.Fprintln(cmd.OutOrStdout(), "Shutting down port forwards...")
 		for _, listener := range listeners {
-			listener.Close()
+			if err := listener.Close(); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "error closing listener: %v\n", err)
+			}
 		}
 		return nil
 	},

@@ -69,7 +69,7 @@ func NewFileAccessorWithSSH(ctx *config.Context, client *ssh.Client, ownsSSH boo
 	sftpClient, err := sftp.NewClient(client)
 	if err != nil {
 		if ownsSSH {
-			client.Close()
+			_ = client.Close()
 		}
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func (a *FileAccessor) ReadFileContext(ctx context.Context, path string) ([]byte
 	var data []byte
 	var err error
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == config.ContextLocal {
-		data, err = os.ReadFile(path)
+		data, err = os.ReadFile(path) // #nosec G304 -- plugin file access is scoped by the caller-selected project/context path.
 	} else {
 		file, openErr := a.sftp.Open(path)
 		if openErr != nil {
@@ -152,7 +152,7 @@ func (a *FileAccessor) ReadFilesContext(ctx context.Context, paths []string) (ma
 
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == config.ContextLocal {
 		for _, path := range missing {
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(path) // #nosec G304 -- plugin file access is scoped by the caller-selected project/context path.
 			if err != nil {
 				return nil, err
 			}
@@ -203,7 +203,9 @@ func (a *FileAccessor) ReadFilesContext(ctx context.Context, paths []string) (ma
 						return
 					}
 					data, err := readAllLimited(file, maxRemoteReadBytes)
-					file.Close()
+					if closeErr := file.Close(); err == nil {
+						err = closeErr
+					}
 					out <- readResult{path: path, data: data, err: err}
 					if err != nil {
 						cancel()

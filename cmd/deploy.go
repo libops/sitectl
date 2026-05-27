@@ -187,7 +187,7 @@ func runGitUpdate(cmd *cobra.Command, ctx config.Context, branch string) error {
 		return nil
 	}
 
-	checkoutCmd := exec.Command("git", "checkout", strings.TrimSpace(branch))
+	checkoutCmd := exec.Command("git", "checkout", strings.TrimSpace(branch)) // #nosec G204 -- branch is passed as a git argument without a shell.
 	checkoutCmd.Dir = ctx.ProjectDir
 	if _, err := ctx.RunCommandContext(cmd.Context(), checkoutCmd); err != nil {
 		return fmt.Errorf("git checkout %s: %w", branch, err)
