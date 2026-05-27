@@ -475,11 +475,11 @@ func availableDiskBytesAtPathWithSession(ctxCfg *config.Context, session *Sessio
 			if err != nil {
 				return 0, err
 			}
-			fragmentSize := int64(stat.Frsize)
-			if fragmentSize <= 0 {
-				fragmentSize = int64(stat.Bsize)
+			fragmentSize := stat.Frsize
+			if fragmentSize == 0 {
+				fragmentSize = stat.Bsize
 			}
-			return int64(stat.Bavail) * fragmentSize, nil
+			return availableBytes(stat.Bavail, fragmentSize)
 		}
 	}
 	sshClient, err := ctxCfg.DialSSH()
@@ -496,11 +496,11 @@ func availableDiskBytesAtPathWithSession(ctxCfg *config.Context, session *Sessio
 	if err != nil {
 		return 0, err
 	}
-	fragmentSize := int64(stat.Frsize)
-	if fragmentSize <= 0 {
-		fragmentSize = int64(stat.Bsize)
+	fragmentSize := stat.Frsize
+	if fragmentSize == 0 {
+		fragmentSize = stat.Bsize
 	}
-	return int64(stat.Bavail) * fragmentSize, nil
+	return availableBytes(stat.Bavail, fragmentSize)
 }
 
 func availableDiskBytesWithSession(ctxCfg *config.Context, session *Session) (int64, error) {

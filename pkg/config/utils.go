@@ -170,13 +170,28 @@ func GetDefaultLocalDockerSocket(dockerSocket string) string {
 }
 
 func isDockerSocketAlive(socket string) bool {
-	socket = strings.TrimPrefix(socket, "unix://")
-	conn, err := net.DialTimeout("unix", socket, 1*time.Second)
+	socket, ok := normalizeDockerSocketPath(socket)
+	if !ok {
+		return false
+	}
+	conn, err := net.DialTimeout("unix", socket, 1*time.Second) // #nosec G704 -- socket is normalized to an absolute Unix socket path before dialing.
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true
+}
+
+func normalizeDockerSocketPath(socket string) (string, bool) {
+	socket = strings.TrimSpace(socket)
+	socket = strings.TrimPrefix(socket, "unix://")
+	if socket == "" || strings.ContainsRune(socket, 0) {
+		return "", false
+	}
+	if !filepath.IsAbs(socket) {
+		return "", false
+	}
+	return filepath.Clean(socket), true
 }
 
 func SetCommandFlags(flags *pflag.FlagSet) {

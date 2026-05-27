@@ -138,7 +138,7 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 		info.TemplateRepo = repo
 	}
 
-	cmd := exec.Command(pluginPath, "__plugin-metadata")
+	cmd := exec.Command(pluginPath, "__plugin-metadata") // #nosec G702 -- pluginPath comes from PATH discovery and must execute the installed sitectl-* plugin binary to read its metadata.
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Debug("plugin metadata command failed", "plugin", pluginName, "path", pluginPath, "duration", time.Since(started), "err", err)

@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/kballard/go-shellquote"
 )
 
 const defaultDrupalContainerRoot = "/var/www/drupal"
@@ -94,6 +96,7 @@ func (c *Context) ValidateComposeAccess() error {
 		cmdArgs = append(cmdArgs, "--env-file", env)
 	}
 	cmdArgs = append(cmdArgs, "ps")
-	_, err := c.RunQuietCommand(exec.Command("docker", cmdArgs[1:]...)) // #nosec G204 -- docker compose arguments are assembled from context configuration without a shell.
+	shellCmd := shellquote.Join(cmdArgs...) + " >/dev/null 2>&1"
+	_, err := c.RunQuietCommand(exec.Command("sh", "-lc", shellCmd)) // #nosec G204 -- this fixed compose probe intentionally uses a shell to preserve local and remote redirection semantics.
 	return err
 }

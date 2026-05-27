@@ -61,6 +61,7 @@ type composeTemplateCreateRunner struct {
 	spec         CreateSpec
 	opts         ComposeTemplateCreateOptions
 	drupalRootfs string
+	bindErr      error
 }
 
 // RegisterComposeTemplateCreateRunner registers the SDK's standard Docker
@@ -118,20 +119,24 @@ func (s *SDK) RegisterStandardComposeTemplate(spec CreateSpec, opts StandardComp
 
 func (r *composeTemplateCreateRunner) BindFlags(cmd *cobra.Command) {
 	if r.sdk == nil {
-		panic("plugin sdk is not initialized")
+		r.bindErr = fmt.Errorf("plugin sdk is not initialized")
+		return
 	}
 	var drupalRootfs *string
 	if strings.TrimSpace(r.opts.DefaultDrupalRootfs) != "" || strings.TrimSpace(r.opts.DrupalContainerRoot) != "" {
 		drupalRootfs = &r.drupalRootfs
 	}
 	if err := r.sdk.BindComposeCreateFlags(cmd, r.spec, drupalRootfs, r.opts.DefaultDrupalRootfs); err != nil {
-		panic(err)
+		r.bindErr = err
 	}
 }
 
 func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	if r.sdk == nil {
 		return fmt.Errorf("plugin sdk is not initialized")
+	}
+	if r.bindErr != nil {
+		return r.bindErr
 	}
 	input := r.opts.Input
 	if input == nil {
