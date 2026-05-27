@@ -139,7 +139,7 @@ func defaultRunGitCommand(stdout, stderr io.Writer, name string, args ...string)
 }
 
 func runGitCommandWithIO(stdout, stderr io.Writer, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) // #nosec G204 -- helper is used for fixed git invocations assembled by sitectl.
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.Dir = workingDirFromArgs(args)
@@ -167,7 +167,7 @@ func hasGitRepository(projectDir string) (bool, error) {
 }
 
 func gitRemoteExists(projectDir, remoteName string) (bool, error) {
-	cmd := exec.Command("git", "-C", projectDir, "remote", "get-url", remoteName)
+	cmd := exec.Command("git", "-C", projectDir, "remote", "get-url", remoteName) // #nosec G204 -- projectDir and remoteName are passed as git arguments without a shell.
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() != 0 {
 			return false, nil

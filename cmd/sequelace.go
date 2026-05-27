@@ -45,7 +45,7 @@ database port is never exposed on the host. This command is macOS only.`,
 			sequelAcePath,
 			fmt.Sprintf("%s?%s", mysql, ssh),
 		}
-		openCmd := exec.Command("open", cmdArgs...)
+		openCmd := exec.Command("open", cmdArgs...) // #nosec G204 -- opens a locally generated Sequel Ace URL via the platform launcher.
 		if err := openCmd.Run(); err != nil {
 			slog.Error("Could not open sequelace.")
 			return err

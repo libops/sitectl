@@ -102,7 +102,7 @@ func GetContext(name string) (Context, error) {
 }
 
 func (context Context) String() (string, error) {
-	out, err := yaml.Marshal(context)
+	out, err := yaml.Marshal(context) // #nosec G117 -- context contains secret reference names, not secret values.
 	if err != nil {
 		return "", fmt.Errorf("unable to parse context: %v", err)
 	}
@@ -201,7 +201,7 @@ func (c *Context) ReadSmallFile(filename string) (string, error) {
 	}
 
 	if c.DockerHostType == ContextLocal {
-		data, err := os.ReadFile(filename)
+		data, err := os.ReadFile(filename) // #nosec G304 -- path is an explicit caller-selected context file.
 		if err != nil {
 			return "", fmt.Errorf("read file %q: %w", filename, err)
 		}
@@ -478,7 +478,9 @@ func (cc *Context) VerifyRemoteInput(existingSite bool) error {
 		if err != nil {
 			return fmt.Errorf("ssh config does not seem correct: %v", err)
 		}
-		sshClient.Close()
+		if err := sshClient.Close(); err != nil {
+			return fmt.Errorf("close test SSH connection: %w", err)
+		}
 		fmt.Println("Tested SSH connection OK!")
 	}
 

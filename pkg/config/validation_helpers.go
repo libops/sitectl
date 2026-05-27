@@ -97,6 +97,6 @@ func (c *Context) ValidateComposeAccess() error {
 	}
 	cmdArgs = append(cmdArgs, "ps")
 	shellCmd := shellquote.Join(cmdArgs...) + " >/dev/null 2>&1"
-	_, err := c.RunQuietCommand(exec.Command("sh", "-lc", shellCmd))
+	_, err := c.RunQuietCommand(exec.Command("sh", "-lc", shellCmd)) // #nosec G204 -- this fixed compose probe intentionally uses a shell to preserve local and remote redirection semantics.
 	return err
 }

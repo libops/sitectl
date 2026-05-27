@@ -2,6 +2,7 @@ package cron
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,8 +21,14 @@ func PruneArtifacts(root string, now time.Time, retentionDays int, preserveFirst
 	if retentionDays <= 0 {
 		return nil
 	}
+	root = filepath.Clean(root)
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rootFS.Close()
 
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -33,7 +40,11 @@ func PruneArtifacts(root string, now time.Time, retentionDays int, preserveFirst
 			return err
 		}
 		if ShouldDeleteArtifact(info.ModTime(), now, retentionDays, preserveFirstOfMonth) {
-			if err := os.Remove(path); err != nil {
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			if err := rootFS.Remove(rel); err != nil {
 				return err
 			}
 		}
@@ -43,10 +54,10 @@ func PruneArtifacts(root string, now time.Time, retentionDays int, preserveFirst
 		return err
 	}
 
-	return removeEmptyDirs(root)
+	return removeEmptyDirs(root, rootFS)
 }
 
-func removeEmptyDirs(root string) error {
+func removeEmptyDirs(root string, rootFS *os.Root) error {
 	var dirs []string
 	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -65,12 +76,16 @@ func removeEmptyDirs(root string) error {
 		if dir == root {
 			continue
 		}
-		entries, err := os.ReadDir(dir)
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			return err
+		}
+		entries, err := fs.ReadDir(rootFS.FS(), rel)
 		if err != nil {
 			return err
 		}
 		if len(entries) == 0 {
-			if err := os.Remove(dir); err != nil {
+			if err := rootFS.Remove(rel); err != nil {
 				return err
 			}
 		}
@@ -90,7 +105,7 @@ func ShouldDeleteArtifact(modTime, now time.Time, retentionDays int, preserveFir
 
 func EnsureDatedDestination(root string, now time.Time) (string, error) {
 	out := filepath.Join(root, now.Format("2006"), now.Format("01"), now.Format("02"))
-	if err := os.MkdirAll(out, 0o755); err != nil {
+	if err := os.MkdirAll(out, 0o750); err != nil {
 		return "", err
 	}
 	return out, nil

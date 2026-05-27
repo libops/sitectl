@@ -77,7 +77,7 @@ Use --output to write the bundle to a file instead of printing to stdout.`,
 func writeDebugReport(cmd *cobra.Command, report string) error {
 	if strings.TrimSpace(debugOutputPath) != "" {
 		report = renderPlainDebugReport(report)
-		if err := os.WriteFile(debugOutputPath, []byte(report+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(debugOutputPath, []byte(report+"\n"), 0o600); err != nil {
 			return err
 		}
 		_, err := fmt.Fprintf(cmd.OutOrStdout(), "wrote debug bundle to %s\n", debugOutputPath)

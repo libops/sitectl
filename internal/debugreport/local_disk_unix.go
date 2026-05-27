@@ -9,5 +9,8 @@ func localAvailableDiskBytes(path string) (int64, error) {
 	if err := syscall.Statfs(path, &stat); err != nil {
 		return 0, err
 	}
-	return int64(stat.Bavail) * int64(stat.Bsize), nil
+	if stat.Bsize <= 0 {
+		return 0, nil
+	}
+	return availableBytes(stat.Bavail, uint64(stat.Bsize)) // #nosec G115 -- block size is checked positive and availableBytes guards the product.
 }

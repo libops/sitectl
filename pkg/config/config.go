@@ -35,7 +35,7 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is produced by ConfigFilePath under ~/.sitectl.
 	if err != nil {
 		return &Config{}, nil
 	}

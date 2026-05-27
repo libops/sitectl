@@ -17,7 +17,7 @@ func RemoveContextHostPath(runCtx context.Context, ctx *config.Context, path str
 	if ctx == nil || strings.TrimSpace(path) == "" {
 		return
 	}
-	_, _ = ctx.RunQuietCommandContext(runCtx, exec.Command("rm", "-f", path))
+	_, _ = ctx.RunQuietCommandContext(runCtx, exec.Command("rm", "-f", path)) // #nosec G204 -- sitectl intentionally removes a caller-selected context path without invoking a shell.
 }
 
 func DownloadContextFile(ctx *config.Context, sourcePath, localPath string) error {
@@ -25,7 +25,7 @@ func DownloadContextFile(ctx *config.Context, sourcePath, localPath string) erro
 		return fmt.Errorf("context is required")
 	}
 	if ctx.DockerHostType == config.ContextLocal {
-		sourceFile, err := os.Open(sourcePath)
+		sourceFile, err := os.Open(sourcePath) // #nosec G304 -- sitectl intentionally downloads a caller-selected local project file.
 		if err != nil {
 			return err
 		}
@@ -67,10 +67,10 @@ func EnsureDirOnContext(ctx *config.Context, dir string) error {
 }
 
 func writeLocalFile(path string, r io.Reader) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	dst, err := os.Create(path)
+	dst, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- destination is an explicit caller-selected download target.
 	if err != nil {
 		return err
 	}

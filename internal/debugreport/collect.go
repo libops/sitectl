@@ -281,7 +281,7 @@ func CollectComposeDiagnosticsWithSession(runCtx context.Context, ctxCfg *config
 		diagnostics.Issues = append(diagnostics.Issues, err.Error())
 		return diagnostics
 	}
-	output, err := session.RunQuietCommandContext(runCtx, exec.Command("docker", composeConfigArgs(*ctxCfg)...))
+	output, err := session.RunQuietCommandContext(runCtx, exec.Command("docker", composeConfigArgs(*ctxCfg)...)) // #nosec G204 -- docker compose config arguments are assembled from context configuration without a shell.
 	if err != nil {
 		diagnostics.Issues = append(diagnostics.Issues, fmt.Sprintf("compose config: %v", err))
 		return diagnostics
@@ -475,11 +475,11 @@ func availableDiskBytesAtPathWithSession(ctxCfg *config.Context, session *Sessio
 			if err != nil {
 				return 0, err
 			}
-			fragmentSize := int64(stat.Frsize)
-			if fragmentSize <= 0 {
-				fragmentSize = int64(stat.Bsize)
+			fragmentSize := stat.Frsize
+			if fragmentSize == 0 {
+				fragmentSize = stat.Bsize
 			}
-			return int64(stat.Bavail) * fragmentSize, nil
+			return availableBytes(stat.Bavail, fragmentSize)
 		}
 	}
 	sshClient, err := ctxCfg.DialSSH()
@@ -496,11 +496,11 @@ func availableDiskBytesAtPathWithSession(ctxCfg *config.Context, session *Sessio
 	if err != nil {
 		return 0, err
 	}
-	fragmentSize := int64(stat.Frsize)
-	if fragmentSize <= 0 {
-		fragmentSize = int64(stat.Bsize)
+	fragmentSize := stat.Frsize
+	if fragmentSize == 0 {
+		fragmentSize = stat.Bsize
 	}
-	return int64(stat.Bavail) * fragmentSize, nil
+	return availableBytes(stat.Bavail, fragmentSize)
 }
 
 func availableDiskBytesWithSession(ctxCfg *config.Context, session *Session) (int64, error) {
