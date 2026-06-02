@@ -44,6 +44,45 @@ func TestGetContextAllowsIncludedPlugin(t *testing.T) {
 	}
 }
 
+func TestGetContextSupportsDotContext(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services:\n  drupal:\n    image: drupal:latest\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Chdir(projectDir) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+
+	previousDetector := config.SetProjectClaimDetector(nil)
+	sdk := NewSDK(Metadata{Name: "isle"})
+	t.Cleanup(func() {
+		config.SetProjectClaimDetector(previousDetector)
+	})
+	sdk.SetProjectDiscovery(func(projectDir string) (*config.ProjectClaim, error) {
+		return &config.ProjectClaim{Plugin: "isle", ProjectDir: projectDir, Reason: "test claim"}, nil
+	})
+	sdk.Config.Context = "."
+
+	got, err := sdk.GetContext()
+	if err != nil {
+		t.Fatalf("GetContext() error = %v", err)
+	}
+	if got.Name != "." || got.Plugin != "isle" || got.ProjectDir != projectDir || !got.Ephemeral {
+		t.Fatalf("unexpected transient context: %+v", got)
+	}
+}
+
 func TestGetContextRejectsUnsupportedPlugin(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

@@ -142,7 +142,7 @@ var cronComponentsCmd = &cobra.Command{
 	Use:   "components",
 	Short: "List available cron components for the active or selected context",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		contextName, err := config.ResolveCurrentContextName(cmd.Flags())
+		contextName, err := resolveContextName(cmd)
 		if err != nil {
 			return err
 		}
@@ -216,7 +216,7 @@ var cronInstalledCmd = &cobra.Command{
 	Use:   "installed",
 	Short: "List installed sitectl systemd cron units on a context host",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		contextName, err := config.ResolveCurrentContextName(cmd.Flags())
+		contextName, err := resolveContextName(cmd)
 		if err != nil {
 			return err
 		}

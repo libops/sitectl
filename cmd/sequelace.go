@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
 
 	"github.com/spf13/cobra"
@@ -24,12 +23,12 @@ database port is never exposed on the host. This command is macOS only.`,
 			return fmt.Errorf("sequelace is only supported on mac OS")
 		}
 
-		f := cmd.Flags()
-		context, err := config.CurrentContext(f)
+		context, err := resolveCurrentContext(cmd)
 		if err != nil {
 			return err
 		}
 
+		f := cmd.Flags()
 		sequelAcePath, err := f.GetString("sequel-ace-path")
 		if err != nil {
 			return err

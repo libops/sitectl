@@ -34,7 +34,7 @@ var jobListCmd = &cobra.Command{
 Each job shows its name, owning plugin, and a short description. Use the name with
 job run to execute it.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		contextName, err := config.ResolveCurrentContextName(cmd.Flags())
+		contextName, err := resolveContextName(cmd)
 		if err != nil {
 			return err
 		}

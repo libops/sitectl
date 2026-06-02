@@ -258,18 +258,16 @@ func (s *SDK) GetContext() (*config.Context, error) {
 		return nil, fmt.Errorf("no context specified and no current context set")
 	}
 
-	// Find the context
-	for _, ctx := range cfg.Contexts {
-		if ctx.Name == contextName {
-			if err := validateContextPlugin(ctx.Plugin, s.Metadata.Name); err != nil {
-				return nil, fmt.Errorf("context %q is not supported by plugin %q: %w", ctx.Name, s.Metadata.Name, err)
-			}
-			s.contextCache = &ctx
-			return s.contextCache, nil
-		}
+	ctx, err := config.GetContextForPlugin(contextName, s.Metadata.Name)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateContextPlugin(ctx.Plugin, s.Metadata.Name); err != nil {
+		return nil, fmt.Errorf("context %q is not supported by plugin %q: %w", ctx.Name, s.Metadata.Name, err)
 	}
 
-	return nil, fmt.Errorf("context %q not found", contextName)
+	s.contextCache = &ctx
+	return s.contextCache, nil
 }
 
 func (s *SDK) getSSHClient() (*ssh.Client, error) {

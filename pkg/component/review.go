@@ -498,7 +498,11 @@ func DriftCheckLines(view ReviewView) []string {
 			if result.Match {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("%s %s %s %s", label, result.Domain, result.File, strings.TrimSpace(result.Detail)))
+			check := strings.TrimSpace(result.Detail)
+			if path := strings.TrimSpace(result.Path); path != "" {
+				check = strings.TrimSpace(path + " " + check)
+			}
+			lines = append(lines, fmt.Sprintf("%s %s %s %s", label, result.Domain, result.File, check))
 		}
 	}
 	appendFailures("expected on:", view.SDKStatus.On)

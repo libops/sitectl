@@ -46,8 +46,7 @@ http://localhost:8161/admin/queues.jsp to see ActiveMQ queues
 Be sure to run Ctrl+c in your terminal when you are done to close the connection.
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		f := cmd.Flags()
-		c, err := config.CurrentContext(f)
+		c, err := resolveCurrentContext(cmd)
 		if err != nil {
 			return err
 		}

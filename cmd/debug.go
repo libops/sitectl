@@ -49,7 +49,7 @@ context's plugin.
 
 Use --output to write the bundle to a file instead of printing to stdout.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		contextName, err := config.ResolveCurrentContextName(cmd.Flags())
+		contextName, err := resolveContextName(cmd)
 		if err != nil {
 			return err
 		}
