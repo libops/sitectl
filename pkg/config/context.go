@@ -87,8 +87,12 @@ func ContextExists(name string) (bool, error) {
 }
 
 func GetContext(name string) (Context, error) {
+	return GetContextForPlugin(name, "")
+}
+
+func GetContextForPlugin(name, pluginName string) (Context, error) {
 	if strings.TrimSpace(name) == "." {
-		discovery, err := DiscoverCurrentContextForPlugin("")
+		discovery, err := DiscoverCurrentContextForPlugin(pluginName)
 		if err != nil {
 			return Context{Name: name}, err
 		}

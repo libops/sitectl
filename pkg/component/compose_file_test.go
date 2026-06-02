@@ -124,3 +124,43 @@ func TestComposeFileDeleteServiceEnv(t *testing.T) {
 		t.Fatalf("expected unrelated env preserved, got:\n%s", rendered)
 	}
 }
+
+func TestComposeFileAddVolumeBlockInsertsBeforeSectionSeparatorBlank(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "docker-compose.yml")
+	input := `volumes:
+  solr-data: {}
+
+services:
+  drupal:
+    image: drupal
+`
+	if err := os.WriteFile(path, []byte(input), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	compose, err := LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile() error = %v", err)
+	}
+	if err := compose.AddVolumeBlock("triplet-cache", "  triplet-cache: {}"); err != nil {
+		t.Fatalf("AddVolumeBlock() error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	rendered := string(out)
+	if !strings.Contains(rendered, "  solr-data: {}\n  triplet-cache: {}\n\nservices:") {
+		t.Fatalf("expected new volume before separator blank, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "  solr-data: {}\n\n  triplet-cache: {}") {
+		t.Fatalf("expected no blank line between volume entries, got:\n%s", rendered)
+	}
+}

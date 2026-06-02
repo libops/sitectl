@@ -209,3 +209,56 @@ func TestGetContextDotReturnsClaimedCWDContext(t *testing.T) {
 		t.Fatalf("unexpected transient context: %+v", ctx)
 	}
 }
+
+func TestCWDProjectClaimIsCachedByPathAndRequestedPlugin(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	projectDir := filepath.Join(tmpDir, "site")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services:\n  drupal:\n    image: drupal:latest\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+
+	calls := 0
+	previousDetector := SetProjectClaimDetector(func(projectDir, requestedPlugin string) (*ProjectClaim, error) {
+		calls++
+		if requestedPlugin != "" && requestedPlugin != "isle" {
+			return nil, nil
+		}
+		return &ProjectClaim{Plugin: "isle", ProjectDir: projectDir, Reason: "test claim"}, nil
+	})
+	t.Cleanup(func() {
+		SetProjectClaimDetector(previousDetector)
+	})
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Chdir(projectDir) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+
+	if _, err := CurrentForPlugin("isle"); err != nil {
+		t.Fatalf("CurrentForPlugin() error = %v", err)
+	}
+	if _, err := GetContextForPlugin(".", "isle"); err != nil {
+		t.Fatalf("GetContextForPlugin(.) error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one project detection call for cached cwd claim, got %d", calls)
+	}
+
+	if _, err := CurrentForPlugin("drupal"); err != nil {
+		t.Fatalf("CurrentForPlugin(drupal) error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected requested plugin to be part of cache key, got %d calls", calls)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/joho/godotenv"
 	yaml "gopkg.in/yaml.v3"
@@ -307,13 +308,10 @@ func FindLocalContextByProjectDir(projectDir string) (*Context, error) {
 }
 
 func FindLocalContextByProjectDirAndPlugin(projectDir, pluginName string) (*Context, error) {
-	projectDir = filepath.Clean(strings.TrimSpace(projectDir))
+	projectDir = canonicalProjectDir(projectDir)
 	pluginName = strings.TrimSpace(pluginName)
 	if projectDir == "" {
 		return nil, nil
-	}
-	if resolved, err := filepath.EvalSymlinks(projectDir); err == nil {
-		projectDir = resolved
 	}
 	cfg, err := Load()
 	if err != nil {
@@ -324,10 +322,7 @@ func FindLocalContextByProjectDirAndPlugin(projectDir, pluginName string) (*Cont
 		if ctx.DockerHostType != ContextLocal {
 			continue
 		}
-		storedDir := filepath.Clean(strings.TrimSpace(ctx.ProjectDir))
-		if resolved, err := filepath.EvalSymlinks(storedDir); err == nil {
-			storedDir = resolved
-		}
+		storedDir := canonicalProjectDir(ctx.ProjectDir)
 		if storedDir == projectDir {
 			if pluginName != "" && !strings.EqualFold(strings.TrimSpace(ctx.Plugin), pluginName) {
 				continue
@@ -347,10 +342,26 @@ type ProjectClaim struct {
 type ProjectClaimDetector func(projectDir, requestedPlugin string) (*ProjectClaim, error)
 
 var projectClaimDetector ProjectClaimDetector
+var projectClaimCache = struct {
+	sync.Mutex
+	values map[projectClaimCacheKey]cachedProjectClaim
+}{
+	values: map[projectClaimCacheKey]cachedProjectClaim{},
+}
+
+type projectClaimCacheKey struct {
+	ProjectDir      string
+	RequestedPlugin string
+}
+
+type cachedProjectClaim struct {
+	Claim *ProjectClaim
+}
 
 func SetProjectClaimDetector(detector ProjectClaimDetector) ProjectClaimDetector {
 	previous := projectClaimDetector
 	projectClaimDetector = detector
+	clearProjectClaimCache()
 	return previous
 }
 
@@ -374,18 +385,20 @@ func DiscoverCurrentContextForPlugin(requestedPlugin string) (CurrentContextDisc
 	if err != nil {
 		return CurrentContextDiscovery{}, err
 	}
+	cwd = canonicalProjectDir(cwd)
 
 	result := CurrentContextDiscovery{CWD: cwd}
 	projectDir := FindComposeProjectRoot(cwd)
 	if projectDir == "" {
 		return result, nil
 	}
+	projectDir = canonicalProjectDir(projectDir)
 	result.ComposeProjectDir = projectDir
 
 	if projectClaimDetector == nil {
 		return result, nil
 	}
-	claim, err := projectClaimDetector(projectDir, requestedPlugin)
+	claim, err := cachedProjectClaimFor(projectDir, requestedPlugin)
 	if err != nil {
 		return result, err
 	}
@@ -408,8 +421,68 @@ func DiscoverCurrentContextForPlugin(requestedPlugin string) (CurrentContextDisc
 	return result, nil
 }
 
+func cachedProjectClaimFor(projectDir, requestedPlugin string) (*ProjectClaim, error) {
+	key := projectClaimCacheKey{
+		ProjectDir:      canonicalProjectDir(projectDir),
+		RequestedPlugin: strings.TrimSpace(requestedPlugin),
+	}
+
+	projectClaimCache.Lock()
+	if cached, ok := projectClaimCache.values[key]; ok {
+		projectClaimCache.Unlock()
+		return cloneProjectClaim(cached.Claim), nil
+	}
+	projectClaimCache.Unlock()
+
+	claim, err := projectClaimDetector(key.ProjectDir, key.RequestedPlugin)
+	if err != nil {
+		return nil, err
+	}
+	if claim != nil {
+		if strings.TrimSpace(claim.ProjectDir) == "" {
+			claim.ProjectDir = key.ProjectDir
+		} else {
+			claim.ProjectDir = canonicalProjectDir(claim.ProjectDir)
+		}
+	}
+
+	projectClaimCache.Lock()
+	projectClaimCache.values[key] = cachedProjectClaim{Claim: cloneProjectClaim(claim)}
+	projectClaimCache.Unlock()
+
+	return claim, nil
+}
+
+func clearProjectClaimCache() {
+	projectClaimCache.Lock()
+	defer projectClaimCache.Unlock()
+	projectClaimCache.values = map[projectClaimCacheKey]cachedProjectClaim{}
+}
+
+func cloneProjectClaim(claim *ProjectClaim) *ProjectClaim {
+	if claim == nil {
+		return nil
+	}
+	copied := *claim
+	return &copied
+}
+
+func canonicalProjectDir(projectDir string) string {
+	projectDir = filepath.Clean(strings.TrimSpace(projectDir))
+	if projectDir == "" {
+		return ""
+	}
+	if resolved, err := filepath.Abs(projectDir); err == nil {
+		projectDir = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(projectDir); err == nil {
+		projectDir = resolved
+	}
+	return projectDir
+}
+
 func claimedLocalContext(claim *ProjectClaim) *Context {
-	projectDir := filepath.Clean(strings.TrimSpace(claim.ProjectDir))
+	projectDir := canonicalProjectDir(claim.ProjectDir)
 	projectName := filepath.Base(projectDir)
 	composeProjectName := DetectComposeProjectName(projectDir)
 	if strings.TrimSpace(composeProjectName) == "" {

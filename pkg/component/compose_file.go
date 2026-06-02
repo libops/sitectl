@@ -96,7 +96,7 @@ func (c *ComposeFile) addSectionEntryBlock(section, name, block string) error {
 		c.lines = append(c.lines, section+":")
 		sectionIdx = len(c.lines) - 1
 	}
-	insertAt := findBlockEnd(c.lines, sectionIdx, 0)
+	insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, sectionIdx, 0))
 	c.lines = insertLines(c.lines, insertAt, strings.Split(strings.TrimRight(block, "\n"), "\n"))
 	return nil
 }
@@ -165,7 +165,7 @@ func (c *ComposeFile) AddSectionEntryBlock(section, key, block string) error {
 		c.lines = append(c.lines, section+":")
 		sectionIdx = len(c.lines) - 1
 	}
-	insertAt := findBlockEnd(c.lines, sectionIdx, 0)
+	insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, sectionIdx, 0))
 	c.lines = insertLines(c.lines, insertAt, strings.Split(strings.TrimRight(block, "\n"), "\n"))
 	return nil
 }
@@ -320,6 +320,13 @@ func insertLines(lines []string, index int, inserted []string) []string {
 	result = append(result, inserted...)
 	result = append(result, lines[index:]...)
 	return result
+}
+
+func insertionIndexBeforeTrailingBlanks(lines []string, index int) int {
+	for index > 0 && strings.TrimSpace(lines[index-1]) == "" {
+		index--
+	}
+	return index
 }
 
 func leadingSpaces(line string) int {

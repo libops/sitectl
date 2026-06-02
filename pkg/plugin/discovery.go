@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	yaml "gopkg.in/yaml.v3"
@@ -34,6 +35,15 @@ var builtinTemplateRepos = map[string]string{
 	"isle": "https://github.com/islandora-devops/isle-site-template",
 }
 
+var installedDiscoveryCache = struct {
+	sync.Mutex
+	full        map[string][]InstalledPlugin
+	lightweight map[string][]InstalledPlugin
+}{
+	full:        map[string][]InstalledPlugin{},
+	lightweight: map[string][]InstalledPlugin{},
+}
+
 func DiscoverInstalled() []InstalledPlugin {
 	return DiscoverInstalledFromPath(os.Getenv("PATH"))
 }
@@ -44,6 +54,11 @@ func DiscoverInstalledLightweight() []InstalledPlugin {
 
 func DiscoverInstalledFromPath(pathEnv string) []InstalledPlugin {
 	started := time.Now()
+	if cached, ok := cachedInstalledPlugins(pathEnv, false); ok {
+		slog.Debug("completed full plugin discovery from cache", "count", len(cached), "duration", time.Since(started))
+		return cached
+	}
+
 	seen := map[string]bool{}
 	discovered := make([]InstalledPlugin, 0)
 
@@ -74,11 +89,17 @@ func DiscoverInstalledFromPath(pathEnv string) []InstalledPlugin {
 	}
 
 	slog.Debug("completed full plugin discovery", "count", len(discovered), "duration", time.Since(started))
+	storeInstalledPlugins(pathEnv, false, discovered)
 	return discovered
 }
 
 func DiscoverInstalledLightweightFromPath(pathEnv string) []InstalledPlugin {
 	started := time.Now()
+	if cached, ok := cachedInstalledPlugins(pathEnv, true); ok {
+		slog.Debug("completed lightweight plugin discovery from cache", "count", len(cached), "duration", time.Since(started))
+		return cached
+	}
+
 	seen := map[string]bool{}
 	discovered := make([]InstalledPlugin, 0)
 
@@ -114,6 +135,7 @@ func DiscoverInstalledLightweightFromPath(pathEnv string) []InstalledPlugin {
 	}
 
 	slog.Debug("completed lightweight plugin discovery", "count", len(discovered), "duration", time.Since(started))
+	storeInstalledPlugins(pathEnv, true, discovered)
 	return discovered
 }
 
@@ -193,4 +215,60 @@ func defaultCreateDefinition(specs []CreateSpec) (CreateSpec, bool) {
 		}
 	}
 	return specs[0], true
+}
+
+func cachedInstalledPlugins(pathEnv string, lightweight bool) ([]InstalledPlugin, bool) {
+	installedDiscoveryCache.Lock()
+	defer installedDiscoveryCache.Unlock()
+	var values []InstalledPlugin
+	var ok bool
+	if lightweight {
+		values, ok = installedDiscoveryCache.lightweight[pathEnv]
+	} else {
+		values, ok = installedDiscoveryCache.full[pathEnv]
+	}
+	if !ok {
+		return nil, false
+	}
+	return cloneInstalledPlugins(values), true
+}
+
+func storeInstalledPlugins(pathEnv string, lightweight bool, values []InstalledPlugin) {
+	installedDiscoveryCache.Lock()
+	defer installedDiscoveryCache.Unlock()
+	if lightweight {
+		installedDiscoveryCache.lightweight[pathEnv] = cloneInstalledPlugins(values)
+		return
+	}
+	installedDiscoveryCache.full[pathEnv] = cloneInstalledPlugins(values)
+}
+
+func cloneInstalledPlugins(values []InstalledPlugin) []InstalledPlugin {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]InstalledPlugin, len(values))
+	for i, value := range values {
+		out[i] = value
+		out[i].Includes = append([]string{}, value.Includes...)
+		out[i].CreateDefinitions = cloneCreateSpecs(value.CreateDefinitions)
+		out[i].DeployDefinitions = append([]DeploySpec{}, value.DeployDefinitions...)
+	}
+	return out
+}
+
+func cloneCreateSpecs(values []CreateSpec) []CreateSpec {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]CreateSpec, len(values))
+	for i, value := range values {
+		out[i] = value
+		out[i].DockerComposeBuild = append([]string{}, value.DockerComposeBuild...)
+		out[i].DockerComposeInit = append([]string{}, value.DockerComposeInit...)
+		out[i].DockerComposeUp = append([]string{}, value.DockerComposeUp...)
+		out[i].DockerComposeDown = append([]string{}, value.DockerComposeDown...)
+		out[i].DockerComposeRollout = append([]string{}, value.DockerComposeRollout...)
+	}
+	return out
 }

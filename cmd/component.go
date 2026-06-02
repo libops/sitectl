@@ -217,7 +217,7 @@ func resolveComponentOwner(cmd *cobra.Command, raw string) (string, string, stri
 		return "", "", "", err
 	}
 
-	ctx, err := config.GetContext(contextName)
+	ctx, err := config.GetContextForPlugin(contextName, ownerHint)
 	if err != nil {
 		return "", "", "", err
 	}
