@@ -24,7 +24,7 @@ func TestGetContextFromArgs(t *testing.T) {
 			name:         "no context flag",
 			args:         []string{"arg1", "arg2"},
 			expectedArgs: []string{"arg1", "arg2"},
-			expectedCtx:  "default",
+			expectedCtx:  "",
 		},
 		{
 			name:         "separate --context flag",

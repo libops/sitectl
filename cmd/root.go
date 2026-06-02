@@ -71,17 +71,14 @@ func SetVersionInfo(version, commit, date string) {
 }
 
 func init() {
-	c, err := config.Current()
-	if err != nil {
-		slog.Error("Unable to fetch current context", "err", err)
-	}
+	config.SetProjectClaimDetector(plugin.DetectProjectOwner)
 
 	ll := os.Getenv("LOG_LEVEL")
 	if ll == "" {
 		ll = "INFO"
 	}
 
-	RootCmd.PersistentFlags().String("context", c, "The sitectl context to use. See sitectl config --help for more info")
+	RootCmd.PersistentFlags().String("context", "", "The sitectl context to use. See sitectl config --help for more info")
 	RootCmd.PersistentFlags().String("log-level", ll, "The logging level for the command")
 
 	RootCmd.AddGroup(

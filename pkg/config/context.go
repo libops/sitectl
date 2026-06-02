@@ -173,6 +173,10 @@ func CurrentContext(f *pflag.FlagSet) (*Context, error) {
 }
 
 func ResolveCurrentContextName(f *pflag.FlagSet) (string, error) {
+	return ResolveCurrentContextNameForPlugin(f, "")
+}
+
+func ResolveCurrentContextNameForPlugin(f *pflag.FlagSet, pluginName string) (string, error) {
 	if f != nil && f.Lookup("context") != nil && f.Changed("context") {
 		c, err := f.GetString("context")
 		if err != nil {
@@ -188,7 +192,7 @@ func ResolveCurrentContextName(f *pflag.FlagSet) (string, error) {
 		return c, nil
 	}
 
-	c, err := Current()
+	c, err := CurrentForPluginWithDiagnostics(pluginName, os.Stderr)
 	if err != nil {
 		return "", fmt.Errorf("unable to load sitectl config. Have you ran `sitectl config set-context`?")
 	}

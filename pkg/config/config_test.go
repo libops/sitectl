@@ -83,6 +83,16 @@ func TestCurrentPrefersAutodiscoveredLocalContext(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(projectDir) error = %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services:\n  drupal:\n    image: drupal:latest\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+	previousDetector := projectClaimDetector
+	SetProjectClaimDetector(func(projectDir, requestedPlugin string) (*ProjectClaim, error) {
+		return &ProjectClaim{Plugin: "isle", ProjectDir: projectDir, Reason: "test claim"}, nil
+	})
+	t.Cleanup(func() {
+		SetProjectClaimDetector(previousDetector)
+	})
 
 	oldWd, err := os.Getwd()
 	if err != nil {
@@ -98,8 +108,8 @@ func TestCurrentPrefersAutodiscoveredLocalContext(t *testing.T) {
 	cfg := &Config{
 		CurrentContext: "other",
 		Contexts: []Context{
-			{Name: "other", DockerHostType: ContextLocal, ProjectDir: filepath.Join(tmpDir, "other")},
-			{Name: "site-local", DockerHostType: ContextLocal, ProjectDir: projectDir},
+			{Name: "other", Plugin: "isle", DockerHostType: ContextLocal, ProjectDir: filepath.Join(tmpDir, "other")},
+			{Name: "site-local", Plugin: "isle", DockerHostType: ContextLocal, ProjectDir: projectDir},
 		},
 	}
 	if err := Save(cfg); err != nil {

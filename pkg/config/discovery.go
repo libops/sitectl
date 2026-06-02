@@ -92,6 +92,42 @@ func DetectComposeNetworkName(projectDir, composeProjectName string) string {
 	return preferredComposeNetworkName(doc, composeProjectName)
 }
 
+func FindComposeProjectRoot(startDir string) string {
+	startDir = filepath.Clean(strings.TrimSpace(startDir))
+	if startDir == "" {
+		return ""
+	}
+	if resolved, err := filepath.Abs(startDir); err == nil {
+		startDir = resolved
+	}
+	for {
+		if LooksLikeComposeProject(startDir) {
+			return startDir
+		}
+		parent := filepath.Dir(startDir)
+		if parent == startDir {
+			return ""
+		}
+		startDir = parent
+	}
+}
+
+func DetectComposeServices(projectDir string) []string {
+	doc, ok := readComposeDiscoveryDoc(projectDir)
+	if !ok {
+		return nil
+	}
+	services := make([]string, 0, len(doc.Services))
+	for service := range doc.Services {
+		service = strings.TrimSpace(service)
+		if service != "" {
+			services = append(services, service)
+		}
+	}
+	sort.Strings(services)
+	return services
+}
+
 func DetectContextComposeNetwork(ctx *Context) string {
 	if ctx == nil {
 		return ""
@@ -267,7 +303,12 @@ func effectiveComposeNetworkName(key string, network composeDiscoveryNetwork, co
 }
 
 func FindLocalContextByProjectDir(projectDir string) (*Context, error) {
+	return FindLocalContextByProjectDirAndPlugin(projectDir, "")
+}
+
+func FindLocalContextByProjectDirAndPlugin(projectDir, pluginName string) (*Context, error) {
 	projectDir = filepath.Clean(strings.TrimSpace(projectDir))
+	pluginName = strings.TrimSpace(pluginName)
 	if projectDir == "" {
 		return nil, nil
 	}
@@ -288,16 +329,76 @@ func FindLocalContextByProjectDir(projectDir string) (*Context, error) {
 			storedDir = resolved
 		}
 		if storedDir == projectDir {
+			if pluginName != "" && !strings.EqualFold(strings.TrimSpace(ctx.Plugin), pluginName) {
+				continue
+			}
 			return ctx, nil
 		}
 	}
 	return nil, nil
 }
 
+type ProjectClaim struct {
+	Plugin     string `yaml:"plugin"`
+	ProjectDir string `yaml:"project-dir"`
+	Reason     string `yaml:"reason,omitempty"`
+}
+
+type ProjectClaimDetector func(projectDir, requestedPlugin string) (*ProjectClaim, error)
+
+var projectClaimDetector ProjectClaimDetector
+
+func SetProjectClaimDetector(detector ProjectClaimDetector) {
+	projectClaimDetector = detector
+}
+
+type CurrentContextDiscovery struct {
+	CWD               string
+	ComposeProjectDir string
+	Claim             *ProjectClaim
+	Context           *Context
+}
+
 func DiscoverCurrentContext() (*Context, error) {
-	cwd, err := os.Getwd()
+	result, err := DiscoverCurrentContextForPlugin("")
 	if err != nil {
 		return nil, err
 	}
-	return FindLocalContextByProjectDir(cwd)
+	return result.Context, nil
+}
+
+func DiscoverCurrentContextForPlugin(requestedPlugin string) (CurrentContextDiscovery, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return CurrentContextDiscovery{}, err
+	}
+
+	result := CurrentContextDiscovery{CWD: cwd}
+	projectDir := FindComposeProjectRoot(cwd)
+	if projectDir == "" {
+		return result, nil
+	}
+	result.ComposeProjectDir = projectDir
+
+	if projectClaimDetector == nil {
+		return result, nil
+	}
+	claim, err := projectClaimDetector(projectDir, requestedPlugin)
+	if err != nil {
+		return result, err
+	}
+	if claim == nil || strings.TrimSpace(claim.Plugin) == "" {
+		return result, nil
+	}
+	if strings.TrimSpace(claim.ProjectDir) == "" {
+		claim.ProjectDir = projectDir
+	}
+	result.Claim = claim
+
+	ctx, err := FindLocalContextByProjectDirAndPlugin(projectDir, claim.Plugin)
+	if err != nil {
+		return result, err
+	}
+	result.Context = ctx
+	return result, nil
 }
