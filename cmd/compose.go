@@ -6,7 +6,6 @@ import (
 	"slices"
 
 	"github.com/libops/sitectl/pkg/config"
-	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +36,7 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// since we're disabling flag parsing to make easy passing of flags to docker compose
 		// handle the context flag
-		filteredArgs, sitectlContext, err := helpers.GetContextFromArgs(cmd, args)
+		filteredArgs, sitectlContext, err := getContextFromArgs(cmd, args)
 		if err != nil {
 			return err
 		}

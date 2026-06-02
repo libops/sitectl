@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
-	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/libops/sitectl/pkg/plugin"
 	sitevalidate "github.com/libops/sitectl/pkg/validate"
 	"github.com/spf13/cobra"
@@ -35,7 +34,7 @@ Examples:
   sitectl validate --drupal-rootfs drupal/rootfs`,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		filteredArgs, contextName, err := helpers.GetContextFromArgs(cmd, args)
+		filteredArgs, contextName, err := getContextFromArgs(cmd, args)
 		if err != nil {
 			return err
 		}

@@ -29,6 +29,8 @@ const (
 	DispositionSuperseded  Disposition = "superceded"
 	DispositionEnabled     Disposition = "enabled"
 	DispositionDistributed Disposition = "distributed"
+	DispositionCantaloupe  Disposition = "cantaloupe"
+	DispositionTriplet     Disposition = "triplet"
 )
 
 type ComposeSpec struct {
@@ -493,10 +495,10 @@ func normalizeState(state State) State {
 func ParseDisposition(value string) (Disposition, error) {
 	disposition := normalizeDisposition(Disposition(value))
 	switch disposition {
-	case DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed:
+	case DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed, DispositionCantaloupe, DispositionTriplet:
 		return disposition, nil
 	default:
-		return "", fmt.Errorf("invalid component disposition %q: expected one of %s, %s, %s, %s", value, DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed)
+		return "", fmt.Errorf("invalid component disposition %q: expected one of %s, %s, %s, %s, %s, %s", value, DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed, DispositionCantaloupe, DispositionTriplet)
 	}
 }
 
@@ -517,6 +519,10 @@ func normalizeDisposition(disposition Disposition) Disposition {
 		return DispositionEnabled
 	case string(DispositionDistributed):
 		return DispositionDistributed
+	case string(DispositionCantaloupe):
+		return DispositionCantaloupe
+	case string(DispositionTriplet):
+		return DispositionTriplet
 	default:
 		return Disposition(strings.ToLower(strings.TrimSpace(string(disposition))))
 	}
@@ -524,7 +530,7 @@ func normalizeDisposition(disposition Disposition) Disposition {
 
 func DispositionToState(disposition Disposition) State {
 	switch normalizeDisposition(disposition) {
-	case DispositionEnabled:
+	case DispositionEnabled, DispositionDistributed, DispositionTriplet:
 		return StateOn
 	default:
 		return StateOff

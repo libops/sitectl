@@ -10,7 +10,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/libops/sitectl/pkg/config"
-	"github.com/libops/sitectl/pkg/helpers"
 	corejob "github.com/libops/sitectl/pkg/job"
 	"github.com/libops/sitectl/pkg/plugin"
 	"github.com/spf13/cobra"
@@ -66,7 +65,7 @@ var jobExecCmd = &cobra.Command{
 	DisableFlagParsing: true,
 	Args:               cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		filteredArgs, contextName, err := helpers.GetContextFromArgs(cmd, args)
+		filteredArgs, contextName, err := getContextFromArgs(cmd, args)
 		if err != nil {
 			return err
 		}

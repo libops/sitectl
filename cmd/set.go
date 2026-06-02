@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
-	"github.com/libops/sitectl/pkg/helpers"
 	"github.com/libops/sitectl/pkg/plugin"
 	"github.com/spf13/cobra"
 )
@@ -29,7 +28,7 @@ Examples:
   sitectl set isle-tls on --tls-mode letsencrypt`,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		filteredArgs, contextName, err := helpers.GetContextFromArgs(cmd, args)
+		filteredArgs, contextName, err := getContextFromArgs(cmd, args)
 		if err != nil {
 			return err
 		}

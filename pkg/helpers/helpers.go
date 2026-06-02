@@ -40,9 +40,13 @@ func OpenURL(url string) error {
 // for cobra commands that allow arbitrary args to facilitate passing flags to other commands
 // strip out sitectl's context flag from the args if it was passed
 func GetContextFromArgs(cmd *cobra.Command, args []string) ([]string, string, error) {
-	siteCtx, err := cmd.Root().PersistentFlags().GetString("context")
-	if err != nil {
-		return nil, "", err
+	siteCtx := ""
+	if flags := cmd.Root().PersistentFlags(); flags.Lookup("context") != nil && flags.Changed("context") {
+		value, err := flags.GetString("context")
+		if err != nil {
+			return nil, "", err
+		}
+		siteCtx = value
 	}
 
 	// remove --context flag from the args if it exists

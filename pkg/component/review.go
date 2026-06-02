@@ -178,6 +178,10 @@ func RenderCurrentGuidance(view ReviewView) string {
 		return strings.TrimSpace(dispositionHelp(view.Definition.Guidance, DispositionSuperseded))
 	case DispositionDistributed:
 		return strings.TrimSpace(dispositionHelp(view.Definition.Guidance, DispositionDistributed))
+	case DispositionTriplet:
+		return strings.TrimSpace(dispositionHelp(view.Definition.Guidance, DispositionTriplet))
+	case DispositionCantaloupe:
+		return strings.TrimSpace(dispositionHelp(view.Definition.Guidance, DispositionCantaloupe))
 	}
 	switch view.State {
 	case DetectedState(StateOn):
@@ -302,28 +306,10 @@ func LegacyDispositionForState(allowed []Disposition, state State) Disposition {
 	if len(allowed) == 0 {
 		return StateToDisposition(state)
 	}
-	switch normalizeState(state) {
-	case StateOn:
-		for _, disposition := range allowed {
-			if disposition == DispositionEnabled {
-				return disposition
-			}
-		}
-		for _, disposition := range allowed {
-			if disposition != DispositionDisabled {
-				return disposition
-			}
-		}
-	case StateOff:
-		for _, disposition := range allowed {
-			if disposition == DispositionDisabled {
-				return disposition
-			}
-		}
-		for _, disposition := range allowed {
-			if disposition != DispositionEnabled {
-				return disposition
-			}
+	target := normalizeState(state)
+	for _, disposition := range allowed {
+		if DispositionToState(disposition) == target {
+			return disposition
 		}
 	}
 	return allowed[0]

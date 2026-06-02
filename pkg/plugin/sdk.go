@@ -61,6 +61,7 @@ type SDK struct {
 	componentDefs     []component.Definition
 	deploys           []RegisteredDeploy
 	deployRootCmd     *cobra.Command
+	projectDiscovery  ProjectDiscoveryFunc
 	hasConverge       bool
 	hasSet            bool
 	hasValidate       bool
@@ -91,6 +92,8 @@ func NewSDK(metadata Metadata) *SDK {
 	}
 
 	sdk.addCommonFlags()
+	sdk.RootCmd.AddCommand(sdk.GetProjectDetectionCommand())
+	config.SetProjectClaimDetector(sdk.detectProjectOwner)
 	return sdk
 }
 
@@ -119,8 +122,10 @@ func (s *SDK) setupLogging(cmd *cobra.Command) error {
 
 	// Store config for plugin use.
 	s.Config.LogLevel = ll
-	if s.RootCmd.PersistentFlags().Lookup("context") != nil {
+	if s.RootCmd.PersistentFlags().Lookup("context") != nil && cmd.Flags().Changed("context") {
 		s.Config.Context, _ = cmd.Flags().GetString("context")
+	} else {
+		s.Config.Context = ""
 	}
 
 	return nil
@@ -133,12 +138,7 @@ func (s *SDK) addCommonFlags() {
 		ll = "INFO"
 	}
 	s.RootCmd.PersistentFlags().String("log-level", ll, "The logging level for the command")
-	c, err := config.Current()
-	if err != nil {
-		slog.Warn("unable to fetch current context, defaulting to empty", "err", err)
-	}
-
-	s.RootCmd.PersistentFlags().String("context", c, "The sitectl context to use. See sitectl config --help for more info")
+	s.RootCmd.PersistentFlags().String("context", "", "The sitectl context to use. See sitectl config --help for more info")
 }
 
 // AddCommand adds a subcommand to the plugin
@@ -244,8 +244,11 @@ func (s *SDK) GetContext() (*config.Context, error) {
 
 	// Use explicit --context if provided, otherwise resolve current context
 	contextName := s.Config.Context
+	if contextName == "default" {
+		contextName = cfg.CurrentContext
+	}
 	if contextName == "" {
-		contextName, err = config.Current()
+		contextName, err = config.CurrentForPluginWithDiagnostics(s.Metadata.Name, os.Stderr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve current context: %w", err)
 		}

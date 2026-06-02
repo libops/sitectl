@@ -268,6 +268,16 @@ func dispositionHelp(guidance StateGuidance, disposition Disposition) string {
 		return guidance.SupersededHelp
 	case DispositionDistributed:
 		return guidance.DistributedHelp
+	case DispositionTriplet:
+		if strings.TrimSpace(guidance.EnabledHelp) != "" {
+			return guidance.EnabledHelp
+		}
+		return guidance.OnHelp
+	case DispositionCantaloupe:
+		if strings.TrimSpace(guidance.DisabledHelp) != "" {
+			return guidance.DisabledHelp
+		}
+		return guidance.OffHelp
 	default:
 		return ""
 	}
