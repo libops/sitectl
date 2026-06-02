@@ -348,8 +348,10 @@ type ProjectClaimDetector func(projectDir, requestedPlugin string) (*ProjectClai
 
 var projectClaimDetector ProjectClaimDetector
 
-func SetProjectClaimDetector(detector ProjectClaimDetector) {
+func SetProjectClaimDetector(detector ProjectClaimDetector) ProjectClaimDetector {
+	previous := projectClaimDetector
 	projectClaimDetector = detector
+	return previous
 }
 
 type CurrentContextDiscovery struct {
@@ -399,6 +401,31 @@ func DiscoverCurrentContextForPlugin(requestedPlugin string) (CurrentContextDisc
 	if err != nil {
 		return result, err
 	}
+	if ctx == nil {
+		ctx = claimedLocalContext(claim)
+	}
 	result.Context = ctx
 	return result, nil
+}
+
+func claimedLocalContext(claim *ProjectClaim) *Context {
+	projectDir := filepath.Clean(strings.TrimSpace(claim.ProjectDir))
+	projectName := filepath.Base(projectDir)
+	composeProjectName := DetectComposeProjectName(projectDir)
+	if strings.TrimSpace(composeProjectName) == "" {
+		composeProjectName = projectName
+	}
+	return &Context{
+		Name:               ".",
+		Site:               projectName,
+		Plugin:             strings.TrimSpace(claim.Plugin),
+		DockerHostType:     ContextLocal,
+		Environment:        "local",
+		DockerSocket:       GetDefaultLocalDockerSocket("/var/run/docker.sock"),
+		ProjectName:        projectName,
+		ComposeProjectName: composeProjectName,
+		ComposeNetwork:     DetectComposeNetworkName(projectDir, composeProjectName),
+		ProjectDir:         projectDir,
+		Ephemeral:          true,
+	}
 }

@@ -65,7 +65,7 @@ var currentContextCmd = &cobra.Command{
 	Use:   "current-context",
 	Short: "Display the current site context",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := config.Current()
+		c, err := resolveContextName(cmd)
 		if err != nil {
 			return err
 		}
@@ -236,7 +236,7 @@ var validateConfigCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		contexts, err := resolveValidationContexts(cfg, args)
+		contexts, err := resolveValidationContexts(cmd, cfg, args)
 		if err != nil {
 			return err
 		}
@@ -400,7 +400,7 @@ func writeContextTable(out io.Writer, cfg *config.Config) {
 	_ = w.Flush()
 }
 
-func resolveValidationContexts(cfg *config.Config, args []string) ([]config.Context, error) {
+func resolveValidationContexts(cmd *cobra.Command, cfg *config.Config, args []string) ([]config.Context, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is nil")
 	}
@@ -426,7 +426,7 @@ func resolveValidationContexts(cfg *config.Config, args []string) ([]config.Cont
 		}
 		return []config.Context{ctx}, nil
 	}
-	current, err := config.Current()
+	current, err := resolveContextName(cmd)
 	if err != nil {
 		return nil, err
 	}

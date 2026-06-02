@@ -37,10 +37,10 @@ If omitted, the repository's current branch is updated via fetch without switchi
 Examples:
   sitectl deploy                         # Deploy current branch on active context
   sitectl deploy --branch main           # Switch to main and deploy
-  sitectl deploy --skip-git              # Restart services without pulling git changes
+ sitectl deploy --skip-git              # Restart services without pulling git changes
   sitectl deploy --context prod          # Deploy on a specific context`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		contextName, err := config.ResolveCurrentContextName(cmd.Flags())
+		contextName, err := resolveContextName(cmd)
 		if err != nil {
 			return err
 		}

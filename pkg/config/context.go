@@ -57,6 +57,7 @@ type Context struct {
 	DatabaseName           string `yaml:"database-name,omitempty"`
 
 	ReadSmallFileFunc func(filename string) (string, error) `yaml:"-"`
+	Ephemeral         bool                                  `yaml:"-"`
 
 	// Extra holds plugin-specific configuration.
 	// Each plugin uses its own key (e.g., "drupal", "isle", "wordpress").
@@ -86,6 +87,15 @@ func ContextExists(name string) (bool, error) {
 }
 
 func GetContext(name string) (Context, error) {
+	if strings.TrimSpace(name) == "." {
+		discovery, err := DiscoverCurrentContextForPlugin("")
+		if err != nil {
+			return Context{Name: name}, err
+		}
+		if discovery.Context != nil {
+			return *discovery.Context, nil
+		}
+	}
 	ctx := Context{Name: name}
 	c, err := Load()
 	if err != nil {

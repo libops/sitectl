@@ -206,7 +206,13 @@ func init() {
 var pluginSDK *plugin.SDK
 
 func resolveComponentOwner(cmd *cobra.Command, raw string) (string, string, string, error) {
-	contextName, err := config.ResolveCurrentContextName(cmd.Flags())
+	name := strings.TrimSpace(raw)
+	ownerHint := ""
+	if pluginName, componentName, ok := splitNamespacedComponent(name); ok {
+		ownerHint = pluginName
+		name = componentName
+	}
+	contextName, err := resolveContextNameForPlugin(cmd, ownerHint)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -217,10 +223,8 @@ func resolveComponentOwner(cmd *cobra.Command, raw string) (string, string, stri
 	}
 
 	owner := ctx.Plugin
-	name := strings.TrimSpace(raw)
-	if pluginName, componentName, ok := splitNamespacedComponent(name); ok {
-		owner = pluginName
-		name = componentName
+	if ownerHint != "" {
+		owner = ownerHint
 	}
 	if strings.TrimSpace(owner) == "" {
 		return "", "", "", fmt.Errorf("context %q does not define a plugin owner", ctx.Name)

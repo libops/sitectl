@@ -169,3 +169,43 @@ func TestCurrentFallsBackToConfiguredDefaultWhenCWDDoesNotMatch(t *testing.T) {
 		t.Fatalf("expected configured default current context site-local, got %q", current)
 	}
 }
+
+func TestGetContextDotReturnsClaimedCWDContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", oldHome)
+	os.Setenv("HOME", tmpDir)
+
+	projectDir := filepath.Join(tmpDir, "site")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services:\n  drupal:\n    image: drupal:latest\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+	previousDetector := SetProjectClaimDetector(func(projectDir, requestedPlugin string) (*ProjectClaim, error) {
+		return &ProjectClaim{Plugin: "isle", ProjectDir: projectDir, Reason: "test claim"}, nil
+	})
+	t.Cleanup(func() {
+		SetProjectClaimDetector(previousDetector)
+	})
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Chdir(projectDir) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+
+	ctx, err := GetContext(".")
+	if err != nil {
+		t.Fatalf("GetContext(.) error = %v", err)
+	}
+	if ctx.Name != "." || ctx.Plugin != "isle" || ctx.ProjectDir != projectDir || !ctx.Ephemeral {
+		t.Fatalf("unexpected transient context: %+v", ctx)
+	}
+}
