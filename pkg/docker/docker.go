@@ -279,9 +279,14 @@ func (d *DockerClient) Exec(ctx context.Context, opts ExecOptions) (int, error) 
 	defer resp.Close()
 
 	if ctx != nil {
+		streamDone := make(chan struct{})
+		defer close(streamDone)
 		go func() {
-			<-ctx.Done()
-			resp.Close()
+			select {
+			case <-ctx.Done():
+				resp.Close()
+			case <-streamDone:
+			}
 		}()
 	}
 

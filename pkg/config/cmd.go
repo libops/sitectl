@@ -138,7 +138,6 @@ func (c *Context) runCommandContext(ctx context.Context, cmd *exec.Cmd, printOut
 	if err != nil {
 		return "", fmt.Errorf("error obtaining stderr pipe: %v", err)
 	}
-	combined := io.MultiReader(stdoutPipe, stderrPipe)
 
 	// call ssh foo@host.tld "remoteCmd"
 	if err := session.Start(remoteCmd); err != nil {
@@ -146,23 +145,42 @@ func (c *Context) runCommandContext(ctx context.Context, cmd *exec.Cmd, printOut
 	}
 
 	// save the output from the command so we can return it
-	buf := make([]byte, 1024)
-	for {
-		n, err := combined.Read(buf)
-		if n > 0 {
-			chunk := string(buf[:n])
-			if printOutput {
-				fmt.Print(chunk)
+	outputChunks := make(chan string, 16)
+	var outputReaders sync.WaitGroup
+	readRemoteOutput := func(r io.Reader) {
+		defer outputReaders.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := r.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				select {
+				case outputChunks <- chunk:
+				case <-runCtx.Done():
+					return
+				}
 			}
-			output.WriteString(chunk)
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
+			if readErr != nil {
+				if readErr != io.EOF && runCtx.Err() == nil {
+					slog.Error("Error reading remote output", "err", readErr)
+				}
+				return
 			}
-			slog.Error("Error reading remote output", "err", err)
-			break
 		}
+	}
+	outputReaders.Add(2)
+	go readRemoteOutput(stdoutPipe)
+	go readRemoteOutput(stderrPipe)
+	go func() {
+		outputReaders.Wait()
+		close(outputChunks)
+	}()
+
+	for chunk := range outputChunks {
+		if printOutput {
+			fmt.Print(chunk)
+		}
+		output.WriteString(chunk)
 	}
 
 	if err = session.Wait(); err != nil {

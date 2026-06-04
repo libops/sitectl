@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/libops/sitectl/pkg/config"
@@ -60,11 +61,9 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 		defer cli.Close()
 
 		listeners := make([]net.Listener, 0, len(args))
-		done := make(chan os.Signal, 1)
-		signal.Notify(done, os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
-		defer signal.Stop(done)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
+		defer stop()
+		var wg sync.WaitGroup
 
 		for _, arg := range args {
 			parts := strings.Split(arg, ":")
@@ -105,50 +104,97 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 			}
 
 			remoteEndpoint := fmt.Sprintf("%s:%d", serviceIp, remotePort)
+			wg.Add(1)
 			go func(listener net.Listener, lp, remoteAddr string) {
+				defer wg.Done()
 				fmt.Fprintf(cmd.OutOrStdout(), "Forwarding localhost:%s -> %s via SSH\n", lp, remoteAddr)
 				for {
 					localConn, err := listener.Accept()
 					if err != nil {
-						if strings.Contains(err.Error(), "use of closed network connection") {
+						if ctx.Err() != nil || isClosedNetworkError(err) {
 							return
 						}
 						fmt.Fprintf(cmd.ErrOrStderr(), "error accepting connection on port %s: %v\n", lp, err)
 						return
 					}
-					go forward(cli.SshCli, localConn, remoteAddr, cmd.ErrOrStderr())
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						forward(ctx, cli.SshCli, localConn, remoteAddr, cmd.ErrOrStderr())
+					}()
 				}
 			}(listener, localPortStr, remoteEndpoint)
 		}
 
-		<-done
+		<-ctx.Done()
 		fmt.Fprintln(cmd.OutOrStdout(), "Shutting down port forwards...")
 		for _, listener := range listeners {
 			if err := listener.Close(); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "error closing listener: %v\n", err)
 			}
 		}
+		if err := cli.Close(); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "error closing docker connection: %v\n", err)
+		}
+		wg.Wait()
 		return nil
 	},
 }
 
-func forward(client *ssh.Client, localConn net.Conn, remoteAddr string, errw io.Writer) {
+func forward(ctx context.Context, client *ssh.Client, localConn net.Conn, remoteAddr string, errw io.Writer) {
 	defer localConn.Close()
-	remoteConn, err := client.Dial("tcp", remoteAddr)
+	remoteConn, err := dialPortForwardRemote(ctx, client, remoteAddr)
 	if err != nil {
 		fmt.Fprintf(errw, "failed to dial remote address %s: %v\n", remoteAddr, err)
 		return
 	}
 	defer remoteConn.Close()
 
+	ctxDone := make(chan struct{})
 	go func() {
-		if _, err := io.Copy(remoteConn, localConn); err != nil {
-			fmt.Fprintf(errw, "error while copying local to remote: %v\n", err)
+		select {
+		case <-ctx.Done():
+			_ = localConn.Close()
+			_ = remoteConn.Close()
+		case <-ctxDone:
 		}
 	}()
-	if _, err := io.Copy(localConn, remoteConn); err != nil {
-		fmt.Fprintf(errw, "error while copying remote to local: %v\n", err)
+	defer close(ctxDone)
+
+	errCh := make(chan error, 2)
+	go copyPortForward(errCh, remoteConn, localConn)
+	go copyPortForward(errCh, localConn, remoteConn)
+
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil && ctx.Err() == nil && !isClosedNetworkError(err) {
+			fmt.Fprintf(errw, "error while copying port forward traffic: %v\n", err)
+		}
+		_ = localConn.Close()
+		_ = remoteConn.Close()
 	}
+}
+
+func dialPortForwardRemote(ctx context.Context, client *ssh.Client, remoteAddr string) (net.Conn, error) {
+	if client != nil {
+		return client.Dial("tcp", remoteAddr)
+	}
+	var dialer net.Dialer
+	return dialer.DialContext(ctx, "tcp", remoteAddr)
+}
+
+func copyPortForward(errCh chan<- error, dst net.Conn, src net.Conn) {
+	_, err := io.Copy(dst, src)
+	errCh <- err
+}
+
+func isClosedNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "closed network connection") ||
+		strings.Contains(message, "use of closed network connection") ||
+		strings.Contains(message, "operation canceled")
 }
 
 func init() {
