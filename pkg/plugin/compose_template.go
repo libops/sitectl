@@ -2,12 +2,14 @@ package plugin
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	corecomponent "github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
@@ -163,7 +165,7 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	cloned, err := r.sdk.EnsureComposeTemplateCheckout(cmd.OutOrStdout(), req, ctx)
+	cloned, err := r.sdk.EnsureComposeTemplateCheckoutContext(cmd.Context(), cmd.OutOrStdout(), req, ctx)
 	if err != nil {
 		return err
 	}
@@ -184,8 +186,17 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 // EnsureComposeTemplateCheckout ensures the requested Docker Compose template
 // exists for the target context and returns whether a new checkout was cloned.
 func (s *SDK) EnsureComposeTemplateCheckout(out io.Writer, req ComposeCreateRequest, ctx *config.Context) (bool, error) {
+	return s.EnsureComposeTemplateCheckoutContext(context.Background(), out, req, ctx)
+}
+
+// EnsureComposeTemplateCheckoutContext ensures the requested Docker Compose
+// template exists for the target context with cancellation support.
+func (s *SDK) EnsureComposeTemplateCheckoutContext(runCtx context.Context, out io.Writer, req ComposeCreateRequest, ctx *config.Context) (bool, error) {
 	if s == nil {
 		return false, fmt.Errorf("plugin sdk is not initialized")
+	}
+	if runCtx == nil {
+		runCtx = context.Background()
 	}
 	if req.CheckoutSource == CheckoutSourceExisting {
 		return false, nil
@@ -197,12 +208,15 @@ func (s *SDK) EnsureComposeTemplateCheckout(out io.Writer, req ComposeCreateRequ
 		return false, fmt.Errorf("project directory cannot be empty")
 	}
 	if ctx.DockerHostType == config.ContextRemote {
-		return s.ensureRemoteComposeTemplateCheckout(out, req, ctx)
+		return s.ensureRemoteComposeTemplateCheckout(runCtx, out, req, ctx)
 	}
-	return s.ensureLocalComposeTemplateCheckout(out, req, ctx.ProjectDir)
+	return s.ensureLocalComposeTemplateCheckout(runCtx, out, req, ctx.ProjectDir)
 }
 
-func (s *SDK) ensureLocalComposeTemplateCheckout(out io.Writer, req ComposeCreateRequest, projectDir string) (bool, error) {
+func (s *SDK) ensureLocalComposeTemplateCheckout(runCtx context.Context, out io.Writer, req ComposeCreateRequest, projectDir string) (bool, error) {
+	if err := runCtx.Err(); err != nil {
+		return false, err
+	}
 	entries, err := os.ReadDir(projectDir)
 	if err == nil && len(entries) > 0 {
 		return false, nil
@@ -225,17 +239,17 @@ func (s *SDK) ensureLocalComposeTemplateCheckout(out io.Writer, req ComposeCreat
 	return true, nil
 }
 
-func (s *SDK) ensureRemoteComposeTemplateCheckout(out io.Writer, req ComposeCreateRequest, ctx *config.Context) (bool, error) {
-	output, err := runRemoteShellCommand(ctx, nil, nil, fmt.Sprintf("if [ -d %s ] && [ -n \"$(ls -A %s 2>/dev/null)\" ]; then echo present; fi", shellQuote(ctx.ProjectDir), shellQuote(ctx.ProjectDir)))
+func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io.Writer, req ComposeCreateRequest, ctx *config.Context) (bool, error) {
+	output, err := runRemoteShellCommandContext(runCtx, ctx, nil, nil, fmt.Sprintf("if [ -d %s ] && [ -n \"$(ls -A %s 2>/dev/null)\" ]; then echo present; fi", shellQuote(ctx.ProjectDir), shellQuote(ctx.ProjectDir)))
 	if err == nil && strings.TrimSpace(output) == "present" {
 		return false, nil
 	}
-	if _, err := runRemoteShellCommand(ctx, nil, nil, fmt.Sprintf("mkdir -p %s", shellQuote(filepath.Dir(ctx.ProjectDir)))); err != nil {
+	if _, err := runRemoteShellCommandContext(runCtx, ctx, nil, nil, fmt.Sprintf("mkdir -p %s", shellQuote(filepath.Dir(ctx.ProjectDir)))); err != nil {
 		return false, fmt.Errorf("prepare remote parent directory: %w", err)
 	}
 	cloneCmd := fmt.Sprintf("git clone --branch %s %s %s && rm -rf %s/.git && git -C %s init -b %s", shellQuote(req.TemplateBranch), shellQuote(req.TemplateRepo), shellQuote(ctx.ProjectDir), shellQuote(ctx.ProjectDir), shellQuote(ctx.ProjectDir), shellQuote(req.TemplateBranch))
 	fmt.Fprintf(out, "Cloning %s into %s on %s\n", req.TemplateRepo, ctx.ProjectDir, ctx.SSHHostname)
-	if _, err := runRemoteShellCommand(ctx, io.Discard, io.Discard, cloneCmd); err != nil {
+	if _, err := runRemoteShellCommandContext(runCtx, ctx, io.Discard, io.Discard, cloneCmd); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -250,7 +264,7 @@ func (s *SDK) RunComposeProjectCommandList(cmd *cobra.Command, ctx *config.Conte
 			continue
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Running %s\n", command)
-		if err := s.RunComposeProjectCommand(ctx, ctx.ProjectDir, cmd.OutOrStdout(), cmd.ErrOrStderr(), command); err != nil {
+		if err := s.RunComposeProjectCommandContext(cmd.Context(), ctx, ctx.ProjectDir, cmd.OutOrStdout(), cmd.ErrOrStderr(), command); err != nil {
 			return err
 		}
 	}
@@ -260,8 +274,17 @@ func (s *SDK) RunComposeProjectCommandList(cmd *cobra.Command, ctx *config.Conte
 // RunComposeProjectCommand runs a shell command in a compose project directory,
 // honoring local and remote sitectl contexts.
 func (s *SDK) RunComposeProjectCommand(ctx *config.Context, projectDir string, stdout, stderr io.Writer, command string) error {
+	return s.RunComposeProjectCommandContext(context.Background(), ctx, projectDir, stdout, stderr, command)
+}
+
+// RunComposeProjectCommandContext runs a shell command in a compose project
+// directory with cancellation support.
+func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *config.Context, projectDir string, stdout, stderr io.Writer, command string) error {
 	if ctx == nil {
 		return fmt.Errorf("context is nil")
+	}
+	if runCtx == nil {
+		runCtx = context.Background()
 	}
 	if strings.TrimSpace(command) == "" {
 		return nil
@@ -271,10 +294,10 @@ func (s *SDK) RunComposeProjectCommand(ctx *config.Context, projectDir string, s
 		if strings.TrimSpace(projectDir) != "" {
 			remoteCommand = fmt.Sprintf("cd %s && %s", shellQuote(projectDir), command)
 		}
-		_, err := runRemoteShellCommand(ctx, stdout, stderr, remoteCommand)
+		_, err := runRemoteShellCommandContext(runCtx, ctx, stdout, stderr, remoteCommand)
 		return err
 	}
-	localCmd := exec.Command("bash", "-lc", command) // #nosec G204 -- command text is assembled from template-owned command lists and shell-quoted inputs.
+	localCmd := exec.CommandContext(runCtx, "bash", "-lc", command) // #nosec G204 -- command text is assembled from template-owned command lists and shell-quoted inputs.
 	localCmd.Dir = projectDir
 	localCmd.Stdout = stdout
 	localCmd.Stderr = stderr
@@ -282,21 +305,44 @@ func (s *SDK) RunComposeProjectCommand(ctx *config.Context, projectDir string, s
 	return localCmd.Run()
 }
 
-func runRemoteShellCommand(ctx *config.Context, stdout, stderr io.Writer, command string) (string, error) {
+func runRemoteShellCommandContext(runCtx context.Context, ctx *config.Context, stdout, stderr io.Writer, command string) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("context is nil")
+	}
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+	if err := runCtx.Err(); err != nil {
+		return "", err
 	}
 	client, err := ctx.DialSSH()
 	if err != nil {
 		return "", fmt.Errorf("error establishing SSH connection: %w", err)
 	}
-	defer client.Close()
 
 	session, err := client.NewSession()
 	if err != nil {
+		_ = client.Close()
 		return "", fmt.Errorf("error creating SSH session: %w", err)
 	}
-	defer session.Close()
+
+	var closeOnce sync.Once
+	closeResources := func() {
+		_ = session.Close()
+		_ = client.Close()
+	}
+	done := make(chan struct{})
+	defer func() {
+		close(done)
+		closeOnce.Do(closeResources)
+	}()
+	go func() {
+		select {
+		case <-runCtx.Done():
+			closeOnce.Do(closeResources)
+		case <-done:
+		}
+	}()
 
 	var outBuf bytes.Buffer
 	var errBuf bytes.Buffer
@@ -314,6 +360,9 @@ func runRemoteShellCommand(ctx *config.Context, stdout, stderr io.Writer, comman
 	remoteCmd := exec.Command("bash", "-lc", command) // #nosec G204 -- command text is assembled from template-owned command lists and shell-quoted inputs.
 	remoteCommand := shellJoin(remoteCmd.Args)
 	if err := session.Run(remoteCommand); err != nil {
+		if runCtx.Err() != nil {
+			return strings.TrimRight(outBuf.String()+errBuf.String(), "\n"), runCtx.Err()
+		}
 		return strings.TrimRight(outBuf.String()+errBuf.String(), "\n"), err
 	}
 	return strings.TrimRight(outBuf.String()+errBuf.String(), "\n"), nil
@@ -447,7 +496,7 @@ func (s *SDK) RunActiveComposeProjectCommand(cmd *cobra.Command, command string)
 	if strings.TrimSpace(ctx.ProjectDir) == "" {
 		return fmt.Errorf("active context does not define a project directory")
 	}
-	return s.RunComposeProjectCommand(ctx, ctx.ProjectDir, cmd.OutOrStdout(), cmd.ErrOrStderr(), command)
+	return s.RunComposeProjectCommandContext(cmd.Context(), ctx, ctx.ProjectDir, cmd.OutOrStdout(), cmd.ErrOrStderr(), command)
 }
 
 // ContextFromCommand loads the sitectl context selected by a Cobra command.

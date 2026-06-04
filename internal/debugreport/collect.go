@@ -520,9 +520,14 @@ func runRemoteCommandWithSSH(runCtx context.Context, ctxCfg *config.Context, ssh
 	var closeOnce sync.Once
 	closeSession := func() { _ = session.Close() }
 	defer closeOnce.Do(closeSession)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-runCtx.Done()
-		closeOnce.Do(closeSession)
+		select {
+		case <-runCtx.Done():
+			closeOnce.Do(closeSession)
+		case <-done:
+		}
 	}()
 	if err := session.Start(remoteCmd); err != nil {
 		return "", fmt.Errorf("error starting remote command %q: %v", remoteCmd, err)

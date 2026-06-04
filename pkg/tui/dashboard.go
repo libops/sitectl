@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -42,6 +44,8 @@ const (
 	screenTour
 )
 
+const maxCommandOutputBytes = 1 << 20
+
 type refreshTickMsg time.Time
 
 type summaryLoadedMsg struct {
@@ -60,6 +64,26 @@ type commandFinishedMsg struct {
 	Command string
 	Output  string
 	Err     error
+}
+
+type commandStreamStartedMsg struct {
+	ID      int
+	Command string
+	Events  <-chan commandStreamEvent
+}
+
+type commandStreamEventMsg struct {
+	Event  commandStreamEvent
+	Events <-chan commandStreamEvent
+}
+
+type commandStreamEvent struct {
+	ID       int
+	Command  string
+	Output   string
+	Err      error
+	Done     bool
+	Canceled bool
 }
 
 type commandExecFinishedMsg struct {
@@ -161,6 +185,9 @@ type dashboardModel struct {
 	commandInput     textinput.Model
 	commandRunning   bool
 	commandQuitArmed bool
+	commandRunID     int
+	commandCancel    context.CancelFunc
+	commandOutput    bool
 }
 
 type networkSample struct {
@@ -296,9 +323,49 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case commandStreamStartedMsg:
+		if msg.ID != m.commandRunID {
+			return m, nil
+		}
+		return m, waitForCommandStream(msg.ID, msg.Events)
+
+	case commandStreamEventMsg:
+		if msg.Event.ID != m.commandRunID {
+			return m, nil
+		}
+		if msg.Event.Output != "" {
+			m.appendCommandOutput(msg.Event.Output)
+		}
+		if msg.Event.Done {
+			m.commandRunning = false
+			m.commandQuitArmed = false
+			m.commandCancel = nil
+			if msg.Event.Canceled {
+				if !m.commandOutput {
+					m.logsBody = "Command stopped."
+					m.logs.SetContent(m.logsBody)
+				}
+				m.lastMessage = fmt.Sprintf("Command stopped: %s", msg.Event.Command)
+			} else if msg.Event.Err != nil {
+				detail := fmt.Sprintf("\n\nCommand failed: %v", msg.Event.Err)
+				m.appendCommandOutput(detail)
+				m.lastMessage = fmt.Sprintf("Command failed: %v", msg.Event.Err)
+			} else {
+				if !m.commandOutput {
+					m.logsBody = "Command completed with no output."
+					m.logs.SetContent(m.logsBody)
+					m.logs.GotoTop()
+				}
+				m.lastMessage = fmt.Sprintf("Command finished: %s", msg.Event.Command)
+			}
+			return m, reloadStateCmd()
+		}
+		return m, waitForCommandStream(msg.Event.ID, msg.Events)
+
 	case commandFinishedMsg:
 		m.commandRunning = false
 		m.commandQuitArmed = false
+		m.commandCancel = nil
 		m.screen = screenLogs
 		m.logsTitle = "Command Output"
 		content := msg.Output
@@ -411,6 +478,12 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.commandInput.Focused() {
 		switch {
 		case msg.String() == "ctrl+c":
+			if m.commandRunning && m.commandCancel != nil {
+				m.commandCancel()
+				m.commandCancel = nil
+				m.lastMessage = "Stopping command..."
+				return m, nil
+			}
 			if strings.TrimSpace(m.commandInput.Value()) != "" {
 				m.commandInput.SetValue("")
 				m.commandQuitArmed = false
@@ -447,9 +520,21 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
+		if m.commandRunning && m.commandCancel != nil {
+			m.commandCancel()
+			m.commandCancel = nil
+			m.lastMessage = "Stopping command..."
+			return m, nil
+		}
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Back):
 		if m.screen == screenLogs {
+			if m.commandRunning && m.commandCancel != nil {
+				m.commandCancel()
+				m.commandCancel = nil
+				m.lastMessage = "Stopping command..."
+				return m, nil
+			}
 			m.screen = screenDashboard
 			m.syncLayout()
 			return m, nil
@@ -1210,6 +1295,10 @@ func commandSuggestions(contextName, siteName, pluginName string) []string {
 }
 
 func (m *dashboardModel) runCommand(interactive bool) (tea.Model, tea.Cmd) {
+	if m.commandRunning {
+		m.lastMessage = "A command is already running. Press ctrl+c to stop it."
+		return m, nil
+	}
 	raw := strings.TrimSpace(m.commandInput.Value())
 	if raw == "" {
 		return m, nil
@@ -1222,17 +1311,24 @@ func (m *dashboardModel) runCommand(interactive bool) (tea.Model, tea.Cmd) {
 
 	if interactive || isInteractiveArgs(args) {
 		m.commandRunning = true
+		m.commandOutput = false
+		m.commandCancel = nil
 		m.commandInput.SetValue("")
 		return m, runSitectlInteractiveCmd(display, args)
 	}
 
 	m.commandRunning = true
+	m.commandOutput = false
+	m.commandRunID++
+	runID := m.commandRunID
+	runCtx, cancel := context.WithCancel(context.Background())
+	m.commandCancel = cancel
 	m.logsTitle = "Command Output"
 	m.logsBody = "Running " + display + "..."
 	m.logs.SetContent(m.logsBody)
 	m.screen = screenLogs
 	m.commandInput.SetValue("")
-	return m, runSitectlCaptureCmd(display, args)
+	return m, runSitectlStreamCmd(runCtx, runID, display, args)
 }
 
 func (m *dashboardModel) executeChooserAction(action string) (tea.Model, tea.Cmd) {
@@ -1410,10 +1506,15 @@ func normalizeSitectlCommand(raw, contextName string) (string, []string, error) 
 	if len(args) == 0 {
 		return "", nil, fmt.Errorf("command cannot be empty")
 	}
+	if len(args) >= 2 && args[0] == "docker" && args[1] == "compose" {
+		args = append([]string{"compose"}, args[2:]...)
+	} else if args[0] == "docker-compose" {
+		args = append([]string{"compose"}, args[1:]...)
+	}
 	if !containsContextArg(args) && strings.TrimSpace(contextName) != "" && contextName != "-" {
 		args = append([]string{"--context", contextName}, args...)
 	}
-	return "sitectl " + strings.Join(args, " "), args, nil
+	return "sitectl " + shellquote.Join(args...), args, nil
 }
 
 func containsContextArg(args []string) bool {
@@ -1429,6 +1530,7 @@ func containsContextArg(args []string) bool {
 }
 
 func isInteractiveArgs(args []string) bool {
+	args = stripSitectlGlobalFlags(args)
 	if len(args) == 0 {
 		return false
 	}
@@ -1436,32 +1538,183 @@ func isInteractiveArgs(args []string) bool {
 	case "port-forward", "sequelace":
 		return true
 	case "compose":
-		if len(args) < 2 {
+		composeArgs := composeSubcommandArgs(args[1:])
+		if len(composeArgs) == 0 {
 			return false
 		}
-		switch args[1] {
-		case "exec", "run", "attach", "watch":
+		switch composeArgs[0] {
+		case "attach", "watch":
 			return true
-		case "logs":
-			for _, arg := range args[2:] {
-				if arg == "-f" || arg == "--follow" {
-					return true
-				}
-			}
+		case "exec", "run":
+			return !hasComposeNoTTYFlag(composeArgs[1:])
 		}
 	}
 	return false
 }
 
-func runSitectlCaptureCmd(display string, args []string) tea.Cmd {
-	return func() tea.Msg {
-		exe, err := os.Executable()
-		if err != nil {
-			return commandFinishedMsg{Command: display, Err: err}
+func stripSitectlGlobalFlags(args []string) []string {
+	for len(args) > 0 {
+		switch {
+		case args[0] == "--context" && len(args) > 1:
+			args = args[2:]
+		case strings.HasPrefix(args[0], "--context="):
+			args = args[1:]
+		case args[0] == "--log-level" && len(args) > 1:
+			args = args[2:]
+		case strings.HasPrefix(args[0], "--log-level="):
+			args = args[1:]
+		default:
+			return args
 		}
-		cmd := exec.Command(exe, args...) // #nosec G204 -- sitectl intentionally re-executes itself with internally constructed arguments.
-		output, err := cmd.CombinedOutput()
-		return commandFinishedMsg{Command: display, Output: string(output), Err: err}
+	}
+	return args
+}
+
+func composeSubcommandArgs(args []string) []string {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return args[i+1:]
+		}
+		if arg == "--context" || arg == "--log-level" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--context=") || strings.HasPrefix(arg, "--log-level=") {
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return args[i:]
+		}
+		if composeFlagTakesValue(arg) && !strings.Contains(arg, "=") {
+			i++
+		}
+	}
+	return nil
+}
+
+func composeFlagTakesValue(arg string) bool {
+	switch arg {
+	case "-f", "--file", "--env-file", "-p", "--project-name", "--project-directory", "--profile", "--parallel":
+		return true
+	}
+	return false
+}
+
+func hasComposeNoTTYFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-T" || arg == "--no-TTY" || arg == "--no-tty" {
+			return true
+		}
+	}
+	return false
+}
+
+func runSitectlStreamCmd(ctx context.Context, id int, display string, args []string) tea.Cmd {
+	events := make(chan commandStreamEvent, 32)
+	return func() tea.Msg {
+		go streamSitectlProcess(ctx, id, display, args, events)
+		return commandStreamStartedMsg{ID: id, Command: display, Events: events}
+	}
+}
+
+func (m *dashboardModel) appendCommandOutput(chunk string) {
+	if chunk == "" {
+		return
+	}
+	if !m.commandOutput {
+		m.logsBody = ""
+		m.commandOutput = true
+	}
+	m.logsBody = trimCommandOutput(m.logsBody + chunk)
+	m.logs.SetContent(m.logsBody)
+	m.logs.GotoBottom()
+}
+
+func trimCommandOutput(value string) string {
+	if len(value) <= maxCommandOutputBytes {
+		return value
+	}
+	tail := value[len(value)-maxCommandOutputBytes:]
+	if newline := strings.IndexByte(tail, '\n'); newline >= 0 && newline+1 < len(tail) {
+		tail = tail[newline+1:]
+	}
+	return "[output truncated; showing latest output]\n" + tail
+}
+
+func waitForCommandStream(id int, events <-chan commandStreamEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-events
+		if !ok {
+			return commandStreamEventMsg{Event: commandStreamEvent{ID: id, Done: true}, Events: events}
+		}
+		return commandStreamEventMsg{Event: event, Events: events}
+	}
+}
+
+func streamSitectlProcess(ctx context.Context, id int, display string, args []string, events chan<- commandStreamEvent) {
+	defer close(events)
+
+	exe, err := os.Executable()
+	if err != nil {
+		sendCommandStreamEvent(ctx, events, commandStreamEvent{ID: id, Command: display, Err: err, Done: true})
+		return
+	}
+	cmd := exec.CommandContext(ctx, exe, args...) // #nosec G204 -- sitectl intentionally re-executes itself with internally constructed arguments.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return cmd.Process.Signal(os.Interrupt)
+	}
+	cmd.WaitDelay = 2 * time.Second
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		sendCommandStreamEvent(ctx, events, commandStreamEvent{ID: id, Command: display, Err: err, Done: true})
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		sendCommandStreamEvent(ctx, events, commandStreamEvent{ID: id, Command: display, Err: err, Done: true})
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		sendCommandStreamEvent(ctx, events, commandStreamEvent{ID: id, Command: display, Err: err, Done: true})
+		return
+	}
+
+	var readers sync.WaitGroup
+	readOutput := func(r io.Reader) {
+		defer readers.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := r.Read(buf)
+			if n > 0 {
+				sendCommandStreamEvent(ctx, events, commandStreamEvent{ID: id, Command: display, Output: string(buf[:n])})
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}
+	readers.Add(2)
+	go readOutput(stdout)
+	go readOutput(stderr)
+
+	waitErr := cmd.Wait()
+	readers.Wait()
+	if ctx.Err() != nil {
+		sendCommandStreamEvent(context.Background(), events, commandStreamEvent{ID: id, Command: display, Done: true, Canceled: true})
+		return
+	}
+	sendCommandStreamEvent(ctx, events, commandStreamEvent{ID: id, Command: display, Err: waitErr, Done: true})
+}
+
+func sendCommandStreamEvent(ctx context.Context, events chan<- commandStreamEvent, event commandStreamEvent) {
+	select {
+	case events <- event:
+	case <-ctx.Done():
 	}
 }
 
