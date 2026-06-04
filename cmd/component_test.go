@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/libops/sitectl/pkg/config"
@@ -193,5 +194,80 @@ func TestResolveComponentOwnerUsesTransientCWDClaim(t *testing.T) {
 	}
 	if owner != "isle" || name != "iiif" {
 		t.Fatalf("unexpected owner/name: %q %q", owner, name)
+	}
+}
+
+func TestResolveComponentSetInvocationForwardsPluginSpecificFlags(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	if err := config.SaveContext(&config.Context{
+		Name:           "museum",
+		Site:           "museum",
+		Plugin:         "isle",
+		DockerHostType: config.ContextLocal,
+		DockerSocket:   "/var/run/docker.sock",
+		ProjectDir:     tempHome,
+	}, true); err != nil {
+		t.Fatalf("SaveContext() error = %v", err)
+	}
+
+	cmd := &cobra.Command{Use: "set"}
+	contextName, owner, forwarded, err := resolveComponentSetInvocation(cmd, []string{
+		"iiif-topology",
+		"distributed",
+		"--iiif-upstream-url",
+		"https://iiif.example.org",
+		"--yolo",
+	})
+	if err != nil {
+		t.Fatalf("resolveComponentSetInvocation() error = %v", err)
+	}
+	if contextName != "museum" || owner != "isle" {
+		t.Fatalf("unexpected owner resolution: context=%q owner=%q", contextName, owner)
+	}
+	want := []string{
+		"iiif-topology",
+		"distributed",
+		"--iiif-upstream-url",
+		"https://iiif.example.org",
+		"--yolo",
+	}
+	if !reflect.DeepEqual(forwarded, want) {
+		t.Fatalf("forwarded args = %#v, want %#v", forwarded, want)
+	}
+}
+
+func TestResolveComponentSetInvocationStripsNamespace(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	if err := config.SaveContext(&config.Context{
+		Name:           "museum",
+		Site:           "museum",
+		Plugin:         "isle",
+		DockerHostType: config.ContextLocal,
+		DockerSocket:   "/var/run/docker.sock",
+		ProjectDir:     tempHome,
+	}, true); err != nil {
+		t.Fatalf("SaveContext() error = %v", err)
+	}
+
+	cmd := &cobra.Command{Use: "set"}
+	contextName, owner, forwarded, err := resolveComponentSetInvocation(cmd, []string{
+		"isle/fcrepo",
+		"superceded",
+		"--isle-file-system-uri",
+		"private",
+	})
+	if err != nil {
+		t.Fatalf("resolveComponentSetInvocation() error = %v", err)
+	}
+	if contextName != "museum" || owner != "isle" {
+		t.Fatalf("unexpected owner resolution: context=%q owner=%q", contextName, owner)
+	}
+	want := []string{"fcrepo", "superceded", "--isle-file-system-uri", "private"}
+	if !reflect.DeepEqual(forwarded, want) {
+		t.Fatalf("forwarded args = %#v, want %#v", forwarded, want)
 	}
 }
