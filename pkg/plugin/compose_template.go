@@ -305,10 +305,6 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 	return localCmd.Run()
 }
 
-func runRemoteShellCommand(ctx *config.Context, stdout, stderr io.Writer, command string) (string, error) {
-	return runRemoteShellCommandContext(context.Background(), ctx, stdout, stderr, command)
-}
-
 func runRemoteShellCommandContext(runCtx context.Context, ctx *config.Context, stdout, stderr io.Writer, command string) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("context is nil")
