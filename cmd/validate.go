@@ -8,7 +8,6 @@ import (
 	"github.com/libops/sitectl/pkg/plugin"
 	sitevalidate "github.com/libops/sitectl/pkg/validate"
 	"github.com/spf13/cobra"
-	yaml "gopkg.in/yaml.v3"
 )
 
 var validateCmd = &cobra.Command{
@@ -24,14 +23,14 @@ checks (e.g. Drupal rootfs path, component state consistency) are also run
 and merged into the report.
 
 All flags not consumed by sitectl itself are forwarded to the plugin's
-validate handler, allowing plugin-specific flags such as --drupal-rootfs.
+validate handler, allowing plugin-specific flags such as --codebase-rootfs.
 
 Exits non-zero if any check fails.
 
 Examples:
   sitectl validate
   sitectl validate --format table
-  sitectl validate --drupal-rootfs drupal/rootfs`,
+  sitectl validate --codebase-rootfs drupal/rootfs`,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filteredArgs, contextName, err := getContextFromArgs(cmd, args)
@@ -39,8 +38,10 @@ Examples:
 			return err
 		}
 
-		// Extract --format from remaining args before forwarding to plugin.
-		validateFormat, pluginArgs := extractFlag(filteredArgs, "--format")
+		validateFormat, validateParams, pluginArgs, err := extractValidateRPCParams(filteredArgs)
+		if err != nil {
+			return err
+		}
 
 		ctxVal, err := config.GetContext(contextName)
 		if err != nil {
@@ -59,23 +60,32 @@ Examples:
 			return err
 		}
 
-		// Run plugin validators if the plugin supports __validate.
+		// Run plugin validators if the plugin supports validate RPC.
 		pluginName := strings.TrimSpace(ctx.Plugin)
-		if pluginName != "" && pluginName != "core" && pluginHasValidate(pluginName) {
-			invocation := append([]string{"--context", contextName, "__validate"}, pluginArgs...)
-			output, invokeErr := pluginSDK.InvokePluginCommand(pluginName, invocation, plugin.CommandExecOptions{
-				Context: RootCmd.Context(),
-				Capture: true,
-			})
-			if invokeErr != nil {
-				return fmt.Errorf("plugin validate failed: %w", invokeErr)
+		if pluginName != "" && pluginName != "core" {
+			hasValidate, err := pluginSupportsValidate(pluginName)
+			if err != nil {
+				return err
 			}
-			if trimmed := strings.TrimSpace(output); trimmed != "" {
-				var pluginResults []sitevalidate.Result
-				if err := yaml.Unmarshal([]byte(trimmed), &pluginResults); err != nil {
-					return fmt.Errorf("parse plugin validate results: %w", err)
+			if hasValidate {
+				req, err := plugin.NewValidateRunRequest(validateParams, pluginArgs...)
+				if err != nil {
+					return err
 				}
-				results = append(results, pluginResults...)
+				req.Context = contextName
+				resp, invokeErr := pluginSDK.InvokePluginRPC(pluginName, req, plugin.CommandExecOptions{
+					Context: RootCmd.Context(),
+				})
+				if invokeErr != nil {
+					return fmt.Errorf("plugin validate failed: %w", invokeErr)
+				}
+				if len(resp.Result) != 0 {
+					pluginResults, err := plugin.DecodeRPCResult[[]sitevalidate.Result](resp)
+					if err != nil {
+						return fmt.Errorf("parse plugin validate results: %w", err)
+					}
+					results = append(results, pluginResults...)
+				}
 			}
 		}
 
@@ -89,31 +99,6 @@ Examples:
 		}
 		return nil
 	},
-}
-
-// extractFlag removes --flag and its value from args and returns (value, remaining).
-// Handles both "--flag value" and "--flag=value" forms.
-func extractFlag(args []string, flag string) (string, []string) {
-	value := ""
-	remaining := make([]string, 0, len(args))
-	skipNext := false
-	for _, arg := range args {
-		if skipNext {
-			value = arg
-			skipNext = false
-			continue
-		}
-		if arg == flag {
-			skipNext = true
-			continue
-		}
-		if strings.HasPrefix(arg, flag+"=") {
-			value = strings.TrimPrefix(arg, flag+"=")
-			continue
-		}
-		remaining = append(remaining, arg)
-	}
-	return value, remaining
 }
 
 func init() {

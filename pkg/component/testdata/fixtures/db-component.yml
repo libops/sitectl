@@ -1,0 +1,7 @@
+services:
+  db:
+    image: db
+    volumes:
+      - db-data:/var/lib/db
+volumes:
+  db-data: {}

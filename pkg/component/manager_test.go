@@ -170,6 +170,357 @@ volumes:
 	}
 }
 
+func TestManagerComposeRulesRestoreTargetWiring(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	composePath := filepath.Join(projectDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte(`
+services:
+  app:
+    image: app
+    depends_on:
+      db:
+        condition: service_started
+  db:
+    image: db
+volumes:
+  db-data: {}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(compose) error = %v", err)
+	}
+
+	ctx := &config.Context{
+		DockerHostType: config.ContextLocal,
+		ProjectDir:     projectDir,
+	}
+	manager := NewManager(ctx)
+	component := NewStaticComponent("db", StateOn,
+		ComponentSpec{
+			Name: "db",
+			Compose: ComposeSpec{
+				Definitions: mustParseComposeDefinitions(t, []byte(`
+services:
+  db:
+    image: db
+volumes:
+  db-data: {}
+`)),
+				Rules: []YAMLRule{{
+					Op:    OpSet,
+					Path:  ".services.app.depends_on.db",
+					Value: map[string]any{"condition": "service_started"},
+				}},
+			},
+		},
+		ComponentSpec{
+			Name: "db",
+			Compose: ComposeSpec{
+				RemoveServices:      []string{"db"},
+				PruneUnusedResource: true,
+				Rules: []YAMLRule{{
+					Op:   OpDelete,
+					Path: ".services.app.depends_on.db",
+				}},
+			},
+		},
+	)
+
+	if err := manager.ReconcileComponent(context.Background(), component, StateOff, ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("DisableComponent() error = %v", err)
+	}
+	afterDisable, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("ReadFile(compose after disable) error = %v", err)
+	}
+	if strings.Contains(string(afterDisable), "depends_on") {
+		t.Fatalf("expected app dependency removed, got:\n%s", string(afterDisable))
+	}
+
+	if err := manager.ReconcileComponent(context.Background(), component, StateOn, ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("EnableComponent() error = %v", err)
+	}
+	afterEnable, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("ReadFile(compose after enable) error = %v", err)
+	}
+	if !strings.Contains(string(afterEnable), "depends_on") || !strings.Contains(string(afterEnable), "db:") {
+		t.Fatalf("expected app dependency restored, got:\n%s", string(afterEnable))
+	}
+}
+
+func TestManagerFileRulesPatchJSONAndMarkedBlocks(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	composerPath := filepath.Join(projectDir, "composer.json")
+	dockerfilePath := filepath.Join(projectDir, "Dockerfile")
+	if err := os.WriteFile(composerPath, []byte(`{
+    "require": {
+        "drupal/core": "^11.3"
+    }
+}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(composer) error = %v", err)
+	}
+	if err := os.WriteFile(dockerfilePath, []byte("FROM alpine:3.22\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(Dockerfile) error = %v", err)
+	}
+
+	ctx := &config.Context{
+		DockerHostType: config.ContextLocal,
+		ProjectDir:     projectDir,
+		Name:           "local",
+	}
+	manager := NewManager(ctx)
+	on := ComponentSpec{
+		Name: "memcached",
+		Files: FileStateSpec{Rules: []FileRule{
+			{
+				Files: []string{"composer.json"},
+				Op:    OpSet,
+				Path:  ".require.drupal/memcache",
+				Value: "^2.7",
+			},
+			{
+				Files:       []string{"Dockerfile"},
+				Op:          OpRestore,
+				StartMarker: "# sitectl component memcached: begin",
+				EndMarker:   "# sitectl component memcached: end",
+				Content:     "RUN apk add --no-cache php83-pecl-memcache",
+			},
+		}},
+	}
+	off := ComponentSpec{
+		Name: "memcached",
+		Files: FileStateSpec{Rules: []FileRule{
+			{
+				Files: []string{"composer.json"},
+				Op:    OpDelete,
+				Path:  ".require.drupal/memcache",
+			},
+			{
+				Files:       []string{"Dockerfile"},
+				Op:          OpDelete,
+				StartMarker: "# sitectl component memcached: begin",
+				EndMarker:   "# sitectl component memcached: end",
+				Content:     "RUN apk add --no-cache php83-pecl-memcache",
+			},
+		}},
+	}
+
+	if err := manager.EnableComponentWithOptions(context.Background(), on, ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("EnableComponent() error = %v", err)
+	}
+	composerAfterEnable, err := os.ReadFile(composerPath)
+	if err != nil {
+		t.Fatalf("ReadFile(composer after enable) error = %v", err)
+	}
+	if !strings.Contains(string(composerAfterEnable), `"drupal/memcache": "^2.7"`) {
+		t.Fatalf("expected composer package added, got:\n%s", string(composerAfterEnable))
+	}
+	dockerfileAfterEnable, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		t.Fatalf("ReadFile(Dockerfile after enable) error = %v", err)
+	}
+	if !strings.Contains(string(dockerfileAfterEnable), "# sitectl component memcached: begin") ||
+		!strings.Contains(string(dockerfileAfterEnable), "php83-pecl-memcache") {
+		t.Fatalf("expected marked Dockerfile block added, got:\n%s", string(dockerfileAfterEnable))
+	}
+
+	if err := manager.DisableComponentWithOptions(context.Background(), off, ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("DisableComponent() error = %v", err)
+	}
+	composerAfterDisable, err := os.ReadFile(composerPath)
+	if err != nil {
+		t.Fatalf("ReadFile(composer after disable) error = %v", err)
+	}
+	if strings.Contains(string(composerAfterDisable), "drupal/memcache") {
+		t.Fatalf("expected composer package removed, got:\n%s", string(composerAfterDisable))
+	}
+	dockerfileAfterDisable, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		t.Fatalf("ReadFile(Dockerfile after disable) error = %v", err)
+	}
+	if strings.Contains(string(dockerfileAfterDisable), "sitectl component memcached") ||
+		strings.Contains(string(dockerfileAfterDisable), "php83-pecl-memcache") {
+		t.Fatalf("expected marked Dockerfile block removed, got:\n%s", string(dockerfileAfterDisable))
+	}
+}
+
+func TestComposeProjectApplyRulesRejectsListFormIntermediates(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`
+services:
+  app:
+    image: app
+    depends_on:
+      - db
+      - redis
+    environment:
+      - FOO=bar
+      - KEEP=yes
+  db:
+    image: db
+  redis:
+    image: redis
+`)
+
+	tests := []struct {
+		name      string
+		rule      YAMLRule
+		wantError string
+		wantKeep  string
+		wantNot   string
+	}{
+		{
+			name: "depends_on",
+			rule: YAMLRule{
+				Op:    OpSet,
+				Path:  ".services.app.depends_on.db",
+				Value: map[string]any{"condition": "service_started"},
+			},
+			wantError: `segment "depends_on" is not a mapping`,
+			wantKeep:  "- redis",
+			wantNot:   "condition",
+		},
+		{
+			name: "environment",
+			rule: YAMLRule{
+				Op:    OpSet,
+				Path:  ".services.app.environment.FOO",
+				Value: "baz",
+			},
+			wantError: `segment "environment" is not a mapping`,
+			wantKeep:  "- KEEP=yes",
+			wantNot:   "FOO: baz",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			composeFile, err := ParseComposeProject(input)
+			if err != nil {
+				t.Fatalf("ParseComposeProject() error = %v", err)
+			}
+			err = composeFile.ApplyRules([]YAMLRule{tt.rule})
+			if err == nil {
+				t.Fatal("expected ApplyRules() to reject list-form intermediate")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
+			}
+
+			output, err := composeFile.Bytes()
+			if err != nil {
+				t.Fatalf("Bytes() error = %v", err)
+			}
+			rendered := string(output)
+			if !strings.Contains(rendered, tt.wantKeep) {
+				t.Fatalf("expected unrelated list entry preserved, got:\n%s", rendered)
+			}
+			if strings.Contains(rendered, tt.wantNot) {
+				t.Fatalf("expected rule value not written after error, got:\n%s", rendered)
+			}
+		})
+	}
+}
+
+func TestManagerComposeMutationsPreserveCommentsAndTopLevelOrder(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	composePath := filepath.Join(projectDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, readComponentFixture(t, "compose-preserve-input.yml"), 0o644); err != nil {
+		t.Fatalf("WriteFile(compose) error = %v", err)
+	}
+
+	ctx := &config.Context{
+		DockerHostType: config.ContextLocal,
+		ProjectDir:     projectDir,
+	}
+	manager := NewManager(ctx)
+	component := NewStaticComponent("db", StateOn,
+		ComponentSpec{
+			Name: "db",
+			Compose: ComposeSpec{
+				Definitions: mustParseComposeDefinitions(t, readComponentFixture(t, "db-component.yml")),
+				Rules: []YAMLRule{{
+					Op:    OpSet,
+					Path:  ".services.app.depends_on.db",
+					Value: map[string]any{"condition": "service_started"},
+				}},
+			},
+		},
+		ComponentSpec{
+			Name: "db",
+			Compose: ComposeSpec{
+				RemoveServices:      []string{"db"},
+				PruneUnusedResource: true,
+				Rules: []YAMLRule{{
+					Op:   OpDelete,
+					Path: ".services.app.depends_on.db",
+				}},
+			},
+		},
+	)
+
+	if err := manager.ReconcileComponent(context.Background(), component, StateOff, ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("DisableComponent() error = %v", err)
+	}
+	afterDisable, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("ReadFile(compose after disable) error = %v", err)
+	}
+	rendered := string(afterDisable)
+	if !strings.Contains(rendered, "# Compose header comment") || !strings.Contains(rendered, "# Application service comment") {
+		t.Fatalf("expected comments preserved, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "x-common: &common") || !strings.Contains(rendered, "<<: *common") {
+		t.Fatalf("expected anchor and merge key preserved, got:\n%s", rendered)
+	}
+	if strings.Index(rendered, "x-common:") > strings.Index(rendered, "services:") {
+		t.Fatalf("expected original top-level order preserved, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "\n  db:\n") || strings.Contains(rendered, "depends_on") || strings.Contains(rendered, "db-data") {
+		t.Fatalf("expected db service, dependency, and unused volume removed, got:\n%s", rendered)
+	}
+
+	if err := manager.ReconcileComponent(context.Background(), component, StateOn, ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("EnableComponent() error = %v", err)
+	}
+	afterEnable, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("ReadFile(compose after enable) error = %v", err)
+	}
+	rendered = string(afterEnable)
+	if !strings.Contains(rendered, "# Compose header comment") || !strings.Contains(rendered, "# Application service comment") {
+		t.Fatalf("expected comments preserved after enable, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "x-common: &common") || !strings.Contains(rendered, "<<: *common") {
+		t.Fatalf("expected anchor and merge key preserved after enable, got:\n%s", rendered)
+	}
+	if strings.Index(rendered, "x-common:") > strings.Index(rendered, "services:") {
+		t.Fatalf("expected original top-level order preserved after enable, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "\n  db:\n") || !strings.Contains(rendered, "depends_on") || !strings.Contains(rendered, "db-data") {
+		t.Fatalf("expected db service, dependency, and volume restored, got:\n%s", rendered)
+	}
+}
+
+func readComponentFixture(t *testing.T, name string) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join("testdata", "fixtures", name))
+	if err != nil {
+		t.Fatalf("ReadFile(component fixture %q) error = %v", name, err)
+	}
+	return data
+}
+
 func TestManagerLocalOnlyGate(t *testing.T) {
 	t.Parallel()
 

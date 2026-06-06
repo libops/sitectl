@@ -1,0 +1,3 @@
+services:
+  fcrepo:
+    image: example/fcrepo

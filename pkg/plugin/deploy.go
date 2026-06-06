@@ -11,10 +11,10 @@ import (
 
 // DeploySpec describes a plugin's deploy capability.
 type DeploySpec struct {
-	Name        string `yaml:"name"`
-	Plugin      string `yaml:"plugin,omitempty"`
-	Description string `yaml:"description,omitempty"`
-	Default     bool   `yaml:"default,omitempty"`
+	Name        string `json:"name" yaml:"name"`
+	Plugin      string `json:"plugin,omitempty" yaml:"plugin,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	Default     bool   `json:"default,omitempty" yaml:"default,omitempty"`
 }
 
 // RegisteredDeploy holds a registered deploy spec.
@@ -31,8 +31,8 @@ type DeployRunner interface {
 }
 
 // RegisterDeployRunner registers a deploy runner for the plugin. The SDK creates
-// the __deploy hidden command with pre-down and post-up subcommands that are
-// invoked by sitectl deploy around the compose down/up cycle.
+// deploy lifecycle methods invoked through the plugin RPC entrypoint around
+// the compose down/up cycle.
 func (s *SDK) RegisterDeployRunner(spec DeploySpec, runner DeployRunner) {
 	if s == nil || runner == nil {
 		return
@@ -98,7 +98,7 @@ func (s *SDK) ensureDeployRoot() *cobra.Command {
 		return s.deployRootCmd
 	}
 	root := &cobra.Command{
-		Use:          "__deploy",
+		Use:          "deploy",
 		Hidden:       true,
 		SilenceUsage: true,
 	}
@@ -117,7 +117,6 @@ func (s *SDK) ensureDeployRoot() *cobra.Command {
 	}
 	root.AddCommand(listCmd)
 	s.deployRootCmd = root
-	s.RootCmd.AddCommand(root)
 	return root
 }
 

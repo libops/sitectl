@@ -131,6 +131,31 @@ func GetSecret(ctx context.Context, cli DockerAPI, c *config.Context, containerN
 	return GetConfigEnv(ctx, cli, containerName, secretName)
 }
 
+// GetFirstSecretOrEnv returns the first mounted secret or environment variable
+// available from names on containerName.
+func GetFirstSecretOrEnv(ctx context.Context, cli DockerAPI, c *config.Context, containerName string, names ...string) (string, error) {
+	var misses []string
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		secret, err := GetSecret(ctx, cli, c, containerName, name)
+		if err == nil && strings.TrimSpace(secret) != "" {
+			return secret, nil
+		}
+		if err != nil {
+			misses = append(misses, fmt.Sprintf("%s (%v)", name, err))
+		} else {
+			misses = append(misses, name)
+		}
+	}
+	if len(misses) == 0 {
+		return "", fmt.Errorf("no secret or environment variable names provided")
+	}
+	return "", fmt.Errorf("none of these secrets or environment variables are available in container %s: %s", containerName, strings.Join(misses, "; "))
+}
+
 func GetConfigEnv(ctx context.Context, cli DockerAPI, containerName, envName string) (string, error) {
 	containerJSON, err := cli.ContainerInspect(ctx, containerName)
 	if err != nil {

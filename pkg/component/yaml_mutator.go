@@ -8,12 +8,15 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
+// YAMLDocument is an editable YAML document that preserves selected formatting
+// details needed by compose files.
 type YAMLDocument struct {
 	node             yaml.Node
 	explicitDocStart bool
 	explicitMergeTag bool
 }
 
+// LoadYAMLDocument parses YAML into a mutable document.
 func LoadYAMLDocument(data []byte) (*YAMLDocument, error) {
 	doc := &YAMLDocument{
 		explicitDocStart: hasExplicitDocumentStart(data),
@@ -54,6 +57,7 @@ func LoadYAMLDocument(data []byte) (*YAMLDocument, error) {
 	return doc, nil
 }
 
+// Bytes marshals the YAML document back to bytes.
 func (d *YAMLDocument) Bytes() ([]byte, error) {
 	if !d.explicitMergeTag {
 		stripImplicitMergeTags(&d.node)
@@ -77,6 +81,7 @@ func (d *YAMLDocument) Bytes() ([]byte, error) {
 	return out, nil
 }
 
+// DeletePath removes a dotted path from the YAML mapping when present.
 func (d *YAMLDocument) DeletePath(path string) error {
 	segments, err := parseYAMLPath(path)
 	if err != nil {
@@ -93,6 +98,37 @@ func (d *YAMLDocument) DeletePath(path string) error {
 	return deletePathFromMapping(root, segments, path)
 }
 
+// HasPath reports whether a dotted YAML path exists.
+func (d *YAMLDocument) HasPath(path string) (bool, error) {
+	segments, err := parseYAMLPath(path)
+	if err != nil {
+		return false, err
+	}
+	if len(segments) == 0 {
+		return d.mappingRoot() != nil, nil
+	}
+
+	current := d.mappingRoot()
+	if current == nil {
+		return false, nil
+	}
+	for i, segment := range segments {
+		next := mappingValue(current, segment)
+		if next == nil {
+			return false, nil
+		}
+		if i == len(segments)-1 {
+			return true, nil
+		}
+		if next.Kind != yaml.MappingNode {
+			return false, nil
+		}
+		current = next
+	}
+	return true, nil
+}
+
+// SetString writes a string scalar at a dotted YAML path.
 func (d *YAMLDocument) SetString(path, value string) error {
 	segments, err := parseYAMLPath(path)
 	if err != nil {
@@ -126,6 +162,211 @@ func (d *YAMLDocument) SetString(path, value string) error {
 	}
 	setMappingValue(target, key, valueNode)
 	return nil
+}
+
+// SetValue writes an arbitrary YAML value at a dotted path.
+func (d *YAMLDocument) SetValue(path string, value any) error {
+	segments, err := parseYAMLPath(path)
+	if err != nil {
+		return err
+	}
+	if len(segments) == 0 {
+		return fmt.Errorf("set path %q: root assignment is not supported", path)
+	}
+
+	root := d.ensureMappingRoot()
+	target, err := ensurePath(root, segments[:len(segments)-1], path)
+	if err != nil {
+		return err
+	}
+
+	valueNode, err := yamlNodeForValue(value)
+	if err != nil {
+		return fmt.Errorf("set path %q: %w", path, err)
+	}
+	setMappingValue(target, segments[len(segments)-1], valueNode)
+	return nil
+}
+
+// AppendUniqueString appends value to a string sequence at path when absent.
+func (d *YAMLDocument) AppendUniqueString(path, value string) error {
+	segments, err := parseYAMLPath(path)
+	if err != nil {
+		return err
+	}
+	if len(segments) == 0 {
+		return fmt.Errorf("append path %q: root assignment is not supported", path)
+	}
+
+	root := d.ensureMappingRoot()
+	parent, err := ensurePath(root, segments[:len(segments)-1], path)
+	if err != nil {
+		return err
+	}
+	key := segments[len(segments)-1]
+	target := mappingValue(parent, key)
+	if target == nil {
+		target = &yaml.Node{
+			Kind:    yaml.SequenceNode,
+			Tag:     "!!seq",
+			Content: []*yaml.Node{},
+		}
+		setMappingValue(parent, key, target)
+	}
+	if target.Kind == yaml.ScalarNode {
+		if target.Value == value {
+			return nil
+		}
+		target = &yaml.Node{
+			Kind: yaml.SequenceNode,
+			Tag:  "!!seq",
+			Content: []*yaml.Node{
+				{Kind: yaml.ScalarNode, Tag: "!!str", Value: target.Value},
+			},
+		}
+		setMappingValue(parent, key, target)
+	}
+	if target.Kind != yaml.SequenceNode {
+		return fmt.Errorf("append path %q: target is not a sequence", path)
+	}
+	for _, child := range target.Content {
+		if child.Kind == yaml.ScalarNode && child.Value == value {
+			return nil
+		}
+	}
+	target.Content = append(target.Content, &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!str",
+		Value: value,
+	})
+	return nil
+}
+
+// RemoveString removes value from a string sequence or matching scalar at path.
+func (d *YAMLDocument) RemoveString(path, value string) error {
+	segments, err := parseYAMLPath(path)
+	if err != nil {
+		return err
+	}
+	if len(segments) == 0 {
+		return fmt.Errorf("remove path %q: root deletion is not supported", path)
+	}
+
+	root := d.mappingRoot()
+	if root == nil {
+		return nil
+	}
+	parent := root
+	for _, segment := range segments[:len(segments)-1] {
+		next := mappingValue(parent, segment)
+		if next == nil || next.Kind != yaml.MappingNode {
+			return nil
+		}
+		parent = next
+	}
+	key := segments[len(segments)-1]
+	target := mappingValue(parent, key)
+	if target == nil {
+		return nil
+	}
+	if target.Kind == yaml.ScalarNode {
+		if target.Value == value {
+			deleteMappingValue(parent, key)
+		}
+		return nil
+	}
+	if target.Kind != yaml.SequenceNode {
+		return nil
+	}
+	filtered := make([]*yaml.Node, 0, len(target.Content))
+	for _, child := range target.Content {
+		if child.Kind == yaml.ScalarNode && child.Value == value {
+			continue
+		}
+		filtered = append(filtered, child)
+	}
+	if len(filtered) == 0 {
+		deleteMappingValue(parent, key)
+		return nil
+	}
+	target.Content = filtered
+	return nil
+}
+
+// RemoveMatchingString removes string values matching match from a scalar or
+// sequence at path. It returns true when the document changed.
+func (d *YAMLDocument) RemoveMatchingString(path string, match func(string) bool) (bool, error) {
+	if match == nil {
+		return false, fmt.Errorf("remove path %q: nil string matcher", path)
+	}
+	segments, err := parseYAMLPath(path)
+	if err != nil {
+		return false, err
+	}
+	if len(segments) == 0 {
+		return false, fmt.Errorf("remove path %q: root deletion is not supported", path)
+	}
+
+	root := d.mappingRoot()
+	if root == nil {
+		return false, nil
+	}
+	parent := root
+	for _, segment := range segments[:len(segments)-1] {
+		next := mappingValue(parent, segment)
+		if next == nil || next.Kind != yaml.MappingNode {
+			return false, nil
+		}
+		parent = next
+	}
+	key := segments[len(segments)-1]
+	target := mappingValue(parent, key)
+	if target == nil {
+		return false, nil
+	}
+	if target.Kind == yaml.ScalarNode {
+		if match(target.Value) {
+			deleteMappingValue(parent, key)
+			return true, nil
+		}
+		return false, nil
+	}
+	if target.Kind != yaml.SequenceNode {
+		return false, nil
+	}
+	filtered := make([]*yaml.Node, 0, len(target.Content))
+	changed := false
+	for _, child := range target.Content {
+		if child.Kind == yaml.ScalarNode && match(child.Value) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, child)
+	}
+	if !changed {
+		return false, nil
+	}
+	if len(filtered) == 0 {
+		deleteMappingValue(parent, key)
+		return true, nil
+	}
+	target.Content = filtered
+	return true, nil
+}
+
+func yamlNodeForValue(value any) (*yaml.Node, error) {
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal value: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("unmarshal value node: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"}, nil
+	}
+	return doc.Content[0], nil
 }
 
 func parseYAMLPath(path string) ([]string, error) {
@@ -195,8 +436,7 @@ func ensurePath(root *yaml.Node, segments []string, fullPath string) (*yaml.Node
 				Content: []*yaml.Node{},
 			}
 			setMappingValue(current, segment, next)
-		}
-		if next.Kind != yaml.MappingNode {
+		} else if next.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("set path %q: segment %q is not a mapping", fullPath, segment)
 		}
 		current = next
@@ -206,13 +446,13 @@ func ensurePath(root *yaml.Node, segments []string, fullPath string) (*yaml.Node
 
 func deletePathFromMapping(root *yaml.Node, segments []string, fullPath string) error {
 	current := root
-	for i, segment := range segments[:len(segments)-1] {
+	for _, segment := range segments[:len(segments)-1] {
 		next := mappingValue(current, segment)
 		if next == nil {
 			return nil
 		}
 		if next.Kind != yaml.MappingNode {
-			return fmt.Errorf("delete path %q: segment %q is not a mapping", fullPath, segments[i])
+			return nil
 		}
 		current = next
 	}

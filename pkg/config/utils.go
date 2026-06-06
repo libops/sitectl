@@ -31,20 +31,24 @@ func GetInput(question ...string) (string, error) {
 	}
 
 	reader := bufio.NewReader(os.Stdin)
+	out := os.Stdout
+	if os.Getenv("SITECTL_RPC") != "" {
+		out = os.Stderr
+	}
 	lastItemIndex := len(question) - 1
 	for i := range question {
 		if i == lastItemIndex {
-			fmt.Print(question[i])
+			fmt.Fprint(out, question[i])
 			continue
 		}
-		fmt.Println(question[i])
+		fmt.Fprintln(out, question[i])
 	}
 	input, err := reader.ReadString('\n')
 	if err != nil {
 		return "", fmt.Errorf("unable to readon from stdin: %v", err)
 	}
 	input = strings.TrimSpace(input)
-	fmt.Println()
+	fmt.Fprintln(out)
 	return input, nil
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -18,6 +19,7 @@ func (c *Context) ReadFile(filename string) ([]byte, error) {
 	defer accessor.Close()
 	data, err := accessor.ReadFile(filename)
 	if err != nil {
+		err = normalizeFileNotExistError(err)
 		return nil, fmt.Errorf("read file %q: %w", filename, err)
 	}
 	return data, nil
@@ -58,6 +60,7 @@ func (c *Context) ListFiles(root string) ([]string, error) {
 	defer accessor.Close()
 	files, err := accessor.ListFiles(root)
 	if err != nil {
+		err = normalizeFileNotExistError(err)
 		return nil, fmt.Errorf("list files under %q: %w", root, err)
 	}
 	return files, nil
@@ -122,9 +125,26 @@ func mkdirAllRemote(client *sftp.Client, dir string) error {
 }
 
 func isSFTPNotExist(err error) bool {
-	return strings.Contains(strings.ToLower(err.Error()), "no such file")
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such file") ||
+		strings.Contains(message, "file does not exist") ||
+		strings.Contains(message, "not found")
 }
 
 func isSFTPExist(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "file exists")
+}
+
+func normalizeFileNotExistError(err error) error {
+	if err == nil || !isFileNotExistError(err) || errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", fs.ErrNotExist, err)
+}
+
+func isFileNotExistError(err error) bool {
+	return err != nil && (errors.Is(err, fs.ErrNotExist) || isSFTPNotExist(err))
 }

@@ -1,40 +1,72 @@
 package plugin
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
-
-	yaml "gopkg.in/yaml.v3"
 )
 
+// PluginMetadata is the JSON metadata payload returned by plugin.metadata RPC.
+type PluginMetadata struct {
+	// ProtocolVersion is the metadata payload version. The RPCResponse envelope
+	// carrying this payload has its own protocol_version check.
+	ProtocolVersion   int          `json:"protocol_version,omitempty" yaml:"protocol_version,omitempty"`
+	Name              string       `json:"name" yaml:"name"`
+	BinaryName        string       `json:"binary_name,omitempty" yaml:"binary_name,omitempty"`
+	Version           string       `json:"version,omitempty" yaml:"version,omitempty"`
+	Description       string       `json:"description,omitempty" yaml:"description,omitempty"`
+	Author            string       `json:"author,omitempty" yaml:"author,omitempty"`
+	TemplateRepo      string       `json:"template_repo,omitempty" yaml:"template_repo,omitempty"`
+	CanCreate         bool         `json:"can_create,omitempty" yaml:"can_create,omitempty"`
+	CanDeploy         bool         `json:"can_deploy,omitempty" yaml:"can_deploy,omitempty"`
+	CanDebug          bool         `json:"can_debug,omitempty" yaml:"can_debug,omitempty"`
+	CanConverge       bool         `json:"can_converge,omitempty" yaml:"can_converge,omitempty"`
+	CanSet            bool         `json:"can_set,omitempty" yaml:"can_set,omitempty"`
+	CanValidate       bool         `json:"can_validate,omitempty" yaml:"can_validate,omitempty"`
+	Includes          []string     `json:"includes,omitempty" yaml:"includes,omitempty"`
+	CreateDefinitions []CreateSpec `json:"create_definitions,omitempty" yaml:"create_definitions,omitempty"`
+	DeployDefinitions []DeploySpec `json:"deploy_definitions,omitempty" yaml:"deploy_definitions,omitempty"`
+}
+
+// InstalledPlugin is the local registry record for a discovered plugin.
 type InstalledPlugin struct {
-	Name              string
-	BinaryName        string
-	Path              string
-	Version           string
-	Description       string
-	Author            string
-	TemplateRepo      string
-	CanCreate         bool
-	CanDeploy         bool
-	CanConverge       bool
-	CanSet            bool
-	CanValidate       bool
-	Includes          []string
-	CreateDefinitions []CreateSpec
-	DeployDefinitions []DeploySpec
+	ProtocolVersion   int          `json:"protocol_version,omitempty" yaml:"protocol_version,omitempty"`
+	Name              string       `json:"name" yaml:"name"`
+	BinaryName        string       `json:"binary_name,omitempty" yaml:"binary_name,omitempty"`
+	Path              string       `json:"path,omitempty" yaml:"path,omitempty"`
+	Version           string       `json:"version,omitempty" yaml:"version,omitempty"`
+	Description       string       `json:"description,omitempty" yaml:"description,omitempty"`
+	Author            string       `json:"author,omitempty" yaml:"author,omitempty"`
+	TemplateRepo      string       `json:"template_repo,omitempty" yaml:"template_repo,omitempty"`
+	CanCreate         bool         `json:"can_create,omitempty" yaml:"can_create,omitempty"`
+	CanDeploy         bool         `json:"can_deploy,omitempty" yaml:"can_deploy,omitempty"`
+	CanDebug          bool         `json:"can_debug,omitempty" yaml:"can_debug,omitempty"`
+	CanConverge       bool         `json:"can_converge,omitempty" yaml:"can_converge,omitempty"`
+	CanSet            bool         `json:"can_set,omitempty" yaml:"can_set,omitempty"`
+	CanValidate       bool         `json:"can_validate,omitempty" yaml:"can_validate,omitempty"`
+	Includes          []string     `json:"includes,omitempty" yaml:"includes,omitempty"`
+	CreateDefinitions []CreateSpec `json:"create_definitions,omitempty" yaml:"create_definitions,omitempty"`
+	DeployDefinitions []DeploySpec `json:"deploy_definitions,omitempty" yaml:"deploy_definitions,omitempty"`
+	MetadataError     string       `json:"metadata_error,omitempty" yaml:"metadata_error,omitempty"`
 }
 
 var builtinTemplateRepos = map[string]string{
 	"isle": "https://github.com/islandora-devops/isle-site-template",
 }
 
+const maxConcurrentPluginInspections = 8
+
+var installedPluginMetadataTimeout = 5 * time.Second
+
+// installedDiscoveryCache is intentionally process-local. sitectl is normally
+// short-lived; long-lived hosts can call InvalidateInstalledDiscoveryCache to
+// pick up plugin upgrades.
 var installedDiscoveryCache = struct {
 	sync.Mutex
 	full        map[string][]InstalledPlugin
@@ -52,6 +84,15 @@ func DiscoverInstalledLightweight() []InstalledPlugin {
 	return DiscoverInstalledLightweightFromPath(os.Getenv("PATH"))
 }
 
+// InvalidateInstalledDiscoveryCache clears process-local plugin discovery
+// results so subsequent discovery sees PATH and plugin metadata changes.
+func InvalidateInstalledDiscoveryCache() {
+	installedDiscoveryCache.Lock()
+	defer installedDiscoveryCache.Unlock()
+	installedDiscoveryCache.full = map[string][]InstalledPlugin{}
+	installedDiscoveryCache.lightweight = map[string][]InstalledPlugin{}
+}
+
 func DiscoverInstalledFromPath(pathEnv string) []InstalledPlugin {
 	started := time.Now()
 	if cached, ok := cachedInstalledPlugins(pathEnv, false); ok {
@@ -59,34 +100,7 @@ func DiscoverInstalledFromPath(pathEnv string) []InstalledPlugin {
 		return cached
 	}
 
-	seen := map[string]bool{}
-	discovered := make([]InstalledPlugin, 0)
-
-	for _, dir := range filepath.SplitList(pathEnv) {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			name := entry.Name()
-			if !strings.HasPrefix(name, "sitectl-") || name == "sitectl" {
-				continue
-			}
-
-			pluginName := strings.TrimPrefix(name, "sitectl-")
-			if pluginName == "" || seen[pluginName] {
-				continue
-			}
-			seen[pluginName] = true
-
-			path := filepath.Join(dir, name)
-			discovered = append(discovered, inspectInstalledPlugin(pluginName, name, path))
-		}
-	}
+	discovered := inspectInstalledPlugins(discoverInstalledPathEntries(pathEnv))
 
 	slog.Debug("completed full plugin discovery", "count", len(discovered), "duration", time.Since(started))
 	storeInstalledPlugins(pathEnv, false, discovered)
@@ -100,8 +114,29 @@ func DiscoverInstalledLightweightFromPath(pathEnv string) []InstalledPlugin {
 		return cached
 	}
 
+	discovered := buildInstalledPlugins(discoverInstalledPathEntries(pathEnv), func(pluginName, binaryName, path string) InstalledPlugin {
+		return InstalledPlugin{
+			Name:        pluginName,
+			BinaryName:  binaryName,
+			Path:        path,
+			Description: fmt.Sprintf("the %s plugin", pluginName),
+		}
+	})
+
+	slog.Debug("completed lightweight plugin discovery", "count", len(discovered), "duration", time.Since(started))
+	storeInstalledPlugins(pathEnv, true, discovered)
+	return discovered
+}
+
+type installedPluginPathEntry struct {
+	pluginName string
+	binaryName string
+	path       string
+}
+
+func discoverInstalledPathEntries(pathEnv string) []installedPluginPathEntry {
 	seen := map[string]bool{}
-	discovered := make([]InstalledPlugin, 0)
+	discovered := make([]installedPluginPathEntry, 0)
 
 	for _, dir := range filepath.SplitList(pathEnv) {
 		entries, err := os.ReadDir(dir)
@@ -113,32 +148,68 @@ func DiscoverInstalledLightweightFromPath(pathEnv string) []InstalledPlugin {
 			if entry.IsDir() {
 				continue
 			}
-			name := entry.Name()
-			if !strings.HasPrefix(name, "sitectl-") || name == "sitectl" {
+			binaryName := entry.Name()
+			if !strings.HasPrefix(binaryName, "sitectl-") || binaryName == "sitectl" {
 				continue
 			}
 
-			pluginName := strings.TrimPrefix(name, "sitectl-")
+			pluginName := strings.TrimPrefix(binaryName, "sitectl-")
 			if pluginName == "" || seen[pluginName] {
 				continue
 			}
 			seen[pluginName] = true
 
-			path := filepath.Join(dir, name)
-			discovered = append(discovered, InstalledPlugin{
-				Name:        pluginName,
-				BinaryName:  name,
-				Path:        path,
-				Description: fmt.Sprintf("the %s plugin", pluginName),
+			path := filepath.Join(dir, binaryName)
+			discovered = append(discovered, installedPluginPathEntry{
+				pluginName: pluginName,
+				binaryName: binaryName,
+				path:       path,
 			})
 		}
 	}
 
-	slog.Debug("completed lightweight plugin discovery", "count", len(discovered), "duration", time.Since(started))
-	storeInstalledPlugins(pathEnv, true, discovered)
 	return discovered
 }
 
+func buildInstalledPlugins(entries []installedPluginPathEntry, build func(pluginName, binaryName, path string) InstalledPlugin) []InstalledPlugin {
+	discovered := make([]InstalledPlugin, 0, len(entries))
+	for _, entry := range entries {
+		discovered = append(discovered, build(entry.pluginName, entry.binaryName, entry.path))
+	}
+	return discovered
+}
+
+func inspectInstalledPlugins(entries []installedPluginPathEntry) []InstalledPlugin {
+	discovered := make([]InstalledPlugin, len(entries))
+	if len(entries) == 0 {
+		return discovered
+	}
+
+	workerCount := min(len(entries), maxConcurrentPluginInspections)
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				entry := entries[index]
+				discovered[index] = inspectInstalledPlugin(entry.pluginName, entry.binaryName, entry.path)
+			}
+		}()
+	}
+	for index := range entries {
+		jobs <- index
+	}
+	close(jobs)
+	wg.Wait()
+	return discovered
+}
+
+// FindInstalled returns metadata for a sitectl plugin discovered on PATH.
+//
+// Executables named sitectl-* on PATH are treated as trusted plugins; invoking
+// them uses the same trust boundary as running those plugin binaries directly.
 func FindInstalled(name string) (InstalledPlugin, bool) {
 	for _, discovered := range DiscoverInstalled() {
 		if discovered.Name == name {
@@ -160,36 +231,34 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 		info.TemplateRepo = repo
 	}
 
-	cmd := exec.Command(pluginPath, "__plugin-metadata") // #nosec G702 -- pluginPath comes from PATH discovery and must execute the installed sitectl-* plugin binary to read its metadata.
-	output, err := cmd.Output()
+	req := NewRPCRequest(MethodPluginMetadata)
+	metadataCtx, cancel := context.WithTimeout(context.Background(), installedPluginMetadataTimeout)
+	defer cancel()
+	resp, err := runPluginRPCPath(pluginName, pluginPath, req, pluginRPCPathOptions{
+		CommandExecOptions: CommandExecOptions{Context: metadataCtx},
+	})
 	if err != nil {
-		slog.Debug("plugin metadata command failed", "plugin", pluginName, "path", pluginPath, "duration", time.Since(started), "err", err)
+		slog.Debug("plugin metadata rpc failed", "plugin", pluginName, "path", pluginPath, "duration", time.Since(started), "err", err)
+		info.MetadataError = err.Error()
 		return info
 	}
-
-	var parsed InstalledPlugin
-	if err := yaml.Unmarshal(output, &parsed); err != nil {
-		slog.Debug("plugin metadata unmarshal failed", "plugin", pluginName, "path", pluginPath, "duration", time.Since(started), "err", err)
+	var metadata PluginMetadata
+	if err := json.Unmarshal(resp.Result, &metadata); err != nil {
+		slog.Debug("plugin metadata result unmarshal failed", "plugin", pluginName, "path", pluginPath, "duration", time.Since(started), "err", err)
+		info.MetadataError = err.Error()
 		return info
 	}
-	for i := range parsed.CreateDefinitions {
-		parsed.CreateDefinitions[i] = normalizeCreateSpec(parsed.CreateDefinitions[i])
+	// runPluginRPCPath has already validated the transport envelope version.
+	// This check validates the metadata payload schema carried inside it.
+	if metadata.ProtocolVersion != 0 && metadata.ProtocolVersion != RPCProtocolVersion {
+		slog.Debug("plugin metadata protocol mismatch", "plugin", pluginName, "path", pluginPath, "protocol_version", metadata.ProtocolVersion)
+		info.MetadataError = rpcProtocolVersionMismatchMessage(metadata.ProtocolVersion)
+		return info
 	}
-	if parsed.Name == "" {
-		parsed.Name = pluginName
+	for i := range metadata.CreateDefinitions {
+		metadata.CreateDefinitions[i] = normalizeCreateSpec(metadata.CreateDefinitions[i])
 	}
-	if parsed.BinaryName == "" {
-		parsed.BinaryName = binaryName
-	}
-	if parsed.Path == "" {
-		parsed.Path = pluginPath
-	}
-	if parsed.Description == "" {
-		parsed.Description = info.Description
-	}
-	if parsed.TemplateRepo == "" {
-		parsed.TemplateRepo = info.TemplateRepo
-	}
+	parsed := installedPluginFromMetadata(metadata, info)
 	if parsed.TemplateRepo == "" {
 		if spec, ok := defaultCreateDefinition(parsed.CreateDefinitions); ok && strings.TrimSpace(spec.DockerComposeRepo) != "" {
 			parsed.TemplateRepo = spec.DockerComposeRepo
@@ -201,8 +270,43 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 	if !parsed.CanDeploy {
 		parsed.CanDeploy = len(parsed.DeployDefinitions) > 0
 	}
-	slog.Debug("inspected plugin metadata", "plugin", pluginName, "path", pluginPath, "can_create", parsed.CanCreate, "can_deploy", parsed.CanDeploy, "can_converge", parsed.CanConverge, "can_set", parsed.CanSet, "can_validate", parsed.CanValidate, "includes", len(parsed.Includes), "create_definitions", len(parsed.CreateDefinitions), "deploy_definitions", len(parsed.DeployDefinitions), "duration", time.Since(started))
+	slog.Debug("inspected plugin metadata", "plugin", pluginName, "path", pluginPath, "can_create", parsed.CanCreate, "can_deploy", parsed.CanDeploy, "can_debug", parsed.CanDebug, "can_converge", parsed.CanConverge, "can_set", parsed.CanSet, "can_validate", parsed.CanValidate, "includes", len(parsed.Includes), "create_definitions", len(parsed.CreateDefinitions), "deploy_definitions", len(parsed.DeployDefinitions), "duration", time.Since(started))
 	return parsed
+}
+
+func installedPluginFromMetadata(metadata PluginMetadata, defaults InstalledPlugin) InstalledPlugin {
+	installed := InstalledPlugin{
+		ProtocolVersion:   metadata.ProtocolVersion,
+		Name:              metadata.Name,
+		BinaryName:        metadata.BinaryName,
+		Path:              defaults.Path,
+		Version:           metadata.Version,
+		Description:       metadata.Description,
+		Author:            metadata.Author,
+		TemplateRepo:      metadata.TemplateRepo,
+		CanCreate:         metadata.CanCreate,
+		CanDeploy:         metadata.CanDeploy,
+		CanDebug:          metadata.CanDebug,
+		CanConverge:       metadata.CanConverge,
+		CanSet:            metadata.CanSet,
+		CanValidate:       metadata.CanValidate,
+		Includes:          append([]string{}, metadata.Includes...),
+		CreateDefinitions: append([]CreateSpec{}, metadata.CreateDefinitions...),
+		DeployDefinitions: append([]DeploySpec{}, metadata.DeployDefinitions...),
+	}
+	if installed.Name == "" {
+		installed.Name = defaults.Name
+	}
+	if installed.BinaryName == "" {
+		installed.BinaryName = defaults.BinaryName
+	}
+	if installed.Description == "" {
+		installed.Description = defaults.Description
+	}
+	if installed.TemplateRepo == "" {
+		installed.TemplateRepo = defaults.TemplateRepo
+	}
+	return installed
 }
 
 func defaultCreateDefinition(specs []CreateSpec) (CreateSpec, bool) {

@@ -3,6 +3,8 @@ package plugin
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,7 +13,9 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"charm.land/fang/v2"
 	"github.com/libops/sitectl/pkg/component"
@@ -21,8 +25,9 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
-	yaml "gopkg.in/yaml.v3"
 )
+
+const pluginRPCProcessWaitDelay = 500 * time.Millisecond
 
 // Metadata contains information about a plugin
 type Metadata struct {
@@ -38,7 +43,7 @@ var builtinPluginIncludes = map[string][]string{
 	"isle": {"drupal"},
 }
 
-// Config holds common plugin configuration
+// Config holds common plugin configuration.
 type Config struct {
 	LogLevel string
 	Context  string
@@ -46,25 +51,41 @@ type Config struct {
 	Format   string
 }
 
-// SDK provides common functionality for plugins
+// SDK provides common functionality for plugins.
+//
+// Command registration and RPC dispatch mutate cobra command state and are not
+// safe to fan out through one SDK concurrently. The SDK guards its context and
+// SSH connection caches so host-side discovery helpers can reuse them safely.
 type SDK struct {
-	Metadata          Metadata
-	Config            Config
-	RootCmd           *cobra.Command
-	contextValidators []validate.Validator
-	contextCache      *config.Context
-	sshClient         *ssh.Client
-	jobs              []RegisteredJob
-	jobRootCmd        *cobra.Command
-	creates           []RegisteredCreate
-	createRootCmd     *cobra.Command
-	componentDefs     []component.Definition
-	deploys           []RegisteredDeploy
-	deployRootCmd     *cobra.Command
-	projectDiscovery  ProjectDiscoveryFunc
-	hasConverge       bool
-	hasSet            bool
-	hasValidate       bool
+	Metadata Metadata
+	// Config is updated during normal command setup and single-shot RPC
+	// dispatch. Do not treat one SDK value as immutable across RPC requests.
+	Config                      Config
+	RootCmd                     *cobra.Command
+	contextValidators           []validate.Validator
+	mu                          sync.Mutex
+	contextCache                *config.Context
+	sshClient                   *ssh.Client
+	jobs                        []RegisteredJob
+	jobRootCmd                  *cobra.Command
+	creates                     []RegisteredCreate
+	createRootCmd               *cobra.Command
+	componentRootCmd            *cobra.Command
+	debugCmd                    *cobra.Command
+	convergeCmd                 *cobra.Command
+	setCmd                      *cobra.Command
+	validateCmd                 *cobra.Command
+	validateRunner              ValidateRunner
+	componentDefs               []component.Definition
+	serviceComponents           []component.ComposeServiceComponent
+	serviceComponentDisplayName string
+	deploys                     []RegisteredDeploy
+	deployRootCmd               *cobra.Command
+	projectDiscovery            ProjectDiscoveryFunc
+	hasDebug                    bool
+	hasConverge                 bool
+	hasSet                      bool
+	hasValidate                 bool
 }
 
 // NewSDK creates a new plugin SDK instance
@@ -92,19 +113,35 @@ func NewSDK(metadata Metadata) *SDK {
 	}
 
 	sdk.addCommonFlags()
-	sdk.RootCmd.AddCommand(sdk.GetProjectDetectionCommand())
+	sdk.RootCmd.AddCommand(sdk.GetRPCCommand())
 	config.SetProjectClaimDetector(sdk.detectProjectOwner)
 	return sdk
 }
 
 // setupLogging configures the logger based on flags
 func (s *SDK) setupLogging(cmd *cobra.Command) error {
-	level := slog.LevelInfo
 	ll, err := cmd.Flags().GetString("log-level")
 	if err != nil {
 		return err
 	}
+	setupPluginLogger(ll)
 
+	contextName := ""
+	if s.RootCmd.PersistentFlags().Lookup("context") != nil && cmd.Flags().Changed("context") {
+		contextName, _ = cmd.Flags().GetString("context")
+	}
+
+	// Store config for plugin use.
+	s.mu.Lock()
+	s.Config.LogLevel = ll
+	s.Config.Context = contextName
+	s.mu.Unlock()
+
+	return nil
+}
+
+func setupPluginLogger(ll string) {
+	level := slog.LevelInfo
 	switch strings.ToUpper(ll) {
 	case "DEBUG":
 		level = slog.LevelDebug
@@ -119,16 +156,6 @@ func (s *SDK) setupLogging(cmd *cobra.Command) error {
 	}
 	handler := slog.New(slog.NewTextHandler(os.Stderr, opts))
 	slog.SetDefault(handler)
-
-	// Store config for plugin use.
-	s.Config.LogLevel = ll
-	if s.RootCmd.PersistentFlags().Lookup("context") != nil && cmd.Flags().Changed("context") {
-		s.Config.Context, _ = cmd.Flags().GetString("context")
-	} else {
-		s.Config.Context = ""
-	}
-
-	return nil
 }
 
 // addCommonFlags adds standard flags to the plugin
@@ -170,43 +197,6 @@ func (s *SDK) SetVersionInfo(version, commit, date string) {
 	s.RootCmd.Version = formatted
 }
 
-// GetDiscoveryMetadataCommand returns a single cheap metadata payload for plugin discovery.
-func (s *SDK) GetDiscoveryMetadataCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:    "__plugin-metadata",
-		Short:  "Display plugin discovery metadata",
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			info := InstalledPlugin{
-				Name:              s.Metadata.Name,
-				BinaryName:        cmd.Root().Name(),
-				Description:       s.Metadata.Description,
-				Author:            s.Metadata.Author,
-				TemplateRepo:      strings.TrimSpace(s.Metadata.TemplateRepo),
-				Includes:          append([]string{}, s.Metadata.Includes...),
-				CreateDefinitions: s.CreateDefinitions(),
-				DeployDefinitions: s.DeployDefinitions(),
-				CanConverge:       s.hasConverge,
-				CanSet:            s.hasSet,
-				CanValidate:       s.hasValidate,
-			}
-			info.CanCreate = len(info.CreateDefinitions) > 0
-			info.CanDeploy = len(info.DeployDefinitions) > 0
-			if info.TemplateRepo == "" {
-				if spec, ok := defaultCreateDefinition(info.CreateDefinitions); ok {
-					info.TemplateRepo = strings.TrimSpace(spec.DockerComposeRepo)
-				}
-			}
-			data, err := yaml.Marshal(info)
-			if err != nil {
-				return fmt.Errorf("marshal plugin discovery metadata: %w", err)
-			}
-			_, err = cmd.OutOrStdout().Write(data)
-			return err
-		},
-	}
-}
-
 // GetDockerClient creates a Docker client respecting the sitectl context
 // This is a helper for plugins that need to interact with Docker
 // Returns the existing DockerClient which handles both local and remote contexts
@@ -225,6 +215,7 @@ func (s *SDK) GetDockerClient() (*docker.DockerClient, error) {
 	return docker.GetDockerCliWithSSH(ctx, sshClient, false)
 }
 
+// GetSSHClient returns an SSH client for the resolved sitectl context.
 func (s *SDK) GetSSHClient() (*ssh.Client, error) {
 	return s.getSSHClient()
 }
@@ -233,9 +224,15 @@ func (s *SDK) GetSSHClient() (*ssh.Client, error) {
 // This is useful for plugins that need to access context-specific settings
 // If no context is specified, returns the current context from config
 func (s *SDK) GetContext() (*config.Context, error) {
+	s.mu.Lock()
 	if s.contextCache != nil {
-		return s.contextCache, nil
+		ctx := s.contextCache
+		s.mu.Unlock()
+		return ctx, nil
 	}
+	contextName := s.Config.Context
+	s.mu.Unlock()
+
 	// Load the config
 	cfg, err := config.Load()
 	if err != nil {
@@ -243,7 +240,6 @@ func (s *SDK) GetContext() (*config.Context, error) {
 	}
 
 	// Use explicit --context if provided, otherwise resolve current context
-	contextName := s.Config.Context
 	if contextName == "default" {
 		contextName = cfg.CurrentContext
 	}
@@ -266,14 +262,24 @@ func (s *SDK) GetContext() (*config.Context, error) {
 		return nil, fmt.Errorf("context %q is not supported by plugin %q: %w", ctx.Name, s.Metadata.Name, err)
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.contextCache != nil {
+		return s.contextCache, nil
+	}
 	s.contextCache = &ctx
 	return s.contextCache, nil
 }
 
 func (s *SDK) getSSHClient() (*ssh.Client, error) {
+	s.mu.Lock()
 	if s.sshClient != nil {
-		return s.sshClient, nil
+		client := s.sshClient
+		s.mu.Unlock()
+		return client, nil
 	}
+	s.mu.Unlock()
+
 	ctx, err := s.GetContext()
 	if err != nil {
 		return nil, err
@@ -281,10 +287,18 @@ func (s *SDK) getSSHClient() (*ssh.Client, error) {
 	if ctx == nil || ctx.DockerHostType == config.ContextLocal {
 		return nil, nil
 	}
-	s.sshClient, err = ctx.DialSSH()
+	client, err := ctx.DialSSH()
 	if err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sshClient != nil {
+		_ = client.Close()
+		return s.sshClient, nil
+	}
+	s.sshClient = client
 	return s.sshClient, nil
 }
 
@@ -292,10 +306,12 @@ func (s *SDK) Close() error {
 	if s == nil {
 		return nil
 	}
-	if s.sshClient != nil {
-		err := s.sshClient.Close()
-		s.sshClient = nil
-		return err
+	s.mu.Lock()
+	client := s.sshClient
+	s.sshClient = nil
+	s.mu.Unlock()
+	if client != nil {
+		return client.Close()
 	}
 	return nil
 }
@@ -428,87 +444,259 @@ func (s *SDK) ExecInContainerInteractive(ctx context.Context, containerID string
 	})
 }
 
+// CommandExecOptions controls subprocess execution for plugin RPC calls.
+// Stdout is always captured into RPCResponse.Output. Use Stdin only for
+// interactive RPC methods; when Stdin is nil the host sends the RPC envelope
+// over stdin instead of argv. When Stdin is set, the request is encoded into
+// argv so request args and params may be visible in process listings; never
+// put secrets in any RPCRequest field. The argv safety gate validates typed
+// Params only; Args, Context, and LogLevel are copied as caller-provided values.
 type CommandExecOptions struct {
-	Context    context.Context
+	Context context.Context
+	// Stdin preserves interactive stdin for the plugin. Setting it moves the
+	// RPC request envelope to argv. Params marked sensitive are rejected, but
+	// request args are not machine-checked and must not contain secrets.
 	Stdin      io.Reader
-	Stdout     io.Writer
 	Stderr     io.Writer
-	Capture    bool
 	LiveStderr bool
 }
 
-func (s *SDK) InvokePluginCommand(pluginName string, args []string, opts CommandExecOptions) (string, error) {
+type pluginRPCPathOptions struct {
+	CommandExecOptions
+	ExtraEnv []string
+}
+
+// RPCProcessError reports a plugin subprocess failure before a valid RPC
+// response envelope was returned.
+type RPCProcessError struct {
+	Plugin   string
+	Method   string
+	ExitCode int
+	Detail   string
+	Err      error
+}
+
+// Error formats the process failure with any captured stderr/stdout detail.
+func (e *RPCProcessError) Error() string {
+	if e == nil {
+		return "unknown plugin rpc process failure"
+	}
+	message := fmt.Sprintf("run plugin rpc %q %s", e.Plugin, e.Method)
+	if e.Err != nil {
+		message = fmt.Sprintf("%s: %v", message, e.Err)
+	}
+	if detail := strings.TrimSpace(e.Detail); detail != "" {
+		message = fmt.Sprintf("%s: %s", message, detail)
+	}
+	return message
+}
+
+// Unwrap returns the underlying exec error.
+func (e *RPCProcessError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// InvokePluginRPC invokes an installed sitectl plugin through the private RPC
+// entrypoint and returns the decoded response envelope.
+//
+// When opts.Stdin is set, the request envelope is encoded into argv so the
+// plugin can keep stdin interactive. Args and params in that mode may be
+// visible in process listings; never put secrets in any RPC field. Requests
+// built from params marked with RPCSensitiveParams or `rpc_sensitive:"true"`
+// are rejected before the subprocess starts; Args, Context, and LogLevel remain
+// caller-trusted and are not inspected by that sensitivity check.
+func (s *SDK) InvokePluginRPC(pluginName string, req RPCRequest, opts CommandExecOptions) (RPCResponse, error) {
 	installed, ok := FindInstalled(pluginName)
 	if !ok {
-		return "", fmt.Errorf("plugin %q is not installed", pluginName)
+		return RPCResponse{}, fmt.Errorf("plugin %q is not installed", pluginName)
 	}
+	return s.invokePluginRPCPath(pluginName, installed.Path, req, opts)
+}
 
-	invocation := make([]string, 0, len(args)+4)
-	if strings.TrimSpace(s.Config.Context) != "" {
-		invocation = append(invocation, "--context", s.Config.Context)
-	}
-	if strings.TrimSpace(s.Config.LogLevel) != "" {
-		invocation = append(invocation, "--log-level", s.Config.LogLevel)
-	}
-	invocation = append(invocation, args...)
-	slog.Debug("invoking plugin command", "plugin", pluginName, "path", installed.Path, "args", invocation, "capture", opts.Capture)
+func (s *SDK) invokePluginRPCPath(pluginName, pluginPath string, req RPCRequest, opts CommandExecOptions) (RPCResponse, error) {
+	req = s.defaultRPCRequest(req)
+	slog.Debug("invoking plugin rpc", "plugin", pluginName, "path", pluginPath, "method", req.Method)
+	return runPluginRPCPath(pluginName, pluginPath, req, pluginRPCPathOptions{CommandExecOptions: opts})
+}
 
+func (s *SDK) defaultRPCRequest(req RPCRequest) RPCRequest {
+	req.ProtocolVersion = normalizeRPCProtocolVersion(req.ProtocolVersion)
+	s.mu.Lock()
+	contextName := s.Config.Context
+	logLevel := s.Config.LogLevel
+	s.mu.Unlock()
+	if strings.TrimSpace(req.Context) == "" {
+		req.Context = strings.TrimSpace(contextName)
+	}
+	if strings.TrimSpace(req.LogLevel) == "" {
+		req.LogLevel = strings.TrimSpace(logLevel)
+	}
+	return req
+}
+
+func runPluginRPCPath(pluginName, pluginPath string, req RPCRequest, opts pluginRPCPathOptions) (RPCResponse, error) {
+	req.ProtocolVersion = normalizeRPCProtocolVersion(req.ProtocolVersion)
 	execCtx := opts.Context
 	if execCtx == nil {
 		execCtx = context.Background()
 	}
-	cmd := exec.CommandContext(execCtx, installed.Path, invocation...) // #nosec G204 -- plugin executable comes from sitectl plugin discovery and args are forwarded without a shell.
-	cmd.Env = os.Environ()
+	var cmd *exec.Cmd
+	if opts.Stdin != nil {
+		if err := ensureRPCRequestArgvSafe(req); err != nil {
+			return RPCResponse{}, err
+		}
+		encoded, err := encodeRPCRequestFlag(req)
+		if err != nil {
+			return RPCResponse{}, err
+		}
+		// Preserve stdin for interactive plugin handlers. The request is visible
+		// in process listings in this mode, so callers must not put secrets in
+		// RPC args or params.
+		cmd = exec.CommandContext(execCtx, pluginPath, "__sitectl-rpc", "--request", encoded) // #nosec G204,G702 -- plugin executable comes from trusted PATH discovery and args are a JSON envelope.
+		cmd.Stdin = opts.Stdin
+	} else {
+		requestData, err := json.Marshal(req)
+		if err != nil {
+			return RPCResponse{}, fmt.Errorf("marshal rpc request: %w", err)
+		}
+		cmd = exec.CommandContext(execCtx, pluginPath, "__sitectl-rpc") // #nosec G204,G702 -- plugin executable comes from trusted PATH discovery and receives a JSON envelope on stdin.
+		cmd.Stdin = bytes.NewReader(requestData)
+	}
+	cmd.Env = append(os.Environ(), "SITECTL_RPC=1")
+	// Metadata discovery sends the request over stdin, so argv-only detection
+	// cannot see the method. This env marker keeps plugin startup on the cheap
+	// metadata path without consuming stdin.
+	if req.Method == MethodPluginMetadata {
+		cmd.Env = append(cmd.Env, "SITECTL_RPC_METADATA=1")
+	}
+	cmd.Env = append(cmd.Env, opts.ExtraEnv...)
 	if width, ok := terminalColumns(); ok {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("COLUMNS=%d", width))
 	}
-	cmd.Stdin = opts.Stdin
-	cmd.Stderr = opts.Stderr
+	cmd.WaitDelay = pluginRPCProcessWaitDelay
 
-	if opts.Capture {
-		var stdout bytes.Buffer
-		var stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		var stderrSink io.Writer
-		if opts.Stderr != nil && opts.LiveStderr {
-			stderrSink = io.MultiWriter(opts.Stderr, &stderr)
-		} else if opts.LiveStderr {
-			stderrSink = io.MultiWriter(os.Stderr, &stderr)
-		} else {
-			stderrSink = &stderr
-		}
-		cmd.Stderr = stderrSink
-		if err := cmd.Run(); err != nil {
-			detail := strings.TrimSpace(stderr.String())
-			if detail == "" {
-				detail = strings.TrimSpace(stdout.String())
-			}
-			if detail != "" {
-				return "", fmt.Errorf("run plugin %q: %w: %s", pluginName, err, detail)
-			}
-			return "", fmt.Errorf("run plugin %q: %w", pluginName, err)
-		}
-		slog.Debug("plugin command completed", "plugin", pluginName, "path", installed.Path)
-		return stdout.String(), nil
+	stdout := newLimitedRPCBuffer(maxRPCResponseBytes)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
+	var stderrSink io.Writer
+	if opts.Stderr != nil && opts.LiveStderr {
+		stderrSink = io.MultiWriter(opts.Stderr, &stderr)
+	} else if opts.LiveStderr {
+		stderrSink = io.MultiWriter(os.Stderr, &stderr)
+	} else {
+		stderrSink = &stderr
 	}
+	cmd.Stderr = stderrSink
 
-	if opts.Stdout != nil {
-		cmd.Stdout = opts.Stdout
-	}
-	if cmd.Stdout == nil {
-		cmd.Stdout = os.Stdout
-	}
-	if cmd.Stderr == nil {
-		cmd.Stderr = os.Stderr
-	}
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("run plugin %q: %w", pluginName, err)
+		if ctxErr := execCtx.Err(); ctxErr != nil {
+			err = fmt.Errorf("%w: %w", ctxErr, err)
+		}
+		return RPCResponse{}, newRPCProcessError(pluginName, req.Method, err, stdout.String(), stderr.String())
 	}
-	slog.Debug("plugin command completed", "plugin", pluginName, "path", installed.Path)
-	return "", nil
+	if stdout.Exceeded() {
+		return RPCResponse{}, fmt.Errorf("plugin %q rpc response for method %s exceeds %d bytes; reduce output, use --format json when available, or narrow the request", pluginName, req.Method, maxRPCResponseBytes)
+	}
+
+	resp, err := parsePluginRPCResponse(pluginName, req.Method, stdout.Bytes())
+	if err != nil {
+		return RPCResponse{}, err
+	}
+	resp.ProtocolVersion = normalizeRPCProtocolVersion(resp.ProtocolVersion)
+	if resp.ProtocolVersion != RPCProtocolVersion {
+		return RPCResponse{}, fmt.Errorf("plugin %q returned %s", pluginName, rpcProtocolVersionMismatchMessage(resp.ProtocolVersion))
+	}
+	if !resp.OK {
+		return resp, newRPCFailure(pluginName, req.Method, resp, nil)
+	}
+	return resp, nil
 }
 
-func (s *SDK) InvokeIncludedPluginCommand(pluginName string, args []string, opts CommandExecOptions) (string, error) {
+func parsePluginRPCResponse(pluginName, method string, data []byte) (RPCResponse, error) {
+	trimmed := bytes.TrimSpace(data)
+	if resp, err := decodePluginRPCEnvelope(trimmed); err == nil {
+		return resp, nil
+	} else {
+		lastLine, fallbackOffset := lastNonEmptyRPCLine(data)
+		if len(lastLine) > 0 && !bytes.Equal(lastLine, trimmed) {
+			if resp, lineErr := decodePluginRPCEnvelope(lastLine); lineErr == nil {
+				slog.Warn("plugin wrote stdout outside rpc envelope; fallback parsing is best-effort and handlers must use cmd.OutOrStdout()", "plugin", pluginName, "method", method, "fallback_offset", fallbackOffset, "stdout_prefix_bytes", fallbackOffset)
+				return resp, nil
+			}
+		}
+		return RPCResponse{}, fmt.Errorf("parse plugin rpc response from %q %s: %w; plugin wrote non-JSON to stdout or a non-envelope JSON line; stdout fallback parsing is best-effort and handlers must use cmd.OutOrStdout(): %s", pluginName, method, err, rpcStdoutSnippet(data))
+	}
+}
+
+func decodePluginRPCEnvelope(data []byte) (RPCResponse, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return RPCResponse{}, err
+	}
+	if _, ok := fields["ok"]; !ok {
+		return RPCResponse{}, fmt.Errorf("rpc response envelope missing ok field")
+	}
+	var resp RPCResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return RPCResponse{}, err
+	}
+	return resp, nil
+}
+
+func lastNonEmptyRPCLine(data []byte) ([]byte, int) {
+	lineEnd := len(data)
+	for lineEnd > 0 {
+		if data[lineEnd-1] == '\n' {
+			lineEnd--
+		}
+		lineStart := bytes.LastIndexByte(data[:lineEnd], '\n') + 1
+		rawLine := data[lineStart:lineEnd]
+		line := bytes.TrimSpace(rawLine)
+		if len(line) != 0 {
+			return line, lineStart + bytes.Index(rawLine, line)
+		}
+		if lineStart == 0 {
+			break
+		}
+		lineEnd = lineStart - 1
+	}
+	return nil, -1
+}
+
+func rpcStdoutSnippet(data []byte) string {
+	const maxSnippet = 2048
+	trimmed := strings.TrimSpace(string(data))
+	if len(trimmed) <= maxSnippet {
+		return trimmed
+	}
+	return trimmed[:maxSnippet] + "...<truncated>"
+}
+
+func newRPCProcessError(pluginName, method string, err error, stdout, stderr string) *RPCProcessError {
+	detail := strings.TrimSpace(stderr)
+	if detail == "" {
+		detail = strings.TrimSpace(stdout)
+	}
+	processErr := &RPCProcessError{
+		Plugin:   pluginName,
+		Method:   method,
+		ExitCode: -1,
+		Detail:   detail,
+		Err:      err,
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		processErr.ExitCode = exitErr.ExitCode()
+	}
+	return processErr
+}
+
+// InvokeIncludedPluginRPC invokes a plugin declared in this SDK's Includes
+// metadata through the private RPC entrypoint.
+func (s *SDK) InvokeIncludedPluginRPC(pluginName string, req RPCRequest, opts CommandExecOptions) (RPCResponse, error) {
 	allowed := false
 	for _, include := range s.Metadata.Includes {
 		if include == pluginName {
@@ -517,24 +705,38 @@ func (s *SDK) InvokeIncludedPluginCommand(pluginName string, args []string, opts
 		}
 	}
 	if !allowed {
-		return "", fmt.Errorf("plugin %q is not included by %q", pluginName, s.Metadata.Name)
+		return RPCResponse{}, fmt.Errorf("plugin %q is not included by %q", pluginName, s.Metadata.Name)
 	}
-
-	return s.InvokePluginCommand(pluginName, args, opts)
+	return s.InvokePluginRPC(pluginName, req, opts)
 }
 
-func (s *SDK) InvokeIncludedPlugins(args []string) ([]string, error) {
-	outputs := make([]string, 0, len(s.Metadata.Includes))
-	for _, include := range s.Metadata.Includes {
-		output, err := s.InvokeIncludedPluginCommand(include, args, CommandExecOptions{Capture: true})
-		if err != nil {
-			return nil, err
-		}
-		if trimmed := strings.TrimSpace(output); trimmed != "" {
-			outputs = append(outputs, trimmed)
-		}
+// InvokeIncludedPluginJob invokes a registered job on an included plugin.
+func (s *SDK) InvokeIncludedPluginJob(pluginName, jobName string, args []string, opts CommandExecOptions) (RPCResponse, error) {
+	return s.InvokeIncludedPluginJobContext(pluginName, "", jobName, args, opts)
+}
+
+// InvokeIncludedPluginJobContext invokes a registered job on an included plugin
+// against a specific sitectl context.
+func (s *SDK) InvokeIncludedPluginJobContext(pluginName, contextName, jobName string, args []string, opts CommandExecOptions) (RPCResponse, error) {
+	req, err := NewJobRunRequest(jobName, args...)
+	if err != nil {
+		return RPCResponse{}, err
 	}
-	return outputs, nil
+	req.Context = strings.TrimSpace(contextName)
+	return s.InvokeIncludedPluginRPC(pluginName, req, opts)
+}
+
+// DecodeRPCResult unmarshals the structured result payload from an RPC
+// response into the requested Go type.
+func DecodeRPCResult[T any](resp RPCResponse) (T, error) {
+	var out T
+	if len(resp.Result) == 0 {
+		return out, nil
+	}
+	if err := json.Unmarshal(resp.Result, &out); err != nil {
+		return out, fmt.Errorf("parse rpc result: %w", err)
+	}
+	return out, nil
 }
 
 func terminalColumns() (int, bool) {

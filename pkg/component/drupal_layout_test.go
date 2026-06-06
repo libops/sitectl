@@ -53,4 +53,7 @@ func TestAddDrupalRootfsFlagUsesDefault(t *testing.T) {
 	if flag.DefValue != DefaultDrupalRootfs {
 		t.Fatalf("expected default %q, got %q", DefaultDrupalRootfs, flag.DefValue)
 	}
+	if len(flag.Annotations[CodebaseRootfsFlagAnnotation]) == 0 {
+		t.Fatal("expected drupal-rootfs flag to be marked as codebase rootfs alias")
+	}
 }

@@ -11,9 +11,8 @@ import (
 )
 
 type Config struct {
-	CurrentContext string     `yaml:"current-context"`
-	Contexts       []Context  `yaml:"contexts"`
-	CronSpecs      []CronSpec `yaml:"cron-specs,omitempty"`
+	CurrentContext string    `yaml:"current-context"`
+	Contexts       []Context `yaml:"contexts"`
 }
 
 func ConfigFilePath() (string, error) {

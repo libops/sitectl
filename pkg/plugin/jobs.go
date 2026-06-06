@@ -68,7 +68,7 @@ func (s *SDK) ensureJobRoot() *cobra.Command {
 		return s.jobRootCmd
 	}
 	root := &cobra.Command{
-		Use:          "__job",
+		Use:          "job",
 		Hidden:       true,
 		SilenceUsage: true,
 	}
@@ -90,6 +90,5 @@ func (s *SDK) ensureJobRoot() *cobra.Command {
 	}
 	root.AddCommand(listCmd)
 	s.jobRootCmd = root
-	s.RootCmd.AddCommand(root)
 	return root
 }

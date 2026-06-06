@@ -8,14 +8,14 @@ import (
 )
 
 type CreateOption struct {
-	Name                string
-	Default             State
-	DefaultDisposition  Disposition
-	AllowedDispositions []Disposition
-	Guidance            StateGuidance
-	Shorthand           string
-	PromptOnCreate      bool
-	FollowUps           []FollowUpSpec
+	Name                string         `json:"name" yaml:"name"`
+	Default             State          `json:"default,omitempty" yaml:"default,omitempty"`
+	DefaultDisposition  Disposition    `json:"default_disposition,omitempty" yaml:"default_disposition,omitempty"`
+	AllowedDispositions []Disposition  `json:"allowed_dispositions,omitempty" yaml:"allowed_dispositions,omitempty"`
+	Guidance            StateGuidance  `json:"guidance,omitempty" yaml:"guidance,omitempty"`
+	Shorthand           string         `json:"shorthand,omitempty" yaml:"shorthand,omitempty"`
+	PromptOnCreate      bool           `json:"prompt_on_create,omitempty" yaml:"prompt_on_create,omitempty"`
+	FollowUps           []FollowUpSpec `json:"follow_ups,omitempty" yaml:"follow_ups,omitempty"`
 }
 
 func (o CreateOption) normalizedDefault() State {

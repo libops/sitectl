@@ -2,7 +2,9 @@ package component
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -109,6 +111,23 @@ func evaluateDomainSpec(ctx *config.Context, composeRoot, drupalRoot string, sta
 		return StateCheck{}, err
 	}
 	results = append(results, drupalResults...)
+	fileResults, err := evaluateFileState(ctx, composeRoot, spec.Files)
+	if err != nil {
+		return StateCheck{}, err
+	}
+	results = append(results, fileResults...)
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Domain != results[j].Domain {
+			return results[i].Domain < results[j].Domain
+		}
+		if results[i].File != results[j].File {
+			return results[i].File < results[j].File
+		}
+		if results[i].Path != results[j].Path {
+			return results[i].Path < results[j].Path
+		}
+		return results[i].Op < results[j].Op
+	})
 
 	check := StateCheck{State: state, Results: results}
 	for _, result := range results {
@@ -173,7 +192,7 @@ func evaluateYAMLState(ctx *config.Context, root, domain string, spec YAMLStateS
 func listYAMLFiles(ctx *config.Context, root string) ([]string, error) {
 	files, err := ctx.ListFiles(root)
 	if err != nil {
-		if strings.Contains(err.Error(), "no such file or directory") {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list yaml files under %q: %w", root, err)
@@ -344,7 +363,7 @@ func readCachedFile(ctx *config.Context, path string, cache map[string][]byte) (
 	}
 	data, err := ctx.ReadFile(path)
 	if err != nil {
-		if strings.Contains(err.Error(), "no such file or directory") {
+		if errors.Is(err, fs.ErrNotExist) {
 			cache[path] = nil
 			return nil, false, nil
 		}

@@ -81,13 +81,21 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		forwarded = append(forwarded, "--checkout-source", string(checkoutSource))
 	}
 
-	invokeArgs := append([]string{"__create", spec.Name}, append(forwarded, remaining...)...)
-	_, err = pluginSDK.InvokePluginCommand(owner, invokeArgs, plugin.CommandExecOptions{
-		Context: RootCmd.Context(),
-		Stdin:   cmd.InOrStdin(),
-		Stdout:  cmd.OutOrStdout(),
-		Stderr:  cmd.ErrOrStderr(),
+	req, err := plugin.NewCreateRunRequest(spec.Name, append(forwarded, remaining...)...)
+	if err != nil {
+		return err
+	}
+	resp, err := pluginSDK.InvokePluginRPC(owner, req, plugin.CommandExecOptions{
+		Context:    RootCmd.Context(),
+		Stdin:      cmd.InOrStdin(),
+		Stderr:     cmd.ErrOrStderr(),
+		LiveStderr: true,
 	})
+	if strings.TrimSpace(resp.Output) != "" {
+		if _, printErr := fmt.Fprint(cmd.OutOrStdout(), resp.Output); printErr != nil {
+			return printErr
+		}
+	}
 	if err != nil {
 		return cleanPluginCommandError(err)
 	}

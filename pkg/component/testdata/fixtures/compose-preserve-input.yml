@@ -1,0 +1,19 @@
+---
+# Compose header comment
+x-common: &common
+  restart: unless-stopped
+services:
+  # Application service comment
+  app:
+    <<: *common
+    image: app
+    depends_on:
+      db:
+        condition: service_started
+  # Database service comment
+  db:
+    image: db
+    volumes:
+      - db-data:/var/lib/db
+volumes:
+  db-data: {}

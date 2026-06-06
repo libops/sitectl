@@ -100,18 +100,28 @@ func collectDebugReport(runCtx context.Context, contextName string, ctx config.C
 		if err := runCtx.Err(); err != nil {
 			return "", err
 		}
-		pluginArgs := []string{"--context", contextName, "__debug"}
-		if debugVerbose {
-			pluginArgs = append(pluginArgs, "--verbose")
+		hasDebug, err := pluginSupportsDebug(pluginName)
+		if err != nil {
+			return "", err
 		}
+		if !hasDebug {
+			return body.String(), nil
+		}
+		req, err := plugin.NewDebugRunRequest(plugin.DebugRunParams{
+			Verbose: debugVerbose,
+		})
+		if err != nil {
+			return "", err
+		}
+		req.Context = contextName
 		reportProgress(reporter, "Collecting Plugin Diagnostics", fmt.Sprintf("Running %s debug collectors", pluginName))
-		slog.Debug("handing off debug to plugin", "context", contextName, "plugin", pluginName, "args", pluginArgs)
-		output, err := pluginSDK.InvokePluginCommand(pluginName, pluginArgs, plugin.CommandExecOptions{Context: runCtx, Capture: true, LiveStderr: !progressEnabled()})
+		slog.Debug("handing off debug to plugin", "context", contextName, "plugin", pluginName, "method", req.Method, "args", req.Args)
+		resp, err := pluginSDK.InvokePluginRPC(pluginName, req, plugin.CommandExecOptions{Context: runCtx, LiveStderr: !progressEnabled()})
 		if err != nil {
 			return "", err
 		}
 		slog.Debug("plugin debug completed", "context", contextName, "plugin", pluginName)
-		if trimmed := strings.TrimSpace(output); trimmed != "" {
+		if trimmed := strings.TrimSpace(resp.Output); trimmed != "" {
 			body.WriteString("\n\n")
 			body.WriteString(trimmed)
 		}

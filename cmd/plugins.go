@@ -1,30 +1,51 @@
 package cmd
 
-import "github.com/libops/sitectl/pkg/plugin"
+import (
+	"fmt"
+	"strings"
 
-// pluginHasConverge checks whether the named plugin has registered a converge runner.
-func pluginHasConverge(pluginName string) bool {
-	installed, ok := plugin.FindInstalled(pluginName)
-	if !ok {
-		return false
+	"github.com/libops/sitectl/pkg/plugin"
+)
+
+func pluginSupportsConverge(pluginName string) (bool, error) {
+	installed, err := installedPluginWithMetadata(pluginName)
+	if err != nil {
+		return false, err
 	}
-	return installed.CanConverge
+	return installed.CanConverge, nil
 }
 
-// pluginHasSet checks whether the named plugin has registered a set runner.
-func pluginHasSet(pluginName string) bool {
-	installed, ok := plugin.FindInstalled(pluginName)
-	if !ok {
-		return false
+func pluginSupportsSet(pluginName string) (bool, error) {
+	installed, err := installedPluginWithMetadata(pluginName)
+	if err != nil {
+		return false, err
 	}
-	return installed.CanSet
+	return installed.CanSet, nil
 }
 
-// pluginHasValidate checks whether the named plugin has registered a validate runner.
-func pluginHasValidate(pluginName string) bool {
+func pluginSupportsDebug(pluginName string) (bool, error) {
+	installed, err := installedPluginWithMetadata(pluginName)
+	if err != nil {
+		return false, err
+	}
+	return installed.CanDebug, nil
+}
+
+func pluginSupportsValidate(pluginName string) (bool, error) {
+	installed, err := installedPluginWithMetadata(pluginName)
+	if err != nil {
+		return false, err
+	}
+	return installed.CanValidate, nil
+}
+
+func installedPluginWithMetadata(pluginName string) (plugin.InstalledPlugin, error) {
 	installed, ok := plugin.FindInstalled(pluginName)
 	if !ok {
-		return false
+		return plugin.InstalledPlugin{}, fmt.Errorf("plugin %q is not installed", pluginName)
 	}
-	return installed.CanValidate
+	if strings.TrimSpace(installed.MetadataError) != "" {
+		return plugin.InstalledPlugin{}, fmt.Errorf("inspect plugin %q metadata: %s", pluginName, installed.MetadataError)
+	}
+	return installed, nil
 }

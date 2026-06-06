@@ -18,15 +18,19 @@ type DebugRunner interface {
 	Render(cmd *cobra.Command, ctx *config.Context) (string, error)
 }
 
-// RegisterDebugHandler registers a debug runner for the plugin.
-// The SDK creates the __debug hidden command, wraps the runner's output in a
-// named panel, and delegates to any included plugins.
-func (s *SDK) RegisterDebugHandler(runner DebugRunner) {
+// RegisterDebugRunner registers a debug runner for the plugin. BindFlags must
+// declare the RPC-bridged --verbose flag when the runner accepts core verbose
+// state; registration panics if required bridge flags are missing.
+// The SDK stores the debug handler, wraps the runner's output in a named panel,
+// and delegates to any included plugins through the RPC entrypoint.
+// Render implementations should return their text to the SDK; lower-level
+// command handlers must write with cmd.OutOrStdout(), not fmt.Println.
+func (s *SDK) RegisterDebugRunner(runner DebugRunner) {
 	if s == nil || runner == nil {
 		return
 	}
 	cmd := &cobra.Command{
-		Use:          "__debug",
+		Use:          "debug",
 		Short:        "Internal debug extension command",
 		Hidden:       true,
 		SilenceUsage: true,
@@ -44,9 +48,8 @@ func (s *SDK) RegisterDebugHandler(runner DebugRunner) {
 			// Delegate to included plugins.
 			for _, include := range s.Metadata.Includes {
 				slog.Debug("running included plugin debug", "plugin", s.Metadata.Name, "include", include)
-				output, invokeErr := s.InvokeIncludedPluginCommand(include, []string{"__debug"}, CommandExecOptions{
+				resp, invokeErr := s.InvokeIncludedPluginRPC(include, NewRPCRequest(MethodDebugRun), CommandExecOptions{
 					Context: cmd.Context(),
-					Capture: true,
 				})
 				if invokeErr != nil {
 					rendered += "\n\n" + debugui.RenderPanel(include, debugui.FormatRows([]debugui.Row{
@@ -55,7 +58,7 @@ func (s *SDK) RegisterDebugHandler(runner DebugRunner) {
 					}))
 					continue
 				}
-				if trimmed := strings.TrimSpace(output); trimmed != "" {
+				if trimmed := strings.TrimSpace(resp.Output); trimmed != "" {
 					slog.Debug("included plugin debug completed", "plugin", s.Metadata.Name, "include", include)
 					rendered += "\n\n" + trimmed
 				} else {
@@ -67,5 +70,13 @@ func (s *SDK) RegisterDebugHandler(runner DebugRunner) {
 		},
 	}
 	runner.BindFlags(cmd)
-	s.RootCmd.AddCommand(cmd)
+	s.registerDebugCommand(cmd)
+	s.hasDebug = true
+}
+
+// RegisterDebugHandler registers a debug runner for the plugin.
+//
+// Deprecated: use RegisterDebugRunner.
+func (s *SDK) RegisterDebugHandler(runner DebugRunner) {
+	s.RegisterDebugRunner(runner)
 }
