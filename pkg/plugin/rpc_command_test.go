@@ -173,6 +173,7 @@ func TestRPCMethodsDecodeExpectedParamsTypes(t *testing.T) {
 		MethodComponentReconcile: "ComponentTargetParams",
 		MethodComponentSet:       "ComponentSetParams",
 		MethodValidateRun:        "ValidateRunParams",
+		MethodHealthcheckRun:     "HealthcheckRunParams",
 		MethodDebugRun:           "DebugRunParams",
 		MethodSetRun:             "SetRunParams",
 		MethodConvergeRun:        "ConvergeRunParams",
@@ -603,6 +604,7 @@ func TestRPCRequestBuildersCoverParamMethods(t *testing.T) {
 		MethodComponentReconcile: mustRPCRequest(NewComponentReconcileRequest(ComponentTargetParams{Name: "fcrepo"}, "--flag")),
 		MethodComponentSet:       mustRPCRequest(NewComponentSetRequest(ComponentSetParams{Name: "fcrepo", Disposition: "off"}, "--flag")),
 		MethodValidateRun:        mustRPCRequest(NewValidateRunRequest(ValidateRunParams{CodebaseRootfs: "app/rootfs"}, "--flag")),
+		MethodHealthcheckRun:     mustRPCRequest(NewHealthcheckRunRequest(HealthcheckRunParams{}, "--flag")),
 		MethodDebugRun:           mustRPCRequest(NewDebugRunRequest(DebugRunParams{Verbose: true}, "--flag")),
 		MethodSetRun:             mustRPCRequest(NewSetRunRequest(SetRunParams{Path: "/srv/site"}, "--flag")),
 		MethodConvergeRun:        mustRPCRequest(NewConvergeRunRequest(ConvergeRunParams{Path: "/srv/site"}, "--flag")),
@@ -735,6 +737,7 @@ func TestDiscoveryMetadataAdvertisesRegisteredCapabilities(t *testing.T) {
 	sdk.RegisterSetRunner(setBridgeValidationRunner{})
 	sdk.RegisterConvergeRunner(convergeBridgeValidationRunner{})
 	sdk.RegisterValidateRunner(&validateRunnerStub{})
+	sdk.RegisterHealthcheckRunner(&healthcheckRunnerStub{})
 
 	resp, err := sdk.handleRPC(&cobra.Command{Use: "rpc"}, NewRPCRequest(MethodPluginMetadata))
 	if err != nil {
@@ -747,7 +750,7 @@ func TestDiscoveryMetadataAdvertisesRegisteredCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeRPCResult() error = %v", err)
 	}
-	if !got.CanCreate || !got.CanDeploy || !got.CanDebug || !got.CanConverge || !got.CanSet || !got.CanValidate {
+	if !got.CanCreate || !got.CanDeploy || !got.CanDebug || !got.CanConverge || !got.CanSet || !got.CanValidate || !got.CanHealthcheck {
 		t.Fatalf("expected all registered capabilities to be advertised, got %+v", got)
 	}
 	if !reflect.DeepEqual(got, metadata) {
@@ -770,6 +773,7 @@ func TestRPCParamsUseSnakeCaseJSONContract(t *testing.T) {
 		reflect.TypeOf(SetRunParams{}),
 		reflect.TypeOf(ConvergeRunParams{}),
 		reflect.TypeOf(ValidateRunParams{}),
+		reflect.TypeOf(HealthcheckRunParams{}),
 	}
 	assertRPCParamTypeListComplete(t, paramTypes)
 
@@ -786,6 +790,7 @@ func TestRPCArgBridgeContractCoversEveryField(t *testing.T) {
 		reflect.TypeOf(SetRunParams{}),
 		reflect.TypeOf(ConvergeRunParams{}),
 		reflect.TypeOf(ValidateRunParams{}),
+		reflect.TypeOf(HealthcheckRunParams{}),
 	}
 	for _, typ := range bridgeTypes {
 		t.Run(typ.Name(), func(t *testing.T) {
@@ -811,6 +816,7 @@ func TestRegisteredRPCCommandsDeclareBridgedFlags(t *testing.T) {
 	sdk.RegisterSetRunner(setBridgeValidationRunner{})
 	sdk.RegisterConvergeRunner(convergeBridgeValidationRunner{})
 	sdk.RegisterValidateRunner(&validateRunnerStub{})
+	sdk.RegisterHealthcheckRunner(&healthcheckRunnerStub{})
 	sdk.RegisterServiceComponents(ServiceComponentRegistryOptions{
 		DisplayName: "ISLE",
 		Components:  []corecomponent.ComposeServiceComponent{testComposeServiceComponent(t, "fcrepo")},
@@ -827,6 +833,7 @@ func TestRegisteredRPCCommandsDeclareBridgedFlags(t *testing.T) {
 		{name: "set", method: MethodSetRun, command: sdk.setCmd, params: SetRunParams{}},
 		{name: "converge", method: MethodConvergeRun, command: sdk.convergeCmd, params: ConvergeRunParams{}},
 		{name: "validate", method: MethodValidateRun, command: sdk.validateCmd, params: ValidateRunParams{}},
+		{name: "healthcheck", method: MethodHealthcheckRun, command: sdk.healthcheckCmd, params: HealthcheckRunParams{}},
 		{name: "component describe", method: MethodComponentDescribe, command: sdk.componentRootCmd, subcommand: "describe", params: ComponentTargetParams{}},
 		{name: "component reconcile", method: MethodComponentReconcile, command: sdk.componentRootCmd, subcommand: "reconcile", params: ComponentTargetParams{}},
 		{name: "component set", method: MethodComponentSet, command: sdk.componentRootCmd, subcommand: "set", params: ComponentSetParams{}},
@@ -1483,6 +1490,18 @@ func (r *validateLifecycleRunner) Run(cmd *cobra.Command, ctx *config.Context) (
 	}
 	return []sitevalidate.Result{{
 		Name:   "lifecycle",
+		Status: sitevalidate.StatusOK,
+	}}, nil
+}
+
+type healthcheckRunnerStub struct{}
+
+func (r *healthcheckRunnerStub) BindFlags(cmd *cobra.Command) {
+}
+
+func (r *healthcheckRunnerStub) Run(cmd *cobra.Command, ctx *config.Context) ([]sitevalidate.Result, error) {
+	return []sitevalidate.Result{{
+		Name:   "healthcheck-rootfs",
 		Status: sitevalidate.StatusOK,
 	}}, nil
 }

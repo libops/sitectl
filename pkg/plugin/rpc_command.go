@@ -184,6 +184,9 @@ func buildRPCMethodRegistry() map[string]rpcMethodSpec {
 		MethodValidateRun: rpcMethodWithParams[ValidateRunParams](func(s *SDK, cmd *cobra.Command, req RPCRequest, params ValidateRunParams) (RPCResponse, error) {
 			return s.rpcValidate(cmd, req, params)
 		}),
+		MethodHealthcheckRun: rpcMethodWithParams[HealthcheckRunParams](func(s *SDK, cmd *cobra.Command, req RPCRequest, params HealthcheckRunParams) (RPCResponse, error) {
+			return s.rpcHealthcheck(cmd, req, params)
+		}),
 		MethodDebugRun: rpcMethodWithParams[DebugRunParams](func(s *SDK, cmd *cobra.Command, req RPCRequest, params DebugRunParams) (RPCResponse, error) {
 			args, err := flagOnlyRPCArgs(nil, params, req.Args)
 			if err != nil {
@@ -247,6 +250,7 @@ func (s *SDK) discoveryMetadata() PluginMetadata {
 		CanConverge:       s.hasConverge,
 		CanSet:            s.hasSet,
 		CanValidate:       s.hasValidate,
+		CanHealthcheck:    s.hasHealthcheck,
 	}
 	info.CanCreate = len(info.CreateDefinitions) > 0
 	info.CanDeploy = len(info.DeployDefinitions) > 0
@@ -306,6 +310,30 @@ func (s *SDK) rpcValidate(rpcCmd *cobra.Command, req RPCRequest, params Validate
 		}
 		var runErr error
 		results, runErr = s.runValidateRunner(cmd, s.validateRunner)
+		return runErr
+	})
+	if err != nil {
+		return RPCResponse{Output: output}, err
+	}
+	return rpcResponse(results, output)
+}
+
+func (s *SDK) rpcHealthcheck(rpcCmd *cobra.Command, req RPCRequest, params HealthcheckRunParams) (RPCResponse, error) {
+	if s.healthcheckCmd == nil {
+		return rpcResponse([]sitevalidate.Result{}, "")
+	}
+	var results []sitevalidate.Result
+	args, err := flagOnlyRPCArgs(s.healthcheckCmd, params, req.Args)
+	if err != nil {
+		return RPCResponse{}, fmt.Errorf("build %s argv: %w", req.Method, err)
+	}
+	output, err := executeRPCCommandWithRunE(rpcCommandContext(rpcCmd), req.Method, s.healthcheckCmd, args, rpcCommandIOFromCommand(rpcCmd), func(cmd *cobra.Command, args []string) error {
+		if s.healthcheckRunner == nil {
+			results = []sitevalidate.Result{}
+			return nil
+		}
+		var runErr error
+		results, runErr = s.runHealthcheckRunner(cmd, s.healthcheckRunner)
 		return runErr
 	})
 	if err != nil {
@@ -511,6 +539,15 @@ func (s *SDK) registerValidateCommand(cmd *cobra.Command) {
 	if s != nil && cmd != nil {
 		mustValidateRPCParamFlags(MethodValidateRun, cmd, "", ValidateRunParams{})
 		s.validateCmd = cmd
+	}
+}
+
+// registerHealthcheckCommand registers the healthcheck command used by RPC dispatch.
+// It panics when cmd does not declare the flags bridged by HealthcheckRunParams.
+func (s *SDK) registerHealthcheckCommand(cmd *cobra.Command) {
+	if s != nil && cmd != nil {
+		mustValidateRPCParamFlags(MethodHealthcheckRun, cmd, "", HealthcheckRunParams{})
+		s.healthcheckCmd = cmd
 	}
 }
 

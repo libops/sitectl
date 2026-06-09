@@ -39,6 +39,14 @@ func pluginSupportsValidate(pluginName string) (bool, error) {
 	return installed.CanValidate, nil
 }
 
+func pluginSupportsHealthcheck(pluginName string) (bool, error) {
+	installed, err := installedPluginWithMetadata(pluginName)
+	if err != nil {
+		return false, err
+	}
+	return installed.CanHealthcheck, nil
+}
+
 func installedPluginWithMetadata(pluginName string) (plugin.InstalledPlugin, error) {
 	installed, ok := plugin.FindInstalled(pluginName)
 	if !ok {

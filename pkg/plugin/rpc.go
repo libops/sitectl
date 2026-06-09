@@ -44,6 +44,8 @@ const (
 	MethodComponentSet = "component.set"
 	// MethodValidateRun runs plugin validators.
 	MethodValidateRun = "validate.run"
+	// MethodHealthcheckRun runs plugin health checks.
+	MethodHealthcheckRun = "healthcheck.run"
 	// MethodDebugRun renders plugin debug sections.
 	MethodDebugRun = "debug.run"
 	// MethodSetRun runs the plugin-level set handler.
@@ -282,6 +284,9 @@ type ValidateRunParams struct {
 	CodebaseRootfs string `json:"codebase_rootfs,omitempty" rpc_flags:"codebase-rootfs,drupal-rootfs" rpc_rootfs:"true"`
 }
 
+// HealthcheckRunParams is the params payload for MethodHealthcheckRun.
+type HealthcheckRunParams struct{}
+
 // NewRPCRequest creates a request envelope for a plugin RPC method.
 func NewRPCRequest(method string) RPCRequest {
 	return RPCRequest{
@@ -368,6 +373,13 @@ func NewConvergeRunRequest(params ConvergeRunParams, args ...string) (RPCRequest
 // NewValidateRunRequest creates a typed validate.run request.
 func NewValidateRunRequest(params ValidateRunParams, args ...string) (RPCRequest, error) {
 	req := NewRPCRequest(MethodValidateRun)
+	req.Args = copyRPCArgs(args)
+	return withRPCParams(req, params)
+}
+
+// NewHealthcheckRunRequest creates a typed healthcheck.run request.
+func NewHealthcheckRunRequest(params HealthcheckRunParams, args ...string) (RPCRequest, error) {
+	req := NewRPCRequest(MethodHealthcheckRun)
 	req.Args = copyRPCArgs(args)
 	return withRPCParams(req, params)
 }
