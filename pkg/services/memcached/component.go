@@ -47,13 +47,11 @@ func New(opts TargetOptions) (ServiceComponent, error) {
 		AllowedDispositions: []corecomponent.Disposition{
 			corecomponent.DispositionEnabled,
 			corecomponent.DispositionDisabled,
-			corecomponent.DispositionDistributed,
 		},
 		Dependencies: opts.Dependencies,
 		Guidance: corecomponent.StateGuidance{
-			EnabledHelp:     "Run Memcached in this compose project.",
-			DisabledHelp:    "Remove the local Memcached service from this compose project.",
-			DistributedHelp: "Use an external cache service and keep this compose project from managing Memcached.",
+			EnabledHelp:  "Run Memcached in this compose project.",
+			DisabledHelp: "Remove the local Memcached service from this compose project.",
 		},
 		Behavior:      opts.Behavior,
 		ExtraOnRules:  opts.ExtraOnRules,

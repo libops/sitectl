@@ -43,8 +43,11 @@ func TestNewBuildsMemcachedServiceComponent(t *testing.T) {
 	if def.DefaultState != corecomponent.StateOn {
 		t.Fatalf("DefaultState = %q, want %q", def.DefaultState, corecomponent.StateOn)
 	}
-	if !allowsDisposition(def, corecomponent.DispositionDistributed) {
-		t.Fatalf("AllowedDispositions = %v, want distributed", def.AllowedDispositions)
+	if !allowsDisposition(def, corecomponent.DispositionEnabled) || !allowsDisposition(def, corecomponent.DispositionDisabled) {
+		t.Fatalf("AllowedDispositions = %v, want enabled and disabled", def.AllowedDispositions)
+	}
+	if allowsDisposition(def, corecomponent.DispositionDistributed) {
+		t.Fatalf("AllowedDispositions = %v, did not expect distributed", def.AllowedDispositions)
 	}
 	if len(def.On.Compose.Rules) == 0 {
 		t.Fatal("expected enable compose rules")

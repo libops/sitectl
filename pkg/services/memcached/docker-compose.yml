@@ -1,6 +1,6 @@
 services:
   memcached:
-    image: ${MEMCACHED_IMAGE:-memcached:1.6-alpine}
+    image: ${MEMCACHED_IMAGE:-memcached:1.6-alpine@sha256:43a2e7f74aebfff0c9921f4d367299ced9eacaeaccdc8bb4bc122a4fba2cd909}
     restart: unless-stopped
     networks:
       default:
