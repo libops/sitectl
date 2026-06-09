@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/user"
@@ -23,20 +24,20 @@ const (
 )
 
 type CreateSpec struct {
-	Name                 string   `yaml:"name"`
-	Plugin               string   `yaml:"plugin,omitempty"`
-	Description          string   `yaml:"description,omitempty"`
-	Default              bool     `yaml:"default,omitempty"`
-	MinCPUCores          float64  `yaml:"min_cpu_cores,omitempty"`
-	MinMemory            string   `yaml:"min_memory,omitempty"`
-	MinDiskSpace         string   `yaml:"min_disk_space,omitempty"`
-	DockerComposeRepo    string   `yaml:"docker_compose_repo,omitempty"`
-	DockerComposeBranch  string   `yaml:"docker_compose_branch,omitempty"`
-	DockerComposeBuild   []string `yaml:"docker_compose_build,omitempty"`
-	DockerComposeInit    []string `yaml:"docker_compose_init,omitempty"`
-	DockerComposeUp      []string `yaml:"docker_compose_up,omitempty"`
-	DockerComposeDown    []string `yaml:"docker_compose_down,omitempty"`
-	DockerComposeRollout []string `yaml:"docker_compose_rollout,omitempty"`
+	Name                 string   `json:"name" yaml:"name"`
+	Plugin               string   `json:"plugin,omitempty" yaml:"plugin,omitempty"`
+	Description          string   `json:"description,omitempty" yaml:"description,omitempty"`
+	Default              bool     `json:"default,omitempty" yaml:"default,omitempty"`
+	MinCPUCores          float64  `json:"min_cpu_cores,omitempty" yaml:"min_cpu_cores,omitempty"`
+	MinMemory            string   `json:"min_memory,omitempty" yaml:"min_memory,omitempty"`
+	MinDiskSpace         string   `json:"min_disk_space,omitempty" yaml:"min_disk_space,omitempty"`
+	DockerComposeRepo    string   `json:"docker_compose_repo,omitempty" yaml:"docker_compose_repo,omitempty"`
+	DockerComposeBranch  string   `json:"docker_compose_branch,omitempty" yaml:"docker_compose_branch,omitempty"`
+	DockerComposeBuild   []string `json:"docker_compose_build,omitempty" yaml:"docker_compose_build,omitempty"`
+	DockerComposeInit    []string `json:"docker_compose_init,omitempty" yaml:"docker_compose_init,omitempty"`
+	DockerComposeUp      []string `json:"docker_compose_up,omitempty" yaml:"docker_compose_up,omitempty"`
+	DockerComposeDown    []string `json:"docker_compose_down,omitempty" yaml:"docker_compose_down,omitempty"`
+	DockerComposeRollout []string `json:"docker_compose_rollout,omitempty" yaml:"docker_compose_rollout,omitempty"`
 }
 
 type RegisteredCreate struct {
@@ -163,23 +164,46 @@ func (s *SDK) LocalComponentDefinitions() []corecomponent.Definition {
 }
 
 func (s *SDK) CreateComponentDefinitions() ([]corecomponent.Definition, error) {
-	defs := s.LocalComponentDefinitions()
+	defs := appendUniqueComponentDefinitions(nil, s.LocalComponentDefinitions())
 	for _, include := range s.Metadata.Includes {
-		output, err := s.InvokeIncludedPluginCommand(include, []string{"__create", "component-definitions"}, CommandExecOptions{Capture: true})
+		resp, err := s.InvokeIncludedPluginRPC(include, NewRPCRequest(MethodCreateComponentDefinitions), CommandExecOptions{})
 		if err != nil {
 			return nil, err
 		}
-		trimmed := strings.TrimSpace(output)
-		if trimmed == "" {
+		if len(resp.Result) == 0 {
 			continue
 		}
 		var includeDefs []corecomponent.Definition
-		if err := yaml.Unmarshal([]byte(trimmed), &includeDefs); err != nil {
+		if err := json.Unmarshal(resp.Result, &includeDefs); err != nil {
 			return nil, fmt.Errorf("parse create component definitions from plugin %q: %w", include, err)
 		}
-		defs = append(defs, includeDefs...)
+		defs = appendUniqueComponentDefinitions(defs, includeDefs)
 	}
 	return defs, nil
+}
+
+func appendUniqueComponentDefinitions(defs, incoming []corecomponent.Definition) []corecomponent.Definition {
+	if len(incoming) == 0 {
+		return defs
+	}
+
+	seen := make(map[string]struct{}, len(defs)+len(incoming))
+	for _, def := range defs {
+		if def.Name != "" {
+			seen[def.Name] = struct{}{}
+		}
+	}
+
+	for _, def := range incoming {
+		if def.Name != "" {
+			if _, ok := seen[def.Name]; ok {
+				continue
+			}
+			seen[def.Name] = struct{}{}
+		}
+		defs = append(defs, def)
+	}
+	return defs
 }
 
 func (s *SDK) BindComposeCreateFlags(cmd *cobra.Command, spec CreateSpec, drupalRootfs *string, defaultDrupalRootfs string) error {
@@ -403,7 +427,7 @@ func (s *SDK) ensureCreateRoot() *cobra.Command {
 		return s.createRootCmd
 	}
 	root := &cobra.Command{
-		Use:          "__create",
+		Use:          "create",
 		Hidden:       true,
 		SilenceUsage: true,
 	}
@@ -439,7 +463,6 @@ func (s *SDK) ensureCreateRoot() *cobra.Command {
 	root.AddCommand(listCmd)
 	root.AddCommand(componentDefinitionsCmd)
 	s.createRootCmd = root
-	s.RootCmd.AddCommand(root)
 	return root
 }
 
@@ -799,5 +822,29 @@ func isAffirmativeCreateAnswer(value string) bool {
 }
 
 func isDiscoveryMetadataInvocation() bool {
-	return len(os.Args) > 1 && os.Args[1] == "__plugin-metadata"
+	// Metadata discovery normally sends the RPC envelope over stdin, so callers
+	// set SITECTL_RPC_METADATA because this function can only inspect argv
+	// without consuming stdin. The --request path keeps interactive RPC calls
+	// detectable when the envelope is intentionally sent in argv.
+	if os.Getenv("SITECTL_RPC_METADATA") == "1" {
+		return true
+	}
+	if len(os.Args) <= 1 || os.Args[1] != "__sitectl-rpc" {
+		return false
+	}
+	for i := 2; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		value := ""
+		if arg == "--request" && i+1 < len(os.Args) {
+			value = os.Args[i+1]
+		} else if strings.HasPrefix(arg, "--request=") {
+			value = strings.TrimPrefix(arg, "--request=")
+		}
+		if value == "" {
+			continue
+		}
+		req, err := decodeRPCRequestFlag(value)
+		return err == nil && req.Method == MethodPluginMetadata
+	}
+	return false
 }

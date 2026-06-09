@@ -342,6 +342,7 @@ type ProjectClaim struct {
 type ProjectClaimDetector func(projectDir, requestedPlugin string) (*ProjectClaim, error)
 
 var projectClaimDetector ProjectClaimDetector
+var projectClaimDetectorMu sync.RWMutex
 var projectClaimCache = struct {
 	sync.Mutex
 	values map[projectClaimCacheKey]cachedProjectClaim
@@ -359,8 +360,11 @@ type cachedProjectClaim struct {
 }
 
 func SetProjectClaimDetector(detector ProjectClaimDetector) ProjectClaimDetector {
+	projectClaimDetectorMu.Lock()
 	previous := projectClaimDetector
 	projectClaimDetector = detector
+	projectClaimDetectorMu.Unlock()
+
 	clearProjectClaimCache()
 	return previous
 }
@@ -395,10 +399,11 @@ func DiscoverCurrentContextForPlugin(requestedPlugin string) (CurrentContextDisc
 	projectDir = canonicalProjectDir(projectDir)
 	result.ComposeProjectDir = projectDir
 
-	if projectClaimDetector == nil {
+	detector := currentProjectClaimDetector()
+	if detector == nil {
 		return result, nil
 	}
-	claim, err := cachedProjectClaimFor(projectDir, requestedPlugin)
+	claim, err := cachedProjectClaimFor(detector, projectDir, requestedPlugin)
 	if err != nil {
 		return result, err
 	}
@@ -421,7 +426,7 @@ func DiscoverCurrentContextForPlugin(requestedPlugin string) (CurrentContextDisc
 	return result, nil
 }
 
-func cachedProjectClaimFor(projectDir, requestedPlugin string) (*ProjectClaim, error) {
+func cachedProjectClaimFor(detector ProjectClaimDetector, projectDir, requestedPlugin string) (*ProjectClaim, error) {
 	key := projectClaimCacheKey{
 		ProjectDir:      canonicalProjectDir(projectDir),
 		RequestedPlugin: strings.TrimSpace(requestedPlugin),
@@ -434,7 +439,7 @@ func cachedProjectClaimFor(projectDir, requestedPlugin string) (*ProjectClaim, e
 	}
 	projectClaimCache.Unlock()
 
-	claim, err := projectClaimDetector(key.ProjectDir, key.RequestedPlugin)
+	claim, err := detector(key.ProjectDir, key.RequestedPlugin)
 	if err != nil {
 		return nil, err
 	}
@@ -451,6 +456,12 @@ func cachedProjectClaimFor(projectDir, requestedPlugin string) (*ProjectClaim, e
 	projectClaimCache.Unlock()
 
 	return claim, nil
+}
+
+func currentProjectClaimDetector() ProjectClaimDetector {
+	projectClaimDetectorMu.RLock()
+	defer projectClaimDetectorMu.RUnlock()
+	return projectClaimDetector
 }
 
 func clearProjectClaimCache() {

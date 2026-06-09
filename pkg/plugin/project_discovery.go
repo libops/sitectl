@@ -4,14 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
-	"github.com/spf13/cobra"
-	yaml "gopkg.in/yaml.v3"
 )
 
 type ProjectDiscoveryFunc func(projectDir string) (*config.ProjectClaim, error)
@@ -26,10 +23,10 @@ type ComposeProjectDiscovery struct {
 }
 
 type projectDetectionResult struct {
-	Claimed    bool   `yaml:"claimed"`
-	Plugin     string `yaml:"plugin,omitempty"`
-	ProjectDir string `yaml:"project-dir,omitempty"`
-	Reason     string `yaml:"reason,omitempty"`
+	Claimed    bool   `json:"claimed" yaml:"claimed"`
+	Plugin     string `json:"plugin,omitempty" yaml:"plugin,omitempty"`
+	ProjectDir string `json:"project_dir,omitempty" yaml:"project-dir,omitempty"`
+	Reason     string `json:"reason,omitempty" yaml:"reason,omitempty"`
 }
 
 func (s *SDK) SetProjectDiscovery(discovery ProjectDiscoveryFunc) {
@@ -46,34 +43,6 @@ func (s *SDK) SetComposeProjectDiscovery(spec ComposeProjectDiscovery) {
 	s.SetProjectDiscovery(func(projectDir string) (*config.ProjectClaim, error) {
 		return claimComposeProject(s.Metadata.Name, projectDir, spec)
 	})
-}
-
-func (s *SDK) GetProjectDetectionCommand() *cobra.Command {
-	var projectDir string
-	cmd := &cobra.Command{
-		Use:    "__detect-project",
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			claim, err := s.detectOwnProject(projectDir)
-			if err != nil {
-				return err
-			}
-			result := projectDetectionResult{Claimed: claim != nil}
-			if claim != nil {
-				result.Plugin = claim.Plugin
-				result.ProjectDir = claim.ProjectDir
-				result.Reason = claim.Reason
-			}
-			data, err := yaml.Marshal(result)
-			if err != nil {
-				return err
-			}
-			_, err = cmd.OutOrStdout().Write(data)
-			return err
-		},
-	}
-	cmd.Flags().StringVar(&projectDir, "path", ".", "Compose project directory to inspect.")
-	return cmd
 }
 
 func (s *SDK) detectOwnProject(projectDir string) (*config.ProjectClaim, error) {
@@ -126,7 +95,13 @@ func DetectProjectOwner(projectDir, requestedPlugin string) (*config.ProjectClai
 		if strings.TrimSpace(requestedPlugin) != "" && discovered.Name != requestedPlugin && !ContextPluginSupports(discovered.Name, requestedPlugin) {
 			continue
 		}
-		claim, ok := detectInstalledPluginProject(discovered, projectDir)
+		claim, ok, err := detectInstalledPluginProject(discovered, projectDir)
+		if err != nil {
+			if strings.TrimSpace(requestedPlugin) != "" {
+				return nil, err
+			}
+			continue
+		}
 		if !ok || !claimSupportsRequestedPlugin(claim, requestedPlugin) {
 			continue
 		}
@@ -135,15 +110,24 @@ func DetectProjectOwner(projectDir, requestedPlugin string) (*config.ProjectClai
 	return nil, nil
 }
 
-func detectInstalledPluginProject(discovered InstalledPlugin, projectDir string) (*config.ProjectClaim, bool) {
-	cmd := exec.Command(discovered.Path, "__detect-project", "--path", projectDir) // #nosec G204 -- plugin path comes from sitectl plugin discovery and is invoked only for its hidden project detector.
-	output, err := cmd.Output()
+func detectInstalledPluginProject(discovered InstalledPlugin, projectDir string) (*config.ProjectClaim, bool, error) {
+	req, err := NewProjectDetectRequest(projectDir)
 	if err != nil {
-		return nil, false
+		return nil, false, err
+	}
+	resp, err := runPluginRPCPath(discovered.Name, discovered.Path, req, pluginRPCPathOptions{})
+	if err != nil {
+		if IsRPCErrorCode(err, RPCErrorCodeNotRegistered) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("detect project with plugin %q: %w", discovered.Name, err)
 	}
 	var result projectDetectionResult
-	if err := yaml.Unmarshal(output, &result); err != nil || !result.Claimed {
-		return nil, false
+	if err := json.Unmarshal(resp.Result, &result); err != nil || !result.Claimed {
+		if err != nil {
+			return nil, false, fmt.Errorf("parse project detection from plugin %q: %w", discovered.Name, err)
+		}
+		return nil, false, nil
 	}
 	pluginName := strings.TrimSpace(result.Plugin)
 	if pluginName == "" {
@@ -157,7 +141,7 @@ func detectInstalledPluginProject(discovered InstalledPlugin, projectDir string)
 	if claim.ProjectDir == "" {
 		claim.ProjectDir = projectDir
 	}
-	return claim, true
+	return claim, true, nil
 }
 
 func claimSupportsRequestedPlugin(claim *config.ProjectClaim, requestedPlugin string) bool {

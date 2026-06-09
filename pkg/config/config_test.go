@@ -86,8 +86,7 @@ func TestCurrentPrefersAutodiscoveredLocalContext(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services:\n  drupal:\n    image: drupal:latest\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
 	}
-	previousDetector := projectClaimDetector
-	SetProjectClaimDetector(func(projectDir, requestedPlugin string) (*ProjectClaim, error) {
+	previousDetector := SetProjectClaimDetector(func(projectDir, requestedPlugin string) (*ProjectClaim, error) {
 		return &ProjectClaim{Plugin: "isle", ProjectDir: projectDir, Reason: "test claim"}, nil
 	})
 	t.Cleanup(func() {
@@ -205,7 +204,8 @@ func TestGetContextDotReturnsClaimedCWDContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetContext(.) error = %v", err)
 	}
-	if ctx.Name != "." || ctx.Plugin != "isle" || ctx.ProjectDir != projectDir || !ctx.Ephemeral {
+	expectedProjectDir := canonicalProjectDir(projectDir)
+	if ctx.Name != "." || ctx.Plugin != "isle" || ctx.ProjectDir != expectedProjectDir || !ctx.Ephemeral {
 		t.Fatalf("unexpected transient context: %+v", ctx)
 	}
 }

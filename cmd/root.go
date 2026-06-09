@@ -90,6 +90,7 @@ func init() {
 		&cobra.Group{ID: "plugins", Title: "Plugin Commands:"},
 	)
 
+	registerCoreServiceCommands()
 	discoverAndRegisterPlugins()
 }
 
@@ -102,6 +103,14 @@ func discoverAndRegisterPlugins() {
 		pluginPath := discovered.Path
 		binaryName := discovered.BinaryName
 		description := discovered.Description
+		if isRetiredPluginName(pluginName) {
+			slog.Debug("skipping retired discovered plugin command", "plugin", pluginName, "path", pluginPath)
+			continue
+		}
+		if rootHasCommandName(pluginName) {
+			slog.Debug("skipping discovered plugin command shadowed by core command", "plugin", pluginName, "path", pluginPath)
+			continue
+		}
 
 		pluginCmd := &cobra.Command{
 			Use:   pluginName,
@@ -118,4 +127,8 @@ func discoverAndRegisterPlugins() {
 		}
 		RootCmd.AddCommand(pluginCmd)
 	}
+}
+
+func isRetiredPluginName(name string) bool {
+	return name == "postgres"
 }

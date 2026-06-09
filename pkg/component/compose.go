@@ -2,35 +2,41 @@ package component
 
 import (
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	yaml "gopkg.in/yaml.v3"
 )
 
+// ComposeProject is an editable Docker Compose document.
 type ComposeProject struct {
-	root map[string]any
+	doc       *YAMLDocument
+	root      map[string]any
+	rootDirty bool
 }
 
+// ComposeDefinitions contains reusable Docker Compose sections owned by a
+// service component.
 type ComposeDefinitions struct {
-	Services map[string]any
-	Networks map[string]any
-	Volumes  map[string]any
-	Secrets  map[string]any
-	Configs  map[string]any
+	Services map[string]any `json:"services,omitempty" yaml:"services,omitempty"`
+	Networks map[string]any `json:"networks,omitempty" yaml:"networks,omitempty"`
+	Volumes  map[string]any `json:"volumes,omitempty" yaml:"volumes,omitempty"`
+	Secrets  map[string]any `json:"secrets,omitempty" yaml:"secrets,omitempty"`
+	Configs  map[string]any `json:"configs,omitempty" yaml:"configs,omitempty"`
 }
 
+// ParseComposeProject parses a full Docker Compose document.
 func ParseComposeProject(data []byte) (*ComposeProject, error) {
-	root := map[string]any{}
-	if len(data) == 0 {
-		return &ComposeProject{root: root}, nil
+	doc, err := LoadYAMLDocument(data)
+	if err != nil {
+		return nil, fmt.Errorf("load compose yaml: %w", err)
 	}
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil, fmt.Errorf("unmarshal compose yaml: %w", err)
-	}
-	return &ComposeProject{root: root}, nil
+	return &ComposeProject{doc: doc, rootDirty: true}, nil
 }
 
+// ParseComposeDefinitions parses service component compose definitions.
 func ParseComposeDefinitions(data []byte) (*ComposeDefinitions, error) {
 	root := map[string]any{}
 	if err := yaml.Unmarshal(data, &root); err != nil {
@@ -45,7 +51,11 @@ func ParseComposeDefinitions(data []byte) (*ComposeDefinitions, error) {
 	}, nil
 }
 
+// Bytes marshals the compose project back to YAML.
 func (c *ComposeProject) Bytes() ([]byte, error) {
+	if c != nil && c.doc != nil {
+		return c.doc.Bytes()
+	}
 	data, err := yaml.Marshal(c.root)
 	if err != nil {
 		return nil, fmt.Errorf("marshal compose yaml: %w", err)
@@ -53,8 +63,13 @@ func (c *ComposeProject) Bytes() ([]byte, error) {
 	return data, nil
 }
 
+// RemoveService removes a service and any references to it from depends_on.
 func (c *ComposeProject) RemoveService(name string) bool {
-	services := c.services()
+	services, err := c.services()
+	if err != nil {
+		slog.Warn("read compose services", "service", name, "error", err)
+		return false
+	}
 	if services == nil {
 		return false
 	}
@@ -62,54 +77,89 @@ func (c *ComposeProject) RemoveService(name string) bool {
 		return false
 	}
 
-	delete(services, name)
-	c.removeServiceDependencyReferences(name)
+	c.applyDocumentMutationBestEffort(func(doc *YAMLDocument) {
+		deleteDocumentSectionEntry(doc, "services", name)
+		removeDocumentServiceDependencyReferences(doc, name)
+	})
 	return true
 }
 
+// AddDefinitions merges service component definitions into the project.
 func (c *ComposeProject) AddDefinitions(defs *ComposeDefinitions) {
 	if defs == nil {
 		return
 	}
-	mergeIntoSection(c.root, "services", defs.Services)
-	mergeIntoSection(c.root, "networks", defs.Networks)
-	mergeIntoSection(c.root, "volumes", defs.Volumes)
-	mergeIntoSection(c.root, "secrets", defs.Secrets)
-	mergeIntoSection(c.root, "configs", defs.Configs)
+	c.applyDocumentMutationBestEffort(func(doc *YAMLDocument) {
+		mergeIntoDocumentSection(doc, "services", defs.Services)
+		mergeIntoDocumentSection(doc, "networks", defs.Networks)
+		mergeIntoDocumentSection(doc, "volumes", defs.Volumes)
+		mergeIntoDocumentSection(doc, "secrets", defs.Secrets)
+		mergeIntoDocumentSection(doc, "configs", defs.Configs)
+	})
 }
 
+// ApplyRules applies YAML rules against the compose project.
+func (c *ComposeProject) ApplyRules(rules []YAMLRule) error {
+	if c == nil || len(rules) == 0 {
+		return nil
+	}
+	for _, rule := range rules {
+		switch rule.Op {
+		case OpSet, OpRestore:
+			err := c.applyDocumentMutation(func(doc *YAMLDocument) error {
+				return doc.SetValue(rule.Path, rule.Value)
+			})
+			if err != nil {
+				return fmt.Errorf("apply compose rule %q at %q: %w", rule.Op, rule.Path, err)
+			}
+		case OpDelete:
+			err := c.applyDocumentMutation(func(doc *YAMLDocument) error {
+				return doc.DeletePath(rule.Path)
+			})
+			if err != nil {
+				return fmt.Errorf("apply compose rule %q at %q: %w", rule.Op, rule.Path, err)
+			}
+		default:
+			return fmt.Errorf("apply compose rule %q at %q: unsupported operation", rule.Op, rule.Path)
+		}
+	}
+	return nil
+}
+
+// SetDefinition sets one top-level compose section entry.
 func (c *ComposeProject) SetDefinition(section, name string, value any) {
 	if c == nil || strings.TrimSpace(section) == "" || strings.TrimSpace(name) == "" {
 		return
 	}
-	target := nestedMap(c.root[section])
-	if target == nil {
-		target = map[string]any{}
-	}
-	target[name] = value
-	c.root[section] = target
+	c.applyDocumentMutationBestEffort(func(doc *YAMLDocument) {
+		setDocumentSectionEntry(doc, section, name, value)
+	})
 }
 
+// DeleteDefinition removes one top-level compose section entry.
 func (c *ComposeProject) DeleteDefinition(section, name string) bool {
 	if c == nil || strings.TrimSpace(section) == "" || strings.TrimSpace(name) == "" {
 		return false
 	}
-	target := nestedMap(c.root[section])
+	root, err := c.rootMap()
+	if err != nil {
+		slog.Warn("read compose definitions", "section", section, "name", name, "error", err)
+		return false
+	}
+	target := nestedMap(root[section])
 	if target == nil {
 		return false
 	}
 	if _, ok := target[name]; !ok {
 		return false
 	}
-	delete(target, name)
-	if len(target) == 0 {
-		delete(c.root, section)
-	} else {
-		c.root[section] = target
-	}
+	c.applyDocumentMutationBestEffort(func(doc *YAMLDocument) {
+		deleteDocumentSectionEntry(doc, section, name)
+	})
 	return true
 }
 
+// Definition returns one compose definition by section and name.
 func (d *ComposeDefinitions) Definition(section, name string) (any, bool) {
 	if d == nil {
 		return nil, false
@@ -139,68 +189,109 @@ func (d *ComposeDefinitions) section(section string) map[string]any {
 	}
 }
 
+// PruneUnusedResources removes unused volumes, networks, secrets, and configs.
 func (c *ComposeProject) PruneUnusedResources() {
+	root, err := c.rootMap()
+	if err != nil {
+		slog.Warn("read compose resources", "error", err)
+		return
+	}
+	removals := map[string][]string{}
 	for _, section := range []string{"volumes", "networks", "secrets", "configs"} {
-		entries := nestedMap(c.root[section])
+		entries := nestedMap(root[section])
 		if len(entries) == 0 {
 			continue
 		}
 
-		used := c.usedResources(section)
+		used := usedResources(root, section)
 		for name := range entries {
 			if !used[name] {
-				delete(entries, name)
+				removals[section] = append(removals[section], name)
 			}
 		}
-		if len(entries) == 0 {
-			delete(c.root, section)
-			continue
-		}
-		c.root[section] = entries
 	}
+	if len(removals) == 0 {
+		return
+	}
+	c.applyDocumentMutationBestEffort(func(doc *YAMLDocument) {
+		for section, names := range removals {
+			for _, name := range names {
+				deleteDocumentSectionEntry(doc, section, name)
+			}
+		}
+	})
 }
 
-func (c *ComposeProject) services() map[string]any {
-	services := nestedMap(c.root["services"])
+func (c *ComposeProject) services() (map[string]any, error) {
+	root, err := c.rootMap()
+	if err != nil {
+		return nil, err
+	}
+	services := nestedMap(root["services"])
 	if services == nil {
+		return nil, nil
+	}
+	root["services"] = services
+	return services, nil
+}
+
+func (c *ComposeProject) applyDocumentMutation(mutate func(*YAMLDocument) error) error {
+	if c == nil || mutate == nil {
 		return nil
 	}
-	c.root["services"] = services
-	return services
+	if c.doc == nil {
+		doc, err := LoadYAMLDocument(nil)
+		if err != nil {
+			return fmt.Errorf("load empty compose document: %w", err)
+		}
+		c.doc = doc
+	}
+	if err := mutate(c.doc); err != nil {
+		return err
+	}
+	c.rootDirty = true
+	return nil
 }
 
-func (c *ComposeProject) removeServiceDependencyReferences(name string) {
-	for _, rawService := range c.services() {
-		service, ok := rawService.(map[string]any)
-		if !ok {
-			continue
-		}
-		switch dependsOn := service["depends_on"].(type) {
-		case []any:
-			filtered := make([]any, 0, len(dependsOn))
-			for _, item := range dependsOn {
-				if str, ok := item.(string); ok && str == name {
-					continue
-				}
-				filtered = append(filtered, item)
-			}
-			if len(filtered) == 0 {
-				delete(service, "depends_on")
-			} else {
-				service["depends_on"] = filtered
-			}
-		case map[string]any:
-			delete(dependsOn, name)
-			if len(dependsOn) == 0 {
-				delete(service, "depends_on")
-			}
-		}
+func (c *ComposeProject) applyDocumentMutationBestEffort(mutate func(*YAMLDocument)) {
+	if err := c.applyDocumentMutation(func(doc *YAMLDocument) error {
+		mutate(doc)
+		return nil
+	}); err != nil {
+		slog.Warn("apply compose document mutation", "error", err)
 	}
 }
 
-func (c *ComposeProject) usedResources(section string) map[string]bool {
+func (c *ComposeProject) rootMap() (map[string]any, error) {
+	if c == nil {
+		return nil, nil
+	}
+	if !c.rootDirty && c.root != nil {
+		return c.root, nil
+	}
+	if c.doc == nil {
+		if c.root == nil {
+			c.root = map[string]any{}
+		}
+		c.rootDirty = false
+		return c.root, nil
+	}
+	data, err := c.doc.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("marshal compose document: %w", err)
+	}
+	root := map[string]any{}
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("unmarshal compose document: %w", err)
+	}
+	c.root = root
+	c.rootDirty = false
+	return c.root, nil
+}
+
+func usedResources(root map[string]any, section string) map[string]bool {
 	used := map[string]bool{}
-	for _, rawService := range c.services() {
+	for _, rawService := range nestedMap(root["services"]) {
 		service, ok := rawService.(map[string]any)
 		if !ok {
 			continue
@@ -317,16 +408,119 @@ func nestedMap(value any) map[string]any {
 	return nil
 }
 
-func mergeIntoSection(root map[string]any, key string, entries map[string]any) {
-	if len(entries) == 0 {
+func mergeIntoDocumentSection(doc *YAMLDocument, section string, entries map[string]any) {
+	if doc == nil || len(entries) == 0 {
 		return
 	}
-	target := nestedMap(root[key])
+	target := ensureDocumentSection(doc, section)
+	for _, name := range sortedComposeDefinitionNames(entries) {
+		valueNode, err := yamlNodeForValue(entries[name])
+		if err != nil {
+			continue
+		}
+		setMappingValue(target, name, valueNode)
+	}
+}
+
+func setDocumentSectionEntry(doc *YAMLDocument, section, name string, value any) {
+	if doc == nil || strings.TrimSpace(section) == "" || strings.TrimSpace(name) == "" {
+		return
+	}
+	valueNode, err := yamlNodeForValue(value)
+	if err != nil {
+		return
+	}
+	setMappingValue(ensureDocumentSection(doc, section), name, valueNode)
+}
+
+func deleteDocumentSectionEntry(doc *YAMLDocument, section, name string) bool {
+	if doc == nil || strings.TrimSpace(section) == "" || strings.TrimSpace(name) == "" {
+		return false
+	}
+	root := doc.mappingRoot()
+	if root == nil {
+		return false
+	}
+	target := mappingValue(root, section)
+	if target == nil || target.Kind != yaml.MappingNode || mappingValue(target, name) == nil {
+		return false
+	}
+	deleteMappingValue(target, name)
+	if len(target.Content) == 0 {
+		deleteMappingValue(root, section)
+	}
+	return true
+}
+
+func ensureDocumentSection(doc *YAMLDocument, section string) *yaml.Node {
+	root := doc.ensureMappingRoot()
+	target := mappingValue(root, section)
 	if target == nil {
-		target = map[string]any{}
+		target = &yaml.Node{
+			Kind:    yaml.MappingNode,
+			Tag:     "!!map",
+			Content: []*yaml.Node{},
+		}
+		setMappingValue(root, section, target)
 	}
-	for name, value := range entries {
-		target[name] = value
+	if target.Kind != yaml.MappingNode {
+		target.Kind = yaml.MappingNode
+		target.Tag = "!!map"
+		target.Content = []*yaml.Node{}
 	}
-	root[key] = target
+	return target
+}
+
+func sortedComposeDefinitionNames(entries map[string]any) []string {
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		if strings.TrimSpace(name) != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func removeDocumentServiceDependencyReferences(doc *YAMLDocument, name string) {
+	if doc == nil {
+		return
+	}
+	root := doc.mappingRoot()
+	if root == nil {
+		return
+	}
+	services := mappingValue(root, "services")
+	if services == nil || services.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 1; i < len(services.Content); i += 2 {
+		service := services.Content[i]
+		if service == nil || service.Kind != yaml.MappingNode {
+			continue
+		}
+		dependsOn := mappingValue(service, "depends_on")
+		switch {
+		case dependsOn == nil:
+			continue
+		case dependsOn.Kind == yaml.SequenceNode:
+			filtered := make([]*yaml.Node, 0, len(dependsOn.Content))
+			for _, item := range dependsOn.Content {
+				if item != nil && item.Kind == yaml.ScalarNode && item.Value == name {
+					continue
+				}
+				filtered = append(filtered, item)
+			}
+			if len(filtered) == 0 {
+				deleteMappingValue(service, "depends_on")
+			} else {
+				dependsOn.Content = filtered
+			}
+		case dependsOn.Kind == yaml.MappingNode:
+			deleteMappingValue(dependsOn, name)
+			if len(dependsOn.Content) == 0 {
+				deleteMappingValue(service, "depends_on")
+			}
+		}
+	}
 }

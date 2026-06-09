@@ -221,6 +221,7 @@ func (c *Context) ReadSmallFile(filename string) (string, error) {
 	if c.DockerHostType == ContextLocal {
 		data, err := os.ReadFile(filename) // #nosec G304 -- path is an explicit caller-selected context file.
 		if err != nil {
+			err = normalizeFileNotExistError(err)
 			return "", fmt.Errorf("read file %q: %w", filename, err)
 		}
 		return string(data), nil
@@ -234,6 +235,7 @@ func (c *Context) ReadSmallFile(filename string) (string, error) {
 
 	data, err := accessor.ReadFile(filename)
 	if err != nil {
+		err = normalizeFileNotExistError(err)
 		return "", fmt.Errorf("read remote file %q: %w", filename, err)
 	}
 	return string(data), nil

@@ -34,17 +34,18 @@ const (
 )
 
 type ComposeSpec struct {
-	Definitions         *ComposeDefinitions
-	RemoveServices      []string
-	PruneUnusedResource bool
+	Definitions         *ComposeDefinitions `json:"definitions,omitempty" yaml:"definitions,omitempty"`
+	RemoveServices      []string            `json:"remove_services,omitempty" yaml:"remove_services,omitempty"`
+	PruneUnusedResource bool                `json:"prune_unused_resource,omitempty" yaml:"prune_unused_resource,omitempty"`
+	Rules               []YAMLRule          `json:"rules,omitempty" yaml:"rules,omitempty"`
 }
 
 type DrupalSpec struct {
-	ConfigSyncDir     string
-	Files             map[string][]byte
-	DeleteFiles       []string
-	DisableTransforms []DrupalTransform
-	EnableTransforms  []DrupalTransform
+	ConfigSyncDir     string            `json:"config_sync_dir,omitempty" yaml:"config_sync_dir,omitempty"`
+	Files             map[string][]byte `json:"files,omitempty" yaml:"files,omitempty"`
+	DeleteFiles       []string          `json:"delete_files,omitempty" yaml:"delete_files,omitempty"`
+	DisableTransforms []DrupalTransform `json:"-" yaml:"-"`
+	EnableTransforms  []DrupalTransform `json:"-" yaml:"-"`
 }
 
 type DrupalTransform interface {
@@ -64,6 +65,7 @@ type ComponentSpec struct {
 	Gates         GateSpec
 	Compose       ComposeSpec
 	Drupal        DrupalSpec
+	Files         FileStateSpec
 	BeforeDisable []Hook
 	AfterDisable  []Hook
 	BeforeEnable  []Hook
@@ -84,9 +86,9 @@ type StaticComponent struct {
 }
 
 type GateSpec struct {
-	LocalOnly           bool
-	DisableConfirmation string
-	EnableConfirmation  string
+	LocalOnly           bool   `json:"local_only,omitempty" yaml:"local_only,omitempty"`
+	DisableConfirmation string `json:"disable_confirmation,omitempty" yaml:"disable_confirmation,omitempty"`
+	EnableConfirmation  string `json:"enable_confirmation,omitempty" yaml:"enable_confirmation,omitempty"`
 }
 
 type ApplyOptions struct {
@@ -170,6 +172,9 @@ func (m *Manager) DisableComponentWithOptions(ctx context.Context, spec Componen
 	if err := m.applyDrupalDisable(spec.Drupal); err != nil {
 		return err
 	}
+	if err := m.applyFiles(spec.Files); err != nil {
+		return err
+	}
 
 	for _, hook := range spec.AfterDisable {
 		if err := hook(ctx, runtime); err != nil {
@@ -209,6 +214,9 @@ func (m *Manager) EnableComponentWithOptions(ctx context.Context, spec Component
 	if err := m.applyDrupalEnable(spec.Drupal); err != nil {
 		return err
 	}
+	if err := m.applyFiles(spec.Files); err != nil {
+		return err
+	}
 
 	for _, hook := range spec.AfterEnable {
 		if err := hook(ctx, runtime); err != nil {
@@ -245,7 +253,7 @@ func (m *Manager) ReconcileAll(ctx context.Context, states map[string]State, opt
 }
 
 func (m *Manager) applyComposeDisable(spec ComposeSpec) error {
-	if len(spec.RemoveServices) == 0 {
+	if len(spec.RemoveServices) == 0 && len(spec.Rules) == 0 {
 		return nil
 	}
 
@@ -265,6 +273,9 @@ func (m *Manager) applyComposeDisable(spec ComposeSpec) error {
 	if spec.PruneUnusedResource {
 		composeFile.PruneUnusedResources()
 	}
+	if err := composeFile.ApplyRules(spec.Rules); err != nil {
+		return err
+	}
 
 	updated, err := composeFile.Bytes()
 	if err != nil {
@@ -278,7 +289,7 @@ func (m *Manager) applyComposeDisable(spec ComposeSpec) error {
 }
 
 func (m *Manager) applyComposeEnable(spec ComposeSpec) error {
-	if spec.Definitions == nil {
+	if spec.Definitions == nil && len(spec.Rules) == 0 {
 		return nil
 	}
 
@@ -293,6 +304,9 @@ func (m *Manager) applyComposeEnable(spec ComposeSpec) error {
 		return err
 	}
 	composeFile.AddDefinitions(spec.Definitions)
+	if err := composeFile.ApplyRules(spec.Rules); err != nil {
+		return err
+	}
 
 	updated, err := composeFile.Bytes()
 	if err != nil {
@@ -343,6 +357,13 @@ func (m *Manager) applyDrupalEnable(spec DrupalSpec) error {
 	}
 
 	return set.Save(m.ctx)
+}
+
+func (m *Manager) applyFiles(spec FileStateSpec) error {
+	if len(spec.Rules) == 0 {
+		return nil
+	}
+	return applyFileState(m.ctx, m.ctx.ProjectDir, spec)
 }
 
 func (m *Manager) composePath() string {

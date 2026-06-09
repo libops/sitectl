@@ -3,9 +3,9 @@ package job
 import "strings"
 
 type Spec struct {
-	Name        string `yaml:"name"`
-	Plugin      string `yaml:"plugin,omitempty"`
-	Description string `yaml:"description,omitempty"`
+	Name        string `json:"name" yaml:"name"`
+	Plugin      string `json:"plugin,omitempty" yaml:"plugin,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
 func Find(specs []Spec, name string) (Spec, bool) {

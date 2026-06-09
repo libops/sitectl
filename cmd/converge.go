@@ -41,17 +41,34 @@ Examples:
 		if pluginName == "" || pluginName == "core" {
 			return fmt.Errorf("context %q does not define a plugin that supports converge", ctx.Name)
 		}
-		if !pluginHasConverge(pluginName) {
+		hasConverge, err := pluginSupportsConverge(pluginName)
+		if err != nil {
+			return err
+		}
+		if !hasConverge {
 			return fmt.Errorf("plugin %q does not support converge", pluginName)
 		}
 
-		invocation := append([]string{"--context", contextName, "__converge"}, filteredArgs...)
-		_, err = pluginSDK.InvokePluginCommand(pluginName, invocation, plugin.CommandExecOptions{
-			Context: RootCmd.Context(),
-			Stdin:   RootCmd.InOrStdin(),
-			Stdout:  cmd.OutOrStdout(),
-			Stderr:  cmd.ErrOrStderr(),
+		params, pluginArgs, err := extractConvergeRPCParams(filteredArgs)
+		if err != nil {
+			return err
+		}
+		req, err := plugin.NewConvergeRunRequest(params, pluginArgs...)
+		if err != nil {
+			return err
+		}
+		req.Context = contextName
+		resp, err := pluginSDK.InvokePluginRPC(pluginName, req, plugin.CommandExecOptions{
+			Context:    RootCmd.Context(),
+			Stdin:      RootCmd.InOrStdin(),
+			Stderr:     cmd.ErrOrStderr(),
+			LiveStderr: true,
 		})
+		if strings.TrimSpace(resp.Output) != "" {
+			if _, printErr := fmt.Fprint(cmd.OutOrStdout(), resp.Output); printErr != nil {
+				return printErr
+			}
+		}
 		if err != nil {
 			return cleanPluginCommandError(err)
 		}

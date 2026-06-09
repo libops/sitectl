@@ -50,7 +50,10 @@ Examples:
 		}
 
 		pluginName := strings.TrimSpace(ctx.Plugin)
-		hasDeployHooks := pluginHasDeployHooks(cmd, contextName, pluginName)
+		hasDeployHooks, err := pluginHasDeployHooks(cmd, contextName, pluginName)
+		if err != nil {
+			return err
+		}
 
 		// 1. Pre-down hooks
 		if hasDeployHooks {
@@ -110,25 +113,34 @@ func init() {
 
 // pluginHasDeployHooks checks whether the context plugin has registered deploy hooks
 // using the lightweight plugin discovery metadata.
-func pluginHasDeployHooks(_ *cobra.Command, _ string, pluginName string) bool {
+func pluginHasDeployHooks(_ *cobra.Command, _ string, pluginName string) (bool, error) {
 	if pluginName == "" || pluginName == "core" {
-		return false
+		return false, nil
 	}
-	installed, ok := plugin.FindInstalled(pluginName)
-	if !ok {
-		return false
+	installed, err := installedPluginWithMetadata(pluginName)
+	if err != nil {
+		return false, err
 	}
-	return installed.CanDeploy
+	return installed.CanDeploy, nil
 }
 
-// invokeDeployHook calls __deploy <hook> on the context plugin.
+// invokeDeployHook calls the deploy hook on the context plugin over RPC.
 func invokeDeployHook(cmd *cobra.Command, contextName, pluginName, hook string) error {
-	invocation := []string{"--context", contextName, "__deploy", hook}
-	_, err := pluginSDK.InvokePluginCommand(pluginName, invocation, plugin.CommandExecOptions{
-		Context: cmd.Context(),
-		Stdout:  cmd.OutOrStdout(),
-		Stderr:  cmd.ErrOrStderr(),
+	req, err := plugin.NewDeployRunRequest(hook)
+	if err != nil {
+		return err
+	}
+	req.Context = contextName
+	resp, err := pluginSDK.InvokePluginRPC(pluginName, req, plugin.CommandExecOptions{
+		Context:    cmd.Context(),
+		Stderr:     cmd.ErrOrStderr(),
+		LiveStderr: true,
 	})
+	if strings.TrimSpace(resp.Output) != "" {
+		if _, printErr := fmt.Fprint(cmd.OutOrStdout(), resp.Output); printErr != nil && err == nil {
+			err = printErr
+		}
+	}
 	return err
 }
 

@@ -14,22 +14,22 @@ import (
 type InputFunc func(question ...string) (string, error)
 
 type StateGuidance struct {
-	Question        string
-	OnHelp          string
-	OffHelp         string
-	DefaultState    State
-	EnabledHelp     string
-	DisabledHelp    string
-	SupersededHelp  string
-	DistributedHelp string
+	Question        string `json:"question,omitempty" yaml:"question,omitempty"`
+	OnHelp          string `json:"on_help,omitempty" yaml:"on_help,omitempty"`
+	OffHelp         string `json:"off_help,omitempty" yaml:"off_help,omitempty"`
+	DefaultState    State  `json:"default_state,omitempty" yaml:"default_state,omitempty"`
+	EnabledHelp     string `json:"enabled_help,omitempty" yaml:"enabled_help,omitempty"`
+	DisabledHelp    string `json:"disabled_help,omitempty" yaml:"disabled_help,omitempty"`
+	SupersededHelp  string `json:"superseded_help,omitempty" yaml:"superseded_help,omitempty"`
+	DistributedHelp string `json:"distributed_help,omitempty" yaml:"distributed_help,omitempty"`
 }
 
 type Choice struct {
-	Value            string
-	Label            string
-	Help             string
-	Aliases          []string
-	AllowCustomInput bool
+	Value            string   `json:"value" yaml:"value"`
+	Label            string   `json:"label,omitempty" yaml:"label,omitempty"`
+	Help             string   `json:"help,omitempty" yaml:"help,omitempty"`
+	Aliases          []string `json:"aliases,omitempty" yaml:"aliases,omitempty"`
+	AllowCustomInput bool     `json:"allow_custom_input,omitempty" yaml:"allow_custom_input,omitempty"`
 }
 
 const defaultRenderWidth = 80

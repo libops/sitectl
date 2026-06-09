@@ -32,7 +32,8 @@ Examples:
 		if err != nil {
 			return err
 		}
-		if len(filteredArgs) == 0 {
+		_, componentArg, ok := firstComponentSetArg(cmd, filteredArgs)
+		if !ok {
 			return fmt.Errorf("component name is required")
 		}
 
@@ -42,7 +43,6 @@ Examples:
 		}
 
 		pluginName := strings.TrimSpace(ctx.Plugin)
-		componentArg := filteredArgs[0]
 		// Allow plugin/component namespacing: resolve the owning plugin.
 		if pluginPart, _, ok := splitNamespacedComponent(componentArg); ok {
 			pluginName = pluginPart
@@ -50,17 +50,34 @@ Examples:
 		if pluginName == "" || pluginName == "core" {
 			return fmt.Errorf("context %q does not define a plugin that supports set", ctx.Name)
 		}
-		if !pluginHasSet(pluginName) {
+		hasSet, err := pluginSupportsSet(pluginName)
+		if err != nil {
+			return err
+		}
+		if !hasSet {
 			return fmt.Errorf("plugin %q does not support set", pluginName)
 		}
 
-		invocation := append([]string{"--context", contextName, "__set"}, filteredArgs...)
-		_, err = pluginSDK.InvokePluginCommand(pluginName, invocation, plugin.CommandExecOptions{
-			Context: RootCmd.Context(),
-			Stdin:   RootCmd.InOrStdin(),
-			Stdout:  cmd.OutOrStdout(),
-			Stderr:  cmd.ErrOrStderr(),
+		params, pluginArgs, err := extractSetRPCParams(filteredArgs)
+		if err != nil {
+			return err
+		}
+		req, err := plugin.NewSetRunRequest(params, pluginArgs...)
+		if err != nil {
+			return err
+		}
+		req.Context = contextName
+		resp, err := pluginSDK.InvokePluginRPC(pluginName, req, plugin.CommandExecOptions{
+			Context:    RootCmd.Context(),
+			Stdin:      RootCmd.InOrStdin(),
+			Stderr:     cmd.ErrOrStderr(),
+			LiveStderr: true,
 		})
+		if strings.TrimSpace(resp.Output) != "" {
+			if _, printErr := fmt.Fprint(cmd.OutOrStdout(), resp.Output); printErr != nil {
+				return printErr
+			}
+		}
 		if err != nil {
 			return cleanPluginCommandError(err)
 		}

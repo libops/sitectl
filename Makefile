@@ -1,4 +1,4 @@
-.PHONY: build deps lint test docker integration-test plugins install-plugins publish-aptly-repo install
+.PHONY: build deps lint test docker integration-test plugins install-plugins publish-aptly-repo install bump-captcha-protect
 
 BINARY_NAME=sitectl
 DOCS_PORT ?= 3000
@@ -33,3 +33,5 @@ test: build
 publish-aptly-repo:
 	bash ./scripts/publish-aptly-repo.sh
 
+bump-captcha-protect:
+	bash ./scripts/bump-captcha-protect.sh

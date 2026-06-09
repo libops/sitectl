@@ -169,6 +169,9 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	if err := r.sdk.reconcileCreateServiceComponents(cmd.Context(), ctx, req.Decisions); err != nil {
+		return err
+	}
 	if cloned {
 		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeInit); err != nil {
 			return err

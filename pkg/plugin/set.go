@@ -12,14 +12,16 @@ type SetRunner interface {
 	Run(cmd *cobra.Command, args []string, ctx *config.Context) error
 }
 
-// RegisterSetRunner registers a set runner for the plugin. The SDK creates the
-// __set hidden command that is invoked by sitectl set.
+// RegisterSetRunner registers a set runner for the plugin. The SDK invokes it
+// through the plugin RPC entrypoint for sitectl set. BindFlags must declare the
+// RPC-bridged --path flag; registration panics if required bridge flags are
+// missing.
 func (s *SDK) RegisterSetRunner(runner SetRunner) {
 	if s == nil || runner == nil {
 		return
 	}
 	cmd := &cobra.Command{
-		Use:          "__set",
+		Use:          "set",
 		Short:        "Internal set hook",
 		Hidden:       true,
 		SilenceUsage: true,
@@ -33,6 +35,6 @@ func (s *SDK) RegisterSetRunner(runner SetRunner) {
 		},
 	}
 	runner.BindFlags(cmd)
-	s.RootCmd.AddCommand(cmd)
+	s.registerSetCommand(cmd)
 	s.hasSet = true
 }

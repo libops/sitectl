@@ -3,9 +3,9 @@ package component
 import "fmt"
 
 type RepoSource struct {
-	Repo string
-	Ref  string
-	Path string
+	Repo string `json:"repo,omitempty" yaml:"repo,omitempty"`
+	Ref  string `json:"ref,omitempty" yaml:"ref,omitempty"`
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
 }
 
 type RuleOp string
@@ -18,18 +18,34 @@ const (
 )
 
 type YAMLRule struct {
-	Files       []string
-	Exclude     []string
-	SourceFiles []string
-	Op          RuleOp
-	Path        string
-	Value       any
-	Old         any
+	Files       []string `json:"files,omitempty" yaml:"files,omitempty"`
+	Exclude     []string `json:"exclude,omitempty" yaml:"exclude,omitempty"`
+	SourceFiles []string `json:"source_files,omitempty" yaml:"source_files,omitempty"`
+	Op          RuleOp   `json:"op,omitempty" yaml:"op,omitempty"`
+	Path        string   `json:"path,omitempty" yaml:"path,omitempty"`
+	Value       any      `json:"value,omitempty" yaml:"value,omitempty"`
+	Old         any      `json:"old,omitempty" yaml:"old,omitempty"`
 }
 
 type YAMLStateSpec struct {
-	Canonical []RepoSource
-	Rules     []YAMLRule
+	Canonical []RepoSource `json:"canonical,omitempty" yaml:"canonical,omitempty"`
+	Rules     []YAMLRule   `json:"rules,omitempty" yaml:"rules,omitempty"`
+}
+
+// FileRule describes one project-file mutation or state check.
+type FileRule struct {
+	Files       []string `json:"files,omitempty" yaml:"files,omitempty"`
+	Op          RuleOp   `json:"op,omitempty" yaml:"op,omitempty"`
+	Path        string   `json:"path,omitempty" yaml:"path,omitempty"`
+	Value       any      `json:"value,omitempty" yaml:"value,omitempty"`
+	StartMarker string   `json:"start_marker,omitempty" yaml:"start_marker,omitempty"`
+	EndMarker   string   `json:"end_marker,omitempty" yaml:"end_marker,omitempty"`
+	Content     string   `json:"content,omitempty" yaml:"content,omitempty"`
+}
+
+// FileStateSpec groups project-file rules for a component state.
+type FileStateSpec struct {
+	Rules []FileRule `json:"rules,omitempty" yaml:"rules,omitempty"`
 }
 
 type DrupalModuleDependencyMode string
@@ -45,27 +61,32 @@ const (
 )
 
 type DrupalModuleDependency struct {
-	Module          string
-	ComposerPackage string
-	Mode            DrupalModuleDependencyMode
+	Module          string                     `json:"module,omitempty" yaml:"module,omitempty"`
+	ComposerPackage string                     `json:"composer_package,omitempty" yaml:"composer_package,omitempty"`
+	Mode            DrupalModuleDependencyMode `json:"mode,omitempty" yaml:"mode,omitempty"`
 }
 
 type Dependencies struct {
-	DrupalModules []DrupalModuleDependency
+	DrupalModules []DrupalModuleDependency `json:"drupal_modules,omitempty" yaml:"drupal_modules,omitempty"`
 }
 
+// FollowUpSpec describes a non-secret option collected after a component
+// disposition decision. Follow-up values can be forwarded through plugin RPC
+// passthrough args and may be visible in process listings during interactive
+// calls; do not use follow-ups for tokens, passwords, secret keys, or other
+// sensitive values.
 type FollowUpSpec struct {
-	Name                 string
-	Label                string
-	FlagName             string
-	FlagUsage            string
-	Question             string
-	Choices              []Choice
-	DefaultValue         string
-	PromptOnCreate       bool
-	AppliesTo            State
-	AppliesToDisposition Disposition
-	CustomPrompt         string
+	Name                 string      `json:"name,omitempty" yaml:"name,omitempty"`
+	Label                string      `json:"label,omitempty" yaml:"label,omitempty"`
+	FlagName             string      `json:"flag_name,omitempty" yaml:"flag_name,omitempty"`
+	FlagUsage            string      `json:"flag_usage,omitempty" yaml:"flag_usage,omitempty"`
+	Question             string      `json:"question,omitempty" yaml:"question,omitempty"`
+	Choices              []Choice    `json:"choices,omitempty" yaml:"choices,omitempty"`
+	DefaultValue         string      `json:"default_value,omitempty" yaml:"default_value,omitempty"`
+	PromptOnCreate       bool        `json:"prompt_on_create,omitempty" yaml:"prompt_on_create,omitempty"`
+	AppliesTo            State       `json:"applies_to,omitempty" yaml:"applies_to,omitempty"`
+	AppliesToDisposition Disposition `json:"applies_to_disposition,omitempty" yaml:"applies_to_disposition,omitempty"`
+	CustomPrompt         string      `json:"custom_prompt,omitempty" yaml:"custom_prompt,omitempty"`
 }
 
 type DataMigrationRequirement string
@@ -77,34 +98,35 @@ const (
 )
 
 type TransitionBehavior struct {
-	DataMigration DataMigrationRequirement
-	Summary       string
+	DataMigration DataMigrationRequirement `json:"data_migration,omitempty" yaml:"data_migration,omitempty"`
+	Summary       string                   `json:"summary,omitempty" yaml:"summary,omitempty"`
 }
 
 type Behavior struct {
-	Idempotent bool
-	Enable     TransitionBehavior
-	Disable    TransitionBehavior
+	Idempotent bool               `json:"idempotent,omitempty" yaml:"idempotent,omitempty"`
+	Enable     TransitionBehavior `json:"enable,omitempty" yaml:"enable,omitempty"`
+	Disable    TransitionBehavior `json:"disable,omitempty" yaml:"disable,omitempty"`
 }
 
 type DomainSpec struct {
-	Compose YAMLStateSpec
-	Drupal  YAMLStateSpec
+	Compose YAMLStateSpec `json:"compose,omitempty" yaml:"compose,omitempty"`
+	Drupal  YAMLStateSpec `json:"drupal,omitempty" yaml:"drupal,omitempty"`
+	Files   FileStateSpec `json:"files,omitempty" yaml:"files,omitempty"`
 }
 
 type Definition struct {
-	Name                string
-	DefaultState        State
-	DefaultDisposition  Disposition
-	AllowedDispositions []Disposition
-	Guidance            StateGuidance
-	PromptOnCreate      bool
-	FollowUps           []FollowUpSpec
-	Gates               GateSpec
-	Dependencies        Dependencies
-	Behavior            Behavior
-	On                  DomainSpec
-	Off                 DomainSpec
+	Name                string         `json:"name" yaml:"name"`
+	DefaultState        State          `json:"default_state,omitempty" yaml:"default_state,omitempty"`
+	DefaultDisposition  Disposition    `json:"default_disposition,omitempty" yaml:"default_disposition,omitempty"`
+	AllowedDispositions []Disposition  `json:"allowed_dispositions,omitempty" yaml:"allowed_dispositions,omitempty"`
+	Guidance            StateGuidance  `json:"guidance,omitempty" yaml:"guidance,omitempty"`
+	PromptOnCreate      bool           `json:"prompt_on_create,omitempty" yaml:"prompt_on_create,omitempty"`
+	FollowUps           []FollowUpSpec `json:"follow_ups,omitempty" yaml:"follow_ups,omitempty"`
+	Gates               GateSpec       `json:"gates,omitempty" yaml:"gates,omitempty"`
+	Dependencies        Dependencies   `json:"dependencies,omitempty" yaml:"dependencies,omitempty"`
+	Behavior            Behavior       `json:"behavior,omitempty" yaml:"behavior,omitempty"`
+	On                  DomainSpec     `json:"on,omitempty" yaml:"on,omitempty"`
+	Off                 DomainSpec     `json:"off,omitempty" yaml:"off,omitempty"`
 }
 
 func (d Definition) DrupalModulesForEnable() []DrupalModuleDependency {

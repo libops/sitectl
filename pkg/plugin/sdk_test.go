@@ -2,6 +2,10 @@ package plugin
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -78,7 +82,14 @@ func TestGetContextSupportsDotContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetContext() error = %v", err)
 	}
-	if got.Name != "." || got.Plugin != "isle" || got.ProjectDir != projectDir || !got.Ephemeral {
+	expectedProjectDir, err := filepath.Abs(projectDir)
+	if err != nil {
+		t.Fatalf("Abs(projectDir) error = %v", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(expectedProjectDir); err == nil {
+		expectedProjectDir = resolved
+	}
+	if got.Name != "." || got.Plugin != "isle" || got.ProjectDir != expectedProjectDir || !got.Ephemeral {
 		t.Fatalf("unexpected transient context: %+v", got)
 	}
 }
@@ -122,22 +133,11 @@ func TestPluginIncludesMergesBuiltinAndInstalledWithoutDuplicates(t *testing.T) 
 	dir := t.TempDir()
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	script := `#!/bin/sh
-if [ "$1" = "__plugin-metadata" ]; then
-  cat <<'YAML'
-name: isle
-includes:
-  - drupal
-  - libops
-YAML
-  exit 0
-fi
-if [ "$1" = "create" ] && [ "$2" = "--help" ]; then
-  exit 0
-fi
-exit 1
-`
-	writePluginScript(t, dir, "sitectl-isle", script)
+	writeRPCFixturePlugin(t, dir, "sitectl-isle", InstalledPlugin{
+		ProtocolVersion: RPCProtocolVersion,
+		Name:            "isle",
+		Includes:        []string{"drupal", "libops"},
+	}, "create-help")
 
 	got := pluginIncludes("isle")
 	want := []string{"drupal", "libops"}
@@ -146,143 +146,390 @@ exit 1
 	}
 }
 
-func TestInvokePluginCommandCapturePassesContextAndLogLevel(t *testing.T) {
+func TestInvokePluginRPCPassesContextAndLogLevelOverStdin(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("COLUMNS", "123")
 
-	script := `#!/bin/sh
-if [ "$1" = "__plugin-metadata" ]; then
-  cat <<'YAML'
-name: child
-YAML
-  exit 0
-fi
-if [ "$1" = "create" ] && [ "$2" = "--help" ]; then
-  exit 1
-fi
-printf 'ARGS=%s\n' "$*"
-printf 'COLUMNS=%s\n' "$COLUMNS"
-`
-	writePluginScript(t, dir, "sitectl-child", script)
+	writePluginFixture(t, dir, "sitectl-child", "rpc-echo-request.sh")
 
 	sdk := NewSDK(Metadata{Name: "isle"})
 	sdk.Config.Context = "demo"
 	sdk.Config.LogLevel = "DEBUG"
 
-	out, err := sdk.InvokePluginCommand("child", []string{"__debug", "--verbose"}, CommandExecOptions{Capture: true})
+	resp, err := sdk.InvokePluginRPC("child", NewRPCRequest(MethodDebugRun), CommandExecOptions{})
 	if err != nil {
-		t.Fatalf("InvokePluginCommand() error = %v", err)
+		t.Fatalf("InvokePluginRPC() error = %v", err)
 	}
-	if !strings.Contains(out, "ARGS=--context demo --log-level DEBUG __debug --verbose") {
-		t.Fatalf("expected context/log-level args in output, got %q", out)
+	if !strings.Contains(resp.Output, "ARGS=__sitectl-rpc") {
+		t.Fatalf("expected rpc args in output, got %q", resp.Output)
 	}
-	if !strings.Contains(out, "COLUMNS=123") {
-		t.Fatalf("expected COLUMNS env in output, got %q", out)
+	if !strings.Contains(resp.Output, "COLUMNS=123") {
+		t.Fatalf("expected COLUMNS env in output, got %q", resp.Output)
+	}
+	requestLine := ""
+	for _, line := range strings.Split(resp.Output, "\n") {
+		if strings.HasPrefix(line, "REQUEST_B64=") {
+			requestLine = strings.TrimPrefix(line, "REQUEST_B64=")
+		}
+	}
+	requestData, err := base64.StdEncoding.DecodeString(requestLine)
+	if err != nil {
+		t.Fatalf("DecodeString() error = %v", err)
+	}
+	req, err := decodeRPCRequest(requestData)
+	if err != nil {
+		t.Fatalf("decodeRPCRequest() error = %v", err)
+	}
+	if req.Context != "demo" || req.LogLevel != "DEBUG" || req.Method != MethodDebugRun {
+		t.Fatalf("unexpected request: %+v", req)
 	}
 }
 
-func TestInvokePluginCommandCaptureReturnsStderrDetail(t *testing.T) {
+func TestInvokePluginRPCUsesRequestFlagWhenStdinIsReserved(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	path := filepath.Join(dir, "sitectl-interactive")
+
+	writePluginFixture(t, dir, "sitectl-interactive", "rpc-echo-stdin.sh")
+
+	sdk := NewSDK(Metadata{Name: "isle"})
+	resp, err := sdk.invokePluginRPCPath("interactive", path, NewRPCRequest(MethodDebugRun), CommandExecOptions{
+		Stdin: strings.NewReader("interactive input"),
+	})
+	if err != nil {
+		t.Fatalf("InvokePluginRPC() error = %v", err)
+	}
+	if !strings.Contains(resp.Output, "ARGS=__sitectl-rpc --request ") {
+		t.Fatalf("expected --request argv in output, got %q", resp.Output)
+	}
+	if !strings.Contains(resp.Output, "STDIN=interactive input") {
+		t.Fatalf("expected interactive stdin in output, got %q", resp.Output)
+	}
+}
+
+func TestInvokePluginRPCRejectsSensitiveParamsOnRequestFlagPath(t *testing.T) {
+	req, err := withRPCParams(NewRPCRequest(MethodDebugRun), sensitiveRPCParamsForTest{Token: "secret"})
+	if err != nil {
+		t.Fatalf("withRPCParams() error = %v", err)
+	}
+
+	sdk := NewSDK(Metadata{Name: "isle"})
+	_, err = sdk.invokePluginRPCPath("interactive", filepath.Join(t.TempDir(), "sitectl-interactive"), req, CommandExecOptions{
+		Stdin: strings.NewReader("interactive input"),
+	})
+	if err == nil {
+		t.Fatal("expected sensitive params argv transport error")
+	}
+	if !strings.Contains(err.Error(), "sensitive params") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInvokePluginRPCRejectsUnvalidatedManualParamsOnRequestFlagPath(t *testing.T) {
+	req := NewRPCRequest(MethodDebugRun)
+	params, err := RPCParams(sensitiveRPCParamsForTest{Token: "secret"})
+	if err != nil {
+		t.Fatalf("RPCParams() error = %v", err)
+	}
+	req.Params = params
+
+	sdk := NewSDK(Metadata{Name: "isle"})
+	_, err = sdk.invokePluginRPCPath("interactive", filepath.Join(t.TempDir(), "sitectl-interactive"), req, CommandExecOptions{
+		Stdin: strings.NewReader("interactive input"),
+	})
+	if err == nil {
+		t.Fatal("expected manual params argv transport error")
+	}
+	if !strings.Contains(err.Error(), "cannot use argv transport") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRPCArgvSafetyDoesNotScreenPassthroughArgs(t *testing.T) {
+	req, err := NewComponentSetRequest(ComponentSetParams{Name: "captcha", Disposition: "enabled"}, "--turnstile-secret", "secret")
+	if err != nil {
+		t.Fatalf("NewComponentSetRequest() error = %v", err)
+	}
+
+	// Component follow-up flags ride in Args. This locks the current boundary:
+	// the argv safety gate screens typed Params only, so follow-ups must not
+	// collect secrets.
+	if err := ensureRPCRequestArgvSafe(req); err != nil {
+		t.Fatalf("ensureRPCRequestArgvSafe() error = %v, want Args boundary to remain caller-trusted", err)
+	}
+}
+
+func TestInvokePluginRPCReturnsStderrDetail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sitectl-broken")
 
 	script := `#!/bin/sh
-if [ "$1" = "__plugin-metadata" ]; then
-  cat <<'YAML'
-name: broken
-YAML
-  exit 0
-fi
-echo "something went wrong" >&2
-exit 2
-`
+	echo "something went wrong" >&2
+	exit 2
+	`
 	writePluginScript(t, dir, "sitectl-broken", script)
 
 	sdk := NewSDK(Metadata{Name: "isle"})
-	_, err := sdk.InvokePluginCommand("broken", []string{"__debug"}, CommandExecOptions{Capture: true})
+	_, err := sdk.invokePluginRPCPath("broken", path, NewRPCRequest(MethodDebugRun), CommandExecOptions{})
 	if err == nil {
-		t.Fatal("expected InvokePluginCommand() error")
+		t.Fatal("expected InvokePluginRPC() error")
+	}
+	var processErr *RPCProcessError
+	if !errors.As(err, &processErr) {
+		t.Fatalf("expected RPCProcessError, got %T", err)
+	}
+	if processErr.ExitCode != 2 || processErr.Detail != "something went wrong" {
+		t.Fatalf("unexpected process error: %+v", processErr)
 	}
 	if !strings.Contains(err.Error(), "something went wrong") {
 		t.Fatalf("expected stderr detail in error, got %v", err)
 	}
 }
 
-func TestInvokePluginCommandCaptureCanMirrorLiveStderr(t *testing.T) {
+func TestInvokePluginRPCCanMirrorLiveStderr(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	path := filepath.Join(dir, "sitectl-noisy")
 
-	script := `#!/bin/sh
-if [ "$1" = "__plugin-metadata" ]; then
-  echo "Name: noisy"
-  exit 0
-fi
-echo "visible stderr" >&2
-echo "stdout payload"
-`
-	writePluginScript(t, dir, "sitectl-noisy", script)
+	writeRPCOutputFixturePlugin(t, dir, "sitectl-noisy", "stdout payload", "visible stderr")
 
 	sdk := NewSDK(Metadata{Name: "isle"})
 	var stderr bytes.Buffer
-	out, err := sdk.InvokePluginCommand("noisy", []string{"__debug"}, CommandExecOptions{
-		Capture:    true,
+	resp, err := sdk.invokePluginRPCPath("noisy", path, NewRPCRequest(MethodDebugRun), CommandExecOptions{
 		LiveStderr: true,
 		Stderr:     &stderr,
 	})
 	if err != nil {
-		t.Fatalf("InvokePluginCommand() error = %v", err)
+		t.Fatalf("InvokePluginRPC() error = %v", err)
 	}
 	if !strings.Contains(stderr.String(), "visible stderr") {
 		t.Fatalf("expected mirrored stderr, got %q", stderr.String())
 	}
-	if !strings.Contains(out, "stdout payload") {
-		t.Fatalf("expected stdout payload, got %q", out)
+	if !strings.Contains(resp.Output, "stdout payload") {
+		t.Fatalf("expected stdout payload, got %q", resp.Output)
 	}
 }
 
-func TestInvokeIncludedPluginCommandRejectsUnincludedPlugin(t *testing.T) {
+func TestInvokePluginRPCValidatesResponseEnvelope(t *testing.T) {
+	tests := []struct {
+		name            string
+		response        string
+		wantError       string
+		wantOK          bool
+		wantFailureCode string
+	}{
+		{
+			name:      "protocol mismatch",
+			response:  rpcResponseEnvelopeJSON(t, RPCResponse{ProtocolVersion: 2, OK: true}),
+			wantError: "rebuild or reinstall the plugin to match sitectl",
+		},
+		{
+			name: "rpc error message",
+			response: rpcResponseEnvelopeJSON(t, RPCResponse{
+				ProtocolVersion: RPCProtocolVersion,
+				OK:              false,
+				Error: &RPCError{
+					Code:    RPCErrorCodeNotRegistered,
+					Message: "clean failure",
+				},
+			}),
+			wantError:       "clean failure",
+			wantOK:          false,
+			wantFailureCode: RPCErrorCodeNotRegistered,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "sitectl-envelope")
+			writeRPCResponseFixturePlugin(t, dir, "sitectl-envelope", tt.response, rpcFixtureEnv{})
+
+			sdk := NewSDK(Metadata{Name: "isle"})
+			resp, err := sdk.invokePluginRPCPath("envelope", path, NewRPCRequest(MethodDebugRun), CommandExecOptions{})
+			if err == nil {
+				t.Fatal("expected InvokePluginRPC() error")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
+			}
+			if tt.wantFailureCode != "" {
+				var failure *RPCFailure
+				if !errors.As(err, &failure) {
+					t.Fatalf("expected RPCFailure, got %T", err)
+				}
+				if failure.Code != tt.wantFailureCode {
+					t.Fatalf("expected RPCFailure code %q, got %+v", tt.wantFailureCode, failure)
+				}
+			}
+			if resp.OK != tt.wantOK {
+				t.Fatalf("expected response OK=%v, got %+v", tt.wantOK, resp)
+			}
+		})
+	}
+}
+
+func TestInvokePluginRPCAcceptsMissingResponseProtocolVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sitectl-legacy")
+	writeRPCResponseFixturePlugin(t, dir, "sitectl-legacy", `{"ok":true,"output":"legacy response"}`, rpcFixtureEnv{})
+
+	sdk := NewSDK(Metadata{Name: "isle"})
+	resp, err := sdk.invokePluginRPCPath("legacy", path, NewRPCRequest(MethodDebugRun), CommandExecOptions{})
+	if err != nil {
+		t.Fatalf("InvokePluginRPC() error = %v", err)
+	}
+	if resp.ProtocolVersion != RPCProtocolVersion {
+		t.Fatalf("expected defaulted protocol version %d, got %+v", RPCProtocolVersion, resp)
+	}
+	if resp.Output != "legacy response" {
+		t.Fatalf("expected legacy response output, got %q", resp.Output)
+	}
+}
+
+func TestInvokePluginRPCParsesLastStdoutLineEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sitectl-noisy-envelope")
+	writeRPCResponseFixturePlugin(t, dir, "sitectl-noisy-envelope", "stray stdout\n"+rpcOutputResponseJSON(t, "clean response"), rpcFixtureEnv{})
+
+	sdk := NewSDK(Metadata{Name: "isle"})
+	resp, err := sdk.invokePluginRPCPath("noisy-envelope", path, NewRPCRequest(MethodDebugRun), CommandExecOptions{})
+	if err != nil {
+		t.Fatalf("InvokePluginRPC() error = %v", err)
+	}
+	if resp.Output != "clean response" {
+		t.Fatalf("expected clean response output, got %q", resp.Output)
+	}
+}
+
+func TestParsePluginRPCResponseWarnsOnStdoutFallback(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	resp, err := parsePluginRPCResponse("noisy", MethodDebugRun, []byte("stray stdout\n"+rpcOutputResponseJSON(t, "clean response")+"\n"))
+	if err != nil {
+		t.Fatalf("parsePluginRPCResponse() error = %v", err)
+	}
+	if resp.Output != "clean response" {
+		t.Fatalf("expected clean response output, got %q", resp.Output)
+	}
+	if !strings.Contains(logs.String(), "plugin wrote stdout outside rpc envelope") || !strings.Contains(logs.String(), "cmd.OutOrStdout()") || !strings.Contains(logs.String(), "fallback_offset=13") {
+		t.Fatalf("expected stdout fallback warning, got %q", logs.String())
+	}
+}
+
+func TestParsePluginRPCResponseRejectsLastJSONLineWithoutEnvelope(t *testing.T) {
+	_, err := parsePluginRPCResponse("noisy", MethodDebugRun, []byte(rpcOutputResponseJSON(t, "real response")+"\n"+`{"message":"diagnostic"}`+"\n"))
+	if err == nil {
+		t.Fatal("expected non-envelope JSON line to be rejected")
+	}
+	if !strings.Contains(err.Error(), "non-envelope JSON line") || !strings.Contains(err.Error(), "cmd.OutOrStdout()") {
+		t.Fatalf("expected non-envelope stdout hint, got %v", err)
+	}
+}
+
+func TestInvokePluginRPCReportsActionableStdoutParseHint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sitectl-polluted")
+	writePluginScript(t, dir, "sitectl-polluted", `#!/bin/sh
+printf '%s\n' 'plugin diagnostic on stdout'
+printf '%s\n' 'not json'
+`)
+
+	sdk := NewSDK(Metadata{Name: "isle"})
+	_, err := sdk.invokePluginRPCPath("polluted", path, NewRPCRequest(MethodDebugRun), CommandExecOptions{})
+	if err == nil {
+		t.Fatal("expected stdout parse error")
+	}
+	if !strings.Contains(err.Error(), "plugin wrote non-JSON to stdout") || !strings.Contains(err.Error(), "cmd.OutOrStdout()") {
+		t.Fatalf("expected actionable stdout hint, got %v", err)
+	}
+}
+
+func TestInvokePluginRPCSetsMetadataFastPathEnv(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sitectl-envcheck")
+	writePluginFixture(t, dir, "sitectl-envcheck", "rpc-metadata-env.sh")
+
+	sdk := NewSDK(Metadata{Name: "isle"})
+	metadataResp, err := sdk.invokePluginRPCPath("envcheck", path, NewRPCRequest(MethodPluginMetadata), CommandExecOptions{})
+	if err != nil {
+		t.Fatalf("metadata InvokePluginRPC() error = %v", err)
+	}
+	if !strings.Contains(metadataResp.Output, "metadata=1") {
+		t.Fatalf("expected metadata env marker, got %q", metadataResp.Output)
+	}
+
+	debugResp, err := sdk.invokePluginRPCPath("envcheck", path, NewRPCRequest(MethodDebugRun), CommandExecOptions{})
+	if err != nil {
+		t.Fatalf("debug InvokePluginRPC() error = %v", err)
+	}
+	if strings.Contains(debugResp.Output, "metadata=1") {
+		t.Fatalf("did not expect metadata env marker for debug, got %q", debugResp.Output)
+	}
+}
+
+func TestRPCCommandRetainsStdoutOnError(t *testing.T) {
+	sdk := NewSDK(Metadata{Name: "isle"})
+	cmd := &cobra.Command{
+		Use: "failing",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, _ = cmd.OutOrStdout().Write([]byte("partial output\n"))
+			return os.ErrInvalid
+		},
+	}
+
+	rpcCmd := &cobra.Command{Use: "rpc"}
+	rpcCmd.SetContext(context.Background())
+	resp, err := sdk.rpcCommand(rpcCmd, MethodDebugRun, cmd, nil)
+	if err != nil {
+		t.Fatalf("rpcCommand() error = %v", err)
+	}
+	if resp.OK {
+		t.Fatal("expected error response")
+	}
+	if resp.Output != "partial output\n" {
+		t.Fatalf("expected captured output, got %q", resp.Output)
+	}
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, os.ErrInvalid.Error()) {
+		t.Fatalf("expected structured command error, got %+v", resp.Error)
+	}
+}
+
+func TestInvokePluginRPCRejectsOversizedResponse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sitectl-huge")
+	writePluginScript(t, dir, "sitectl-huge", `#!/bin/sh
+dd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\000' x
+`)
+
+	sdk := NewSDK(Metadata{Name: "isle"})
+	_, err := sdk.invokePluginRPCPath("huge", path, NewRPCRequest(MethodDebugRun), CommandExecOptions{})
+	if err == nil {
+		t.Fatal("expected oversized response error")
+	}
+	if !strings.Contains(err.Error(), "rpc response") || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), MethodDebugRun) || !strings.Contains(err.Error(), "use --format json") || !strings.Contains(err.Error(), "narrow") {
+		t.Fatalf("expected actionable oversized response guidance, got %v", err)
+	}
+}
+
+func TestInvokeIncludedPluginRPCRejectsUnincludedPlugin(t *testing.T) {
 	sdk := NewSDK(Metadata{Name: "isle", Includes: []string{"drupal"}})
 
-	_, err := sdk.InvokeIncludedPluginCommand("libops", []string{"__debug"}, CommandExecOptions{Capture: true})
+	_, err := sdk.InvokeIncludedPluginRPC("libops", NewRPCRequest(MethodDebugRun), CommandExecOptions{})
 	if err == nil {
 		t.Fatal("expected included plugin validation error")
 	}
 	if !strings.Contains(err.Error(), `is not included by "isle"`) {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestInvokeIncludedPluginsCollectsTrimmedOutputs(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	writePluginScript(t, dir, "sitectl-drupal", `#!/bin/sh
-if [ "$1" = "__plugin-metadata" ]; then
-  cat <<'YAML'
-name: drupal
-YAML
-  exit 0
-fi
-echo "  drupal output  "
-`)
-	writePluginScript(t, dir, "sitectl-libops", `#!/bin/sh
-if [ "$1" = "__plugin-metadata" ]; then
-  cat <<'YAML'
-name: libops
-YAML
-  exit 0
-fi
-echo ""
-`)
-
-	sdk := NewSDK(Metadata{Name: "isle", Includes: []string{"drupal", "libops"}})
-	outputs, err := sdk.InvokeIncludedPlugins([]string{"__debug"})
-	if err != nil {
-		t.Fatalf("InvokeIncludedPlugins() error = %v", err)
-	}
-	want := []string{"drupal output"}
-	if !reflect.DeepEqual(outputs, want) {
-		t.Fatalf("InvokeIncludedPlugins() = %v, want %v", outputs, want)
 	}
 }
 
@@ -307,14 +554,6 @@ func TestContextValidatorsReturnsCopy(t *testing.T) {
 	}
 }
 
-func writePluginScript(t *testing.T, dir, name, script string) {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile(%s) error = %v", name, err)
-	}
-}
-
 func TestRegisterCreateRunnerExposesDefinitions(t *testing.T) {
 	sdk := NewSDK(Metadata{Name: "isle"})
 	sdk.RegisterCreateRunner(CreateSpec{
@@ -336,11 +575,45 @@ func TestRegisterCreateRunnerExposesDefinitions(t *testing.T) {
 	}
 }
 
+func TestRegisterCreateRunnerHonorsMetadataFastPath(t *testing.T) {
+	spec := CreateSpec{Name: "default", Description: "Create"}
+
+	t.Setenv("SITECTL_RPC_METADATA", "")
+	normalRunner := &createBindCounter{}
+	normalSDK := NewSDK(Metadata{Name: "isle"})
+	normalSDK.RegisterCreateRunner(spec, normalRunner)
+	if !normalRunner.bound {
+		t.Fatal("expected normal create registration to bind flags")
+	}
+
+	t.Setenv("SITECTL_RPC_METADATA", "1")
+	metadataRunner := &createBindCounter{}
+	metadataSDK := NewSDK(Metadata{Name: "isle"})
+	metadataSDK.RegisterCreateRunner(spec, metadataRunner)
+	if metadataRunner.bound {
+		t.Fatal("expected metadata fast-path create registration to skip BindFlags")
+	}
+}
+
 type createRunnerStub struct{}
 
 func (createRunnerStub) BindFlags(cmd *cobra.Command) {}
 
 func (createRunnerStub) Run(cmd *cobra.Command) error { return nil }
+
+type createBindCounter struct {
+	bound bool
+}
+
+func (r *createBindCounter) BindFlags(cmd *cobra.Command) {
+	r.bound = true
+}
+
+func (r *createBindCounter) Run(cmd *cobra.Command) error { return nil }
+
+type sensitiveRPCParamsForTest struct {
+	Token string `json:"token" rpc_sensitive:"true"`
+}
 
 func TestRegisterStandardComposeTemplateAddsLifecycleCommands(t *testing.T) {
 	sdk := NewSDK(Metadata{Name: "demo"})

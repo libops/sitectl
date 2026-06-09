@@ -14,7 +14,6 @@ import (
 	"github.com/libops/sitectl/pkg/plugin"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
-	yaml "gopkg.in/yaml.v3"
 )
 
 var jobCmd = &cobra.Command{
@@ -87,29 +86,38 @@ var jobExecCmd = &cobra.Command{
 			return renderJobHelp(cmd, ctx, owner, name, jobArgs)
 		}
 		output, err := runJobCommand(cmd, contextName, owner, name, jobArgs)
+		if strings.TrimSpace(output) != "" {
+			if _, printErr := fmt.Fprint(cmd.OutOrStdout(), output); printErr != nil {
+				return printErr
+			}
+		}
 		if err != nil {
 			return cleanPluginCommandError(err)
-		}
-		if strings.TrimSpace(output) != "" {
-			_, _ = fmt.Fprint(cmd.OutOrStdout(), output)
 		}
 		return nil
 	},
 }
 
 func availableJobs(ctx config.Context) ([]corejob.Spec, error) {
-	owners := cronPluginsForContext(ctx.Plugin)
+	owners, err := pluginsForContext(ctx.Plugin)
+	if err != nil {
+		return nil, err
+	}
 	var combined []corejob.Spec
 	for _, owner := range owners {
-		output, err := pluginSDK.InvokePluginCommand(owner, []string{"--context", ctx.Name, "__job", "list"}, plugin.CommandExecOptions{
+		req := plugin.NewRPCRequest(plugin.MethodJobList)
+		req.Context = ctx.Name
+		resp, err := pluginSDK.InvokePluginRPC(owner, req, plugin.CommandExecOptions{
 			Context: RootCmd.Context(),
-			Capture: true,
 		})
 		if err != nil {
-			continue
+			if plugin.IsRPCErrorCode(err, plugin.RPCErrorCodeNotRegistered) {
+				continue
+			}
+			return nil, fmt.Errorf("list jobs from plugin %q: %w", owner, err)
 		}
-		var specs []corejob.Spec
-		if err := yaml.Unmarshal([]byte(output), &specs); err != nil {
+		specs, err := plugin.DecodeRPCResult[[]corejob.Spec](resp)
+		if err != nil {
 			return nil, fmt.Errorf("parse jobs from plugin %q: %w", owner, err)
 		}
 		for i := range specs {
@@ -126,6 +134,36 @@ func availableJobs(ctx config.Context) ([]corejob.Spec, error) {
 		return combined[i].Name < combined[j].Name
 	})
 	return combined, nil
+}
+
+func pluginsForContext(root string) ([]string, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	var ordered []string
+	var walk func(string) error
+	walk = func(name string) error {
+		if name == "" || seen[name] {
+			return nil
+		}
+		seen[name] = true
+		ordered = append(ordered, name)
+		installed, err := installedPluginWithMetadata(name)
+		if err != nil {
+			return err
+		}
+		for _, include := range installed.Includes {
+			if err := walk(include); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(root); err != nil {
+		return nil, err
+	}
+	return ordered, nil
 }
 
 func resolveJobOwner(ctx config.Context, raw string) (string, string, error) {
@@ -165,17 +203,23 @@ func init() {
 }
 
 func runJobCommand(cmd *cobra.Command, contextName, owner, name string, jobArgs []string) (string, error) {
-	invocation := append([]string{"--context", contextName, "__job", name}, jobArgs...)
-	if stderrFile, ok := cmd.ErrOrStderr().(*os.File); ok && term.IsTerminal(int(stderrFile.Fd())) {
-		return runJobWithProgress(cmd, owner, name, contextName, invocation)
+	req, err := plugin.NewJobRunRequest(name, jobArgs...)
+	if err != nil {
+		return "", err
 	}
-	return pluginSDK.InvokePluginCommand(owner, invocation, plugin.CommandExecOptions{
-		Context: RootCmd.Context(),
-		Capture: true,
+	req.Context = contextName
+	if stderrFile, ok := cmd.ErrOrStderr().(*os.File); ok && term.IsTerminal(int(stderrFile.Fd())) {
+		return runJobWithProgress(cmd, owner, name, contextName, req)
+	}
+	resp, err := pluginSDK.InvokePluginRPC(owner, req, plugin.CommandExecOptions{
+		Context:    RootCmd.Context(),
+		Stderr:     cmd.ErrOrStderr(),
+		LiveStderr: true,
 	})
+	return resp.Output, err
 }
 
-func runJobWithProgress(cmd *cobra.Command, owner, name, contextName string, invocation []string) (string, error) {
+func runJobWithProgress(cmd *cobra.Command, owner, name, contextName string, req plugin.RPCRequest) (string, error) {
 	m := newDebugSpinnerModel()
 	m.title = "Running Job"
 	m.detail = fmt.Sprintf("%s on %s", name, contextName)
@@ -183,11 +227,10 @@ func runJobWithProgress(cmd *cobra.Command, owner, name, contextName string, inv
 	p := tea.NewProgram(m, tea.WithOutput(cmd.ErrOrStderr()))
 
 	go func() {
-		result, err := pluginSDK.InvokePluginCommand(owner, invocation, plugin.CommandExecOptions{
+		resp, err := pluginSDK.InvokePluginRPC(owner, req, plugin.CommandExecOptions{
 			Context: RootCmd.Context(),
-			Capture: true,
 		})
-		p.Send(debugProgressDoneMsg{result: result, err: err})
+		p.Send(debugProgressDoneMsg{result: resp.Output, err: err})
 	}()
 
 	finalModel, err := p.Run()
@@ -209,42 +252,32 @@ func requestsHelp(args []string) bool {
 }
 
 func renderJobHelp(cmd *cobra.Command, ctx config.Context, owner, name string, jobArgs []string) error {
-	output, err := pluginSDK.InvokePluginCommand(owner, append([]string{"--context", ctx.Name, "__job", name}, jobArgs...), plugin.CommandExecOptions{
+	req, err := plugin.NewJobRunRequest(name, jobArgs...)
+	if err != nil {
+		return err
+	}
+	req.Context = ctx.Name
+	resp, err := pluginSDK.InvokePluginRPC(owner, req, plugin.CommandExecOptions{
 		Context: RootCmd.Context(),
-		Capture: true,
 	})
 	if err != nil {
 		return cleanPluginCommandError(err)
 	}
 
 	replacements := []string{
-		fmt.Sprintf("sitectl %s __job %s", owner, name), fmt.Sprintf("sitectl job run %s", name),
-		fmt.Sprintf("%s __job %s", owner, name), fmt.Sprintf("job run %s", name),
+		fmt.Sprintf("sitectl %s __sitectl-rpc", owner), fmt.Sprintf("sitectl job run %s", name),
+		"__sitectl-rpc", fmt.Sprintf("job run %s", name),
 		"Internal job execution command", "Run a plugin-defined job",
 	}
-	rewritten := strings.NewReplacer(replacements...).Replace(output)
+	rewritten := strings.NewReplacer(replacements...).Replace(resp.Output)
 	_, err = fmt.Fprint(cmd.OutOrStdout(), rewritten)
 	return err
 }
 
 func cleanPluginCommandError(err error) error {
-	message := err.Error()
-	for _, prefix := range []string{
-		`run plugin "drupal": exit status 1: `,
-		`run plugin "isle": exit status 1: `,
-		`run plugin "wordpress": exit status 1: `,
-		`run plugin "core": exit status 1: `,
-	} {
-		if strings.HasPrefix(message, prefix) {
-			return errors.New(strings.TrimPrefix(message, prefix))
-		}
-	}
-
-	const genericPrefix = `run plugin "`
-	if strings.HasPrefix(message, genericPrefix) {
-		if idx := strings.Index(message, `: exit status 1: `); idx != -1 {
-			return errors.New(message[idx+len(`: exit status 1: `):])
-		}
+	var processErr *plugin.RPCProcessError
+	if errors.As(err, &processErr) && strings.TrimSpace(processErr.Detail) != "" {
+		return errors.New(strings.TrimSpace(processErr.Detail))
 	}
 	return err
 }

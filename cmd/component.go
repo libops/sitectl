@@ -11,43 +11,45 @@ import (
 )
 
 var (
-	componentDescribeName        string
-	componentDescribePath        string
-	componentDescribeDrupalRoot  string
-	componentDescribeVerbose     bool
-	componentDescribeFormat      string
-	componentReconcileName       string
-	componentReconcilePath       string
-	componentReconcileDrupalRoot string
-	componentReconcileReport     bool
-	componentReconcileVerbose    bool
-	componentReconcileFormat     string
-	componentSetPath             string
-	componentSetDrupalRoot       string
-	componentSetState            string
-	componentSetDisposition      string
-	componentSetTLSMode          string
-	componentSetYolo             bool
-	invokeComponentPluginCommand = func(cmd *cobra.Command, pluginName, contextName string, args []string) error {
+	componentDescribeName          string
+	componentDescribePath          string
+	componentDescribeCodebaseRoot  string
+	componentDescribeDrupalRoot    string
+	componentDescribeVerbose       bool
+	componentDescribeFormat        string
+	componentReconcileName         string
+	componentReconcilePath         string
+	componentReconcileCodebaseRoot string
+	componentReconcileDrupalRoot   string
+	componentReconcileReport       bool
+	componentReconcileVerbose      bool
+	componentReconcileFormat       string
+	componentSetPath               string
+	componentSetState              string
+	componentSetDisposition        string
+	componentSetTLSMode            string
+	componentSetYolo               bool
+	invokeComponentRPCCommand      = func(cmd *cobra.Command, pluginName, contextName string, req plugin.RPCRequest) error {
 		installed, ok := plugin.FindInstalled(pluginName)
 		if !ok {
 			return fmt.Errorf("plugin %q is not installed", pluginName)
 		}
-		invocation := make([]string, 0, len(args)+2)
-		if strings.TrimSpace(contextName) != "" {
-			invocation = append(invocation, "--context", contextName)
-		}
-		invocation = append(invocation, args...)
-		_, err := pluginSDK.InvokePluginCommand(installed.Name, invocation, plugin.CommandExecOptions{
-			Context: RootCmd.Context(),
-			Stdin:   cmd.InOrStdin(),
-			Stdout:  cmd.OutOrStdout(),
-			Stderr:  cmd.ErrOrStderr(),
+		req.Context = contextName
+		resp, err := pluginSDK.InvokePluginRPC(installed.Name, req, plugin.CommandExecOptions{
+			Context:    RootCmd.Context(),
+			Stdin:      cmd.InOrStdin(),
+			Stderr:     cmd.ErrOrStderr(),
+			LiveStderr: true,
 		})
+		if strings.TrimSpace(resp.Output) != "" {
+			if _, printErr := fmt.Fprint(cmd.OutOrStdout(), resp.Output); printErr != nil && err == nil {
+				err = printErr
+			}
+		}
 		return err
 	}
-	invokePluginCommand = func(pluginName, contextName string, args []string) error {
-		return invokeComponentPluginCommand(RootCmd, pluginName, contextName, args)
+	invokePluginRPC = func(pluginName, contextName string, req plugin.RPCRequest) error {
+		return invokeComponentRPCCommand(RootCmd, pluginName, contextName, req)
 	}
 )
 
@@ -78,11 +80,11 @@ var componentListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		invocation := []string{"__component", "list"}
-		if name != "" {
-			invocation = append(invocation, name)
+		req, err := plugin.NewComponentListRequest(name)
+		if err != nil {
+			return err
 		}
-		return invokeComponentPluginCommand(cmd, owner, contextName, invocation)
+		return invokeComponentRPCCommand(cmd, owner, contextName, req)
 	},
 }
 
@@ -99,25 +101,23 @@ longer match the last recorded state — run reconcile to bring them back into a
 		if err != nil {
 			return err
 		}
-
-		invocation := []string{"__component", "describe"}
-		if name != "" {
-			invocation = append(invocation, "--component", name)
-		}
-		if strings.TrimSpace(componentDescribePath) != "" {
-			invocation = append(invocation, "--path", componentDescribePath)
-		}
-		if strings.TrimSpace(componentDescribeDrupalRoot) != "" {
-			invocation = append(invocation, "--drupal-rootfs", componentDescribeDrupalRoot)
-		}
-		if componentDescribeVerbose {
-			invocation = append(invocation, "--verbose")
-		}
-		if strings.TrimSpace(componentDescribeFormat) != "" {
-			invocation = append(invocation, "--format", componentDescribeFormat)
+		codebaseRootfs, err := componentCodebaseRootfsFlagValue(cmd, componentDescribeCodebaseRoot, componentDescribeDrupalRoot)
+		if err != nil {
+			return err
 		}
 
-		return invokePluginCommand(owner, contextName, invocation)
+		req, err := plugin.NewComponentDescribeRequest(plugin.ComponentTargetParams{
+			Name:           name,
+			Path:           componentDescribePath,
+			CodebaseRootfs: codebaseRootfs,
+			Verbose:        componentDescribeVerbose,
+			Format:         componentDescribeFormat,
+		})
+		if err != nil {
+			return err
+		}
+
+		return invokePluginRPC(owner, contextName, req)
 	},
 }
 
@@ -134,28 +134,24 @@ what would change without applying it.`,
 		if err != nil {
 			return err
 		}
-
-		invocation := []string{"__component", "reconcile"}
-		if name != "" {
-			invocation = append(invocation, "--component", name)
-		}
-		if strings.TrimSpace(componentReconcilePath) != "" {
-			invocation = append(invocation, "--path", componentReconcilePath)
-		}
-		if strings.TrimSpace(componentReconcileDrupalRoot) != "" {
-			invocation = append(invocation, "--drupal-rootfs", componentReconcileDrupalRoot)
-		}
-		if componentReconcileReport {
-			invocation = append(invocation, "--report")
-		}
-		if componentReconcileVerbose {
-			invocation = append(invocation, "--verbose")
-		}
-		if strings.TrimSpace(componentReconcileFormat) != "" {
-			invocation = append(invocation, "--format", componentReconcileFormat)
+		codebaseRootfs, err := componentCodebaseRootfsFlagValue(cmd, componentReconcileCodebaseRoot, componentReconcileDrupalRoot)
+		if err != nil {
+			return err
 		}
 
-		return invokePluginCommand(owner, contextName, invocation)
+		req, err := plugin.NewComponentReconcileRequest(plugin.ComponentTargetParams{
+			Name:           name,
+			Path:           componentReconcilePath,
+			CodebaseRootfs: codebaseRootfs,
+			Report:         componentReconcileReport,
+			Verbose:        componentReconcileVerbose,
+			Format:         componentReconcileFormat,
+		})
+		if err != nil {
+			return err
+		}
+
+		return invokePluginRPC(owner, contextName, req)
 	},
 }
 
@@ -183,8 +179,15 @@ component-specific flags.`,
 			return err
 		}
 
-		invocation := append([]string{"__component", "set"}, forwardedArgs...)
-		return invokeComponentPluginCommand(cmd, owner, contextName, invocation)
+		params, passthroughArgs, err := extractComponentSetRPCParams(forwardedArgs)
+		if err != nil {
+			return err
+		}
+		req, err := plugin.NewComponentSetRequest(params, passthroughArgs...)
+		if err != nil {
+			return err
+		}
+		return invokeComponentRPCCommand(cmd, owner, contextName, req)
 	},
 }
 
@@ -193,19 +196,20 @@ func init() {
 
 	componentDescribeCmd.Flags().StringVarP(&componentDescribeName, "component", "c", "", "Component to describe, e.g. isle/fcrepo. Defaults to all components.")
 	componentDescribeCmd.Flags().StringVar(&componentDescribePath, "path", "", "Path to the project directory. Defaults to the active context project directory.")
-	componentDescribeCmd.Flags().StringVar(&componentDescribeDrupalRoot, "drupal-rootfs", "", "Path to the Drupal web root, relative to --path.")
+	componentDescribeCmd.Flags().StringVar(&componentDescribeCodebaseRoot, "codebase-rootfs", "", "Path to the application codebase rootfs, relative to --path.")
+	componentDescribeCmd.Flags().StringVar(&componentDescribeDrupalRoot, "drupal-rootfs", "", "Deprecated alias for --codebase-rootfs.")
 	componentDescribeCmd.Flags().BoolVar(&componentDescribeVerbose, "verbose", false, "Show additional details for each component.")
 	componentDescribeCmd.Flags().StringVar(&componentDescribeFormat, "format", "", "Output format (default: table).")
 
 	componentReconcileCmd.Flags().StringVarP(&componentReconcileName, "component", "c", "", "Component to reconcile, e.g. isle/fcrepo. Defaults to all components.")
 	componentReconcileCmd.Flags().StringVar(&componentReconcilePath, "path", "", "Path to the project directory. Defaults to the active context project directory.")
-	componentReconcileCmd.Flags().StringVar(&componentReconcileDrupalRoot, "drupal-rootfs", "", "Path to the Drupal web root, relative to --path.")
+	componentReconcileCmd.Flags().StringVar(&componentReconcileCodebaseRoot, "codebase-rootfs", "", "Path to the application codebase rootfs, relative to --path.")
+	componentReconcileCmd.Flags().StringVar(&componentReconcileDrupalRoot, "drupal-rootfs", "", "Deprecated alias for --codebase-rootfs.")
 	componentReconcileCmd.Flags().BoolVar(&componentReconcileReport, "report", false, "Preview changes without applying them.")
 	componentReconcileCmd.Flags().BoolVar(&componentReconcileVerbose, "verbose", false, "Show additional details for each component.")
 	componentReconcileCmd.Flags().StringVar(&componentReconcileFormat, "format", "", "Output format (default: table).")
 
 	componentSetCmd.Flags().StringVar(&componentSetPath, "path", "", "Path to the project directory. Defaults to the active context project directory.")
-	componentSetCmd.Flags().StringVar(&componentSetDrupalRoot, "drupal-rootfs", "", "Path to the Drupal web root, relative to --path.")
 	componentSetCmd.Flags().StringVar(&componentSetState, "state", "", "State to apply (on, off).")
 	componentSetCmd.Flags().StringVar(&componentSetDisposition, "disposition", "", "Disposition to apply (enabled, disabled, superceded, distributed).")
 	componentSetCmd.Flags().StringVar(&componentSetTLSMode, "tls-mode", "", "TLS mode (http, self-managed, mkcert, letsencrypt).")
@@ -220,6 +224,21 @@ func init() {
 }
 
 var pluginSDK *plugin.SDK
+
+func componentCodebaseRootfsFlagValue(cmd *cobra.Command, codebaseRootfs, drupalRootfs string) (string, error) {
+	codebaseChanged := cmd != nil && cmd.Flags().Changed("codebase-rootfs")
+	drupalChanged := cmd != nil && cmd.Flags().Changed("drupal-rootfs")
+	if codebaseChanged && drupalChanged && strings.TrimSpace(codebaseRootfs) != strings.TrimSpace(drupalRootfs) {
+		return "", fmt.Errorf("--codebase-rootfs and --drupal-rootfs cannot be combined with different values")
+	}
+	if codebaseChanged {
+		return codebaseRootfs, nil
+	}
+	if drupalChanged {
+		return drupalRootfs, nil
+	}
+	return codebaseRootfs, nil
+}
 
 func resolveComponentOwner(cmd *cobra.Command, raw string) (string, string, string, error) {
 	name := strings.TrimSpace(raw)
@@ -282,7 +301,7 @@ func resolveComponentSetInvocation(cmd *cobra.Command, args []string) (string, s
 	if err != nil {
 		return "", "", nil, err
 	}
-	componentIndex, rawName, ok := firstComponentSetArg(filteredArgs)
+	componentIndex, rawName, ok := firstComponentSetArg(cmd, filteredArgs)
 	if !ok {
 		return "", "", nil, fmt.Errorf("component name is required")
 	}
@@ -302,7 +321,7 @@ func resolveComponentCatalogTarget(cmd *cobra.Command, args []string) (string, s
 		return "", "", "", err
 	}
 	rawArgs = stripHelpArgs(rawArgs)
-	_, rawName, hasName := firstComponentSetArg(rawArgs)
+	_, rawName, hasName := firstComponentSetArg(cmd, rawArgs)
 	if hasName {
 		if pluginName, componentName, ok := splitNamespacedComponent(rawName); ok {
 			contextName := explicitContext
@@ -371,58 +390,60 @@ func resolveContextNameForPluginQuiet(cmd *cobra.Command, pluginName string) (st
 	return contextName, nil
 }
 
-func firstComponentSetArg(args []string) (int, string, bool) {
+func firstComponentSetArg(cmd *cobra.Command, args []string) (int, string, bool) {
 	skipNext := false
-	afterSeparator := false
 	for i, arg := range args {
 		if skipNext {
 			skipNext = false
 			continue
 		}
-		if afterSeparator {
-			if strings.TrimSpace(arg) != "" {
-				return i, arg, true
-			}
+		arg = strings.TrimSpace(arg)
+		if arg == "" {
 			continue
 		}
 		if arg == "--" {
-			afterSeparator = true
-			continue
+			return -1, "", false
 		}
 		if isHelpArg(arg) {
 			continue
 		}
 		if strings.HasPrefix(arg, "--") {
-			if componentFlagTakesValue(arg) {
+			known, takesValue := componentFlagBehavior(cmd, arg)
+			if takesValue {
 				skipNext = true
+				continue
 			}
-			continue
+			if known || strings.Contains(strings.TrimPrefix(arg, "--"), "=") {
+				continue
+			}
+			return -1, "", false
 		}
 		if strings.HasPrefix(arg, "-") {
-			continue
-		}
-		if strings.TrimSpace(arg) == "" {
-			continue
+			return -1, "", false
 		}
 		return i, arg, true
 	}
 	return -1, "", false
 }
 
-func componentFlagTakesValue(arg string) bool {
+func componentFlagBehavior(cmd *cobra.Command, arg string) (known bool, takesValue bool) {
 	trimmed := strings.TrimPrefix(arg, "--")
-	if trimmed == "" || strings.Contains(trimmed, "=") {
-		return false
+	if trimmed == "" {
+		return false, false
 	}
-	name := trimmed
-	if idx := strings.Index(name, "="); idx >= 0 {
-		name = name[:idx]
+	name, _, _ := strings.Cut(trimmed, "=")
+	if cmd != nil {
+		if flag := cmd.Flags().Lookup(name); flag != nil {
+			return true, flag.Value.Type() != "bool" && !strings.Contains(trimmed, "=")
+		}
 	}
 	switch name {
 	case "help", "yolo", "verbose", "report":
-		return false
+		return true, false
+	case "path", "state", "disposition", "tls-mode", "context":
+		return true, !strings.Contains(trimmed, "=")
 	default:
-		return true
+		return false, false
 	}
 }
 
@@ -485,7 +506,6 @@ COMMON FLAGS
 
   --context        The sitectl context to use. See sitectl config --help for more info
   --disposition    Disposition to apply. Valid values depend on the component.
-  --drupal-rootfs  Path to the Drupal web root, relative to --path.
   -h, --help       Help for set
   --log-level      The logging level for the command
   --path           Path to the project directory. Defaults to the active context project directory.
@@ -504,11 +524,12 @@ COMPONENTS
 		_, printErr := fmt.Fprintf(cmd.OutOrStdout(), "  Component catalog unavailable: %v\n", err)
 		return printErr
 	}
-	invocation := []string{"__component", "list"}
-	if name != "" {
-		invocation = append(invocation, name)
+	req, err := plugin.NewComponentListRequest(name)
+	if err != nil {
+		_, printErr := fmt.Fprintf(cmd.OutOrStdout(), "  Component catalog unavailable: %v\n", err)
+		return printErr
 	}
-	if err := invokeComponentPluginCommand(cmd, owner, contextName, invocation); err != nil {
+	if err := invokeComponentRPCCommand(cmd, owner, contextName, req); err != nil {
 		_, printErr := fmt.Fprintf(cmd.OutOrStdout(), "  Component catalog unavailable: %v\n", err)
 		return printErr
 	}
