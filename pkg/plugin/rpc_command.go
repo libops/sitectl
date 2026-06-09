@@ -354,15 +354,20 @@ func (s *SDK) rpcCommand(rpcCmd *cobra.Command, method string, command *cobra.Co
 }
 
 type rpcCommandIO struct {
-	stdin  io.Reader
-	stderr io.Writer
+	stdin      io.Reader
+	stderr     io.Writer
+	liveStdout bool
 }
 
 func rpcCommandIOFromCommand(cmd *cobra.Command) rpcCommandIO {
 	if cmd == nil {
-		return rpcCommandIO{stdin: os.Stdin, stderr: os.Stderr}
+		return rpcCommandIO{stdin: os.Stdin, stderr: os.Stderr, liveStdout: rpcLiveStdoutEnabled()}
 	}
-	return rpcCommandIO{stdin: cmd.InOrStdin(), stderr: cmd.ErrOrStderr()}
+	return rpcCommandIO{stdin: cmd.InOrStdin(), stderr: cmd.ErrOrStderr(), liveStdout: rpcLiveStdoutEnabled()}
+}
+
+func rpcLiveStdoutEnabled() bool {
+	return os.Getenv("SITECTL_RPC_LIVE_STDOUT") == "1"
 }
 
 func rpcCommandContext(cmd *cobra.Command) context.Context {
@@ -415,7 +420,11 @@ func executeRPCCommandWithIO(runCtx context.Context, method string, command *cob
 		streams.stderr = os.Stderr
 	}
 	command.SetIn(streams.stdin)
-	command.SetOut(stdout)
+	output := io.Writer(stdout)
+	if streams.liveStdout {
+		output = io.MultiWriter(stdout, streams.stderr)
+	}
+	command.SetOut(output)
 	// Stderr intentionally bypasses the response envelope. The host captures
 	// the plugin process stderr separately so progress, prompts, and diagnostics
 	// can stream while stdout remains reserved for the JSON response.

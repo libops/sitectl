@@ -1192,6 +1192,34 @@ func TestExecuteRPCCommandRestoresCommandState(t *testing.T) {
 	}
 }
 
+func TestExecuteRPCCommandCanMirrorLiveStdout(t *testing.T) {
+	t.Parallel()
+
+	var mirrored bytes.Buffer
+	root := &cobra.Command{
+		Use: "root",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := cmd.OutOrStdout().Write([]byte("create progress\n"))
+			return err
+		},
+	}
+
+	output, err := executeRPCCommandWithIO(context.Background(), "create.run", root, nil, rpcCommandIO{
+		stdin:      strings.NewReader("rpc stdin"),
+		stderr:     &mirrored,
+		liveStdout: true,
+	})
+	if err != nil {
+		t.Fatalf("executeRPCCommandWithIO() error = %v", err)
+	}
+	if output != "create progress\n" {
+		t.Fatalf("captured output = %q, want create progress", output)
+	}
+	if mirrored.String() != "create progress\n" {
+		t.Fatalf("mirrored output = %q, want create progress", mirrored.String())
+	}
+}
+
 func TestDiscoveryMetadataInvocationUsesEnvFastPath(t *testing.T) {
 	t.Setenv("SITECTL_RPC_METADATA", "1")
 	oldArgs := os.Args

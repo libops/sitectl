@@ -85,13 +85,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	liveStdout := true
 	resp, err := pluginSDK.InvokePluginRPC(owner, req, plugin.CommandExecOptions{
 		Context:    RootCmd.Context(),
 		Stdin:      cmd.InOrStdin(),
 		Stderr:     cmd.ErrOrStderr(),
 		LiveStderr: true,
+		LiveStdout: liveStdout,
 	})
-	if strings.TrimSpace(resp.Output) != "" {
+	if strings.TrimSpace(resp.Output) != "" && !liveStdout {
 		if _, printErr := fmt.Fprint(cmd.OutOrStdout(), resp.Output); printErr != nil {
 			return printErr
 		}

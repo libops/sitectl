@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,21 @@ func TestHealthcheckRetryMessageNamesStartingServices(t *testing.T) {
 	for _, want := range []string{"retry 2", "solr starting", "3s"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("message %q missing %q", message, want)
+		}
+	}
+}
+
+func TestHealthcheckProgressDoesNotWriteControlCharactersToNonTTY(t *testing.T) {
+	var stderr bytes.Buffer
+
+	progress := startHealthcheckProgress(&stderr, "Waiting for healthcheck retry 1: solr starting; next check in 10s")
+	progress.Update("Waiting for healthcheck retry 2: solr starting; next check in 10s")
+	progress.Stop()
+
+	got := stderr.String()
+	for _, control := range []string{"\r", "\x1b"} {
+		if strings.Contains(got, control) {
+			t.Fatalf("expected non-terminal progress without terminal control characters, got %q", got)
 		}
 	}
 }

@@ -6,9 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/spinner"
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/healthcheck"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -164,87 +161,26 @@ func startingComposeServiceNames(report sitevalidate.Report) []string {
 	return services
 }
 
-type healthcheckProgressUpdateMsg struct {
-	message string
-}
-
-type healthcheckProgressDoneMsg struct{}
-
-type healthcheckSpinnerModel struct {
-	spin     spinner.Model
-	message  string
-	quitting bool
-}
-
-func newHealthcheckSpinnerModel(message string) healthcheckSpinnerModel {
-	return healthcheckSpinnerModel{
-		spin:    spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("205")))),
-		message: strings.TrimSpace(message),
-	}
-}
-
-func (m healthcheckSpinnerModel) Init() tea.Cmd {
-	return m.spin.Tick
-}
-
-func (m healthcheckSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spin, cmd = m.spin.Update(msg)
-		return m, cmd
-	case healthcheckProgressUpdateMsg:
-		m.message = strings.TrimSpace(msg.message)
-		return m, nil
-	case healthcheckProgressDoneMsg:
-		m.quitting = true
-		return m, tea.Quit
-	}
-	return m, nil
-}
-
-func (m healthcheckSpinnerModel) View() tea.View {
-	if m.quitting {
-		return tea.NewView("")
-	}
-	return tea.NewView(m.spin.View() + " " + m.message + "\n")
-}
-
 type healthcheckProgress struct {
-	program *tea.Program
-	done    chan error
+	line *plugin.ProgressLine
 }
 
 func startHealthcheckProgress(out io.Writer, message string) *healthcheckProgress {
-	progress := &healthcheckProgress{
-		program: tea.NewProgram(newHealthcheckSpinnerModel(message), tea.WithInput(nil), tea.WithOutput(out)),
-		done:    make(chan error, 1),
-	}
-	go func() {
-		_, err := progress.program.Run()
-		progress.done <- err
-	}()
-	return progress
+	return &healthcheckProgress{line: plugin.NewProgressLine(out, message, "")}
 }
 
 func (p *healthcheckProgress) Update(message string) {
-	if p == nil || p.program == nil {
+	if p == nil || p.line == nil {
 		return
 	}
-	p.program.Send(healthcheckProgressUpdateMsg{message: message})
+	p.line.Report(message, "")
 }
 
 func (p *healthcheckProgress) Stop() {
-	if p == nil || p.program == nil {
+	if p == nil || p.line == nil {
 		return
 	}
-	p.program.Send(healthcheckProgressDoneMsg{})
-	select {
-	case <-p.done:
-	case <-time.After(2 * time.Second):
-		p.program.Kill()
-		<-p.done
-	}
+	p.line.Close()
 }
 
 func runHealthcheckOnce(cmd *cobra.Command, ctx *config.Context, contextName string, healthcheckParams plugin.HealthcheckRunParams, pluginArgs []string) ([]sitevalidate.Result, error) {
