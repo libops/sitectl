@@ -24,11 +24,13 @@ runtime checks are also run and merged into the report.
 All flags not consumed by sitectl itself are forwarded to the plugin's
 healthcheck handler, allowing plugin-specific flags such as --codebase-rootfs.
 
-Exits non-zero if any check fails after the timeout.
+By default, healthcheck runs once, prints the current status of each check, and
+exits non-zero if any check fails. Use --persist to keep retrying until all
+checks pass or --timeout is reached.
 
 Examples:
   sitectl healthcheck
-  sitectl healthcheck --timeout 10m --interval 15s
+  sitectl healthcheck --persist --timeout 10m --interval 15s
   sitectl healthcheck --format table`,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -41,7 +43,7 @@ Examples:
 		if err != nil {
 			return err
 		}
-		if hostParams.Interval <= 0 {
+		if hostParams.Persist && hostParams.Interval <= 0 {
 			return fmt.Errorf("--interval must be greater than zero")
 		}
 
@@ -51,7 +53,7 @@ Examples:
 		}
 		ctx := &ctxVal
 
-		report, err := runHealthcheckUntilHealthy(cmd, ctx, contextName, hostParams, healthcheckParams, pluginArgs)
+		report, err := runHealthcheckReport(cmd, ctx, contextName, hostParams, healthcheckParams, pluginArgs)
 		if err != nil {
 			return err
 		}
@@ -68,6 +70,19 @@ Examples:
 func init() {
 	healthcheckCmd.GroupID = "workflow"
 	RootCmd.AddCommand(healthcheckCmd)
+}
+
+func runHealthcheckReport(cmd *cobra.Command, ctx *config.Context, contextName string, hostParams healthcheckHostParams, healthcheckParams plugin.HealthcheckRunParams, pluginArgs []string) (sitevalidate.Report, error) {
+	if hostParams.Persist {
+		return runHealthcheckUntilHealthy(cmd, ctx, contextName, hostParams, healthcheckParams, pluginArgs)
+	}
+
+	results, err := runHealthcheckOnce(cmd, ctx, contextName, healthcheckParams, pluginArgs)
+	if err != nil {
+		return sitevalidate.Report{}, err
+	}
+	sitevalidate.SortResults(results)
+	return sitevalidate.NewReport(ctx, results), nil
 }
 
 func runHealthcheckUntilHealthy(cmd *cobra.Command, ctx *config.Context, contextName string, hostParams healthcheckHostParams, healthcheckParams plugin.HealthcheckRunParams, pluginArgs []string) (sitevalidate.Report, error) {
