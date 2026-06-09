@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ func extractValidateRPCParams(args []string) (string, plugin.ValidateRunParams, 
 
 type healthcheckHostParams struct {
 	Format   string
+	Persist  bool
 	Timeout  time.Duration
 	Interval time.Duration
 }
@@ -82,6 +84,10 @@ func extractHealthcheckHostParams(args []string) (healthcheckHostParams, []strin
 				i++
 				value = args[i]
 			}
+		case "persist":
+			if !hasValue {
+				value = "true"
+			}
 		default:
 			passthrough = append(passthrough, arg)
 			continue
@@ -90,6 +96,12 @@ func extractHealthcheckHostParams(args []string) (healthcheckHostParams, []strin
 		switch name {
 		case "format":
 			params.Format = value
+		case "persist":
+			persist, err := strconv.ParseBool(value)
+			if err != nil {
+				return healthcheckHostParams{}, nil, fmt.Errorf("parse --persist: %w", err)
+			}
+			params.Persist = persist
 		case "timeout":
 			timeout, err := time.ParseDuration(value)
 			if err != nil {

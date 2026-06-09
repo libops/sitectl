@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -80,6 +81,65 @@ func TestExtractValidateRPCParamsPromotesReportFormatAndRootfs(t *testing.T) {
 	wantPassthrough := []string{"--strict"}
 	if !reflect.DeepEqual(passthrough, wantPassthrough) {
 		t.Fatalf("passthrough = %#v, want %#v", passthrough, wantPassthrough)
+	}
+}
+
+func TestExtractHealthcheckRPCParamsPromotesHostFlags(t *testing.T) {
+	host, _, passthrough, err := extractHealthcheckRPCParams([]string{
+		"--format", "json",
+		"--persist",
+		"--timeout=2m",
+		"--interval", "5s",
+		"--codebase-rootfs", "app/rootfs",
+		"--plugin-flag",
+	})
+	if err != nil {
+		t.Fatalf("extractHealthcheckRPCParams() error = %v", err)
+	}
+
+	if host.Format != "json" {
+		t.Fatalf("Format = %q, want json", host.Format)
+	}
+	if !host.Persist {
+		t.Fatal("Persist = false, want true")
+	}
+	if host.Timeout != 2*time.Minute {
+		t.Fatalf("Timeout = %s, want 2m", host.Timeout)
+	}
+	if host.Interval != 5*time.Second {
+		t.Fatalf("Interval = %s, want 5s", host.Interval)
+	}
+	wantPassthrough := []string{"--codebase-rootfs", "app/rootfs", "--plugin-flag"}
+	if !reflect.DeepEqual(passthrough, wantPassthrough) {
+		t.Fatalf("passthrough = %#v, want %#v", passthrough, wantPassthrough)
+	}
+}
+
+func TestExtractHealthcheckRPCParamsDefaultsToOneShot(t *testing.T) {
+	host, _, passthrough, err := extractHealthcheckRPCParams([]string{
+		"--persist=false",
+		"--custom",
+	})
+	if err != nil {
+		t.Fatalf("extractHealthcheckRPCParams() error = %v", err)
+	}
+
+	if host.Persist {
+		t.Fatal("Persist = true, want false")
+	}
+	wantPassthrough := []string{"--custom"}
+	if !reflect.DeepEqual(passthrough, wantPassthrough) {
+		t.Fatalf("passthrough = %#v, want %#v", passthrough, wantPassthrough)
+	}
+}
+
+func TestExtractHealthcheckRPCParamsRejectsInvalidPersist(t *testing.T) {
+	_, _, _, err := extractHealthcheckRPCParams([]string{"--persist=maybe"})
+	if err == nil {
+		t.Fatal("expected invalid persist error")
+	}
+	if !strings.Contains(err.Error(), "parse --persist") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
