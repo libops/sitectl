@@ -358,7 +358,7 @@ func updateRouterConfigForBotMitigation(path string, opts BotMitigationOptions, 
 		return fmt.Errorf("read traefik router config: %w", err)
 	}
 
-	doc, err := corecomponent.LoadYAMLDocument(data)
+	doc, err := corecomponent.LoadYAMLDocument(quoteTraefikTemplateScalars(data))
 	if err != nil {
 		return fmt.Errorf("load traefik router yaml: %w", err)
 	}
@@ -402,6 +402,42 @@ func updateRouterConfigForBotMitigation(path string, opts BotMitigationOptions, 
 		return fmt.Errorf("marshal traefik router config: %w", err)
 	}
 	return os.WriteFile(path, out, 0o600) // #nosec G703 -- path is the selected project's traefik router config.
+}
+
+func quoteTraefikTemplateScalars(data []byte) []byte {
+	lines := strings.SplitAfter(string(data), "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, "{{") || !strings.Contains(line, "}}") {
+			continue
+		}
+		lineEnd := ""
+		body := line
+		if strings.HasSuffix(body, "\n") {
+			lineEnd = "\n"
+			body = strings.TrimSuffix(body, "\n")
+		}
+		colon := strings.Index(body, ":")
+		if colon < 0 || colon+1 >= len(body) {
+			continue
+		}
+		valueStart := colon + 1
+		for valueStart < len(body) && (body[valueStart] == ' ' || body[valueStart] == '\t') {
+			valueStart++
+		}
+		if valueStart >= len(body) {
+			continue
+		}
+		value := body[valueStart:]
+		if strings.HasPrefix(value, "'") || strings.HasPrefix(value, `"`) {
+			continue
+		}
+		lines[i] = body[:valueStart] + singleQuoteYAMLScalar(value) + lineEnd
+	}
+	return []byte(strings.Join(lines, ""))
+}
+
+func singleQuoteYAMLScalar(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func ensureBotMitigationFiles(ctx context.Context, projectDir string) error {

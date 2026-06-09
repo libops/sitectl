@@ -448,7 +448,9 @@ func (s *SDK) ExecInContainerInteractive(ctx context.Context, containerID string
 }
 
 // CommandExecOptions controls subprocess execution for plugin RPC calls.
-// Stdout is always captured into RPCResponse.Output. Use Stdin only for
+// Stdout is always captured into RPCResponse.Output. LiveStdout mirrors command
+// stdout to the plugin process stderr while still capturing it, because process
+// stdout is reserved for the final RPC response envelope. Use Stdin only for
 // interactive RPC methods; when Stdin is nil the host sends the RPC envelope
 // over stdin instead of argv. When Stdin is set, the request is encoded into
 // argv so request args and params may be visible in process listings; never
@@ -462,6 +464,7 @@ type CommandExecOptions struct {
 	Stdin      io.Reader
 	Stderr     io.Writer
 	LiveStderr bool
+	LiveStdout bool
 }
 
 type pluginRPCPathOptions struct {
@@ -575,6 +578,9 @@ func runPluginRPCPath(pluginName, pluginPath string, req RPCRequest, opts plugin
 	if req.Method == MethodPluginMetadata {
 		cmd.Env = append(cmd.Env, "SITECTL_RPC_METADATA=1")
 	}
+	if opts.LiveStdout {
+		cmd.Env = append(cmd.Env, "SITECTL_RPC_LIVE_STDOUT=1")
+	}
 	cmd.Env = append(cmd.Env, opts.ExtraEnv...)
 	if width, ok := terminalColumns(); ok {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("COLUMNS=%d", width))
@@ -585,9 +591,9 @@ func runPluginRPCPath(pluginName, pluginPath string, req RPCRequest, opts plugin
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
 	var stderrSink io.Writer
-	if opts.Stderr != nil && opts.LiveStderr {
+	if opts.Stderr != nil && (opts.LiveStderr || opts.LiveStdout) {
 		stderrSink = io.MultiWriter(opts.Stderr, &stderr)
-	} else if opts.LiveStderr {
+	} else if opts.LiveStderr || opts.LiveStdout {
 		stderrSink = io.MultiWriter(os.Stderr, &stderr)
 	} else {
 		stderrSink = &stderr

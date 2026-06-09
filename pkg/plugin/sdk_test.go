@@ -309,6 +309,33 @@ func TestInvokePluginRPCCanMirrorLiveStderr(t *testing.T) {
 	}
 }
 
+func TestInvokePluginRPCCanMirrorLiveStdout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sitectl-liveout")
+	writePluginScript(t, dir, "sitectl-liveout", `#!/bin/sh
+if [ "$SITECTL_RPC_LIVE_STDOUT" = "1" ]; then
+  printf '%s\n' 'mirrored command output' >&2
+fi
+printf '%s\n' '{"protocol_version":1,"ok":true,"output":"captured command output\n"}'
+`)
+
+	sdk := NewSDK(Metadata{Name: "isle"})
+	var stderr bytes.Buffer
+	resp, err := sdk.invokePluginRPCPath("liveout", path, NewRPCRequest(MethodCreateRun), CommandExecOptions{
+		LiveStdout: true,
+		Stderr:     &stderr,
+	})
+	if err != nil {
+		t.Fatalf("InvokePluginRPC() error = %v", err)
+	}
+	if !strings.Contains(stderr.String(), "mirrored command output") {
+		t.Fatalf("expected mirrored live stdout, got %q", stderr.String())
+	}
+	if !strings.Contains(resp.Output, "captured command output") {
+		t.Fatalf("expected captured command output, got %q", resp.Output)
+	}
+}
+
 func TestInvokePluginRPCValidatesResponseEnvelope(t *testing.T) {
 	tests := []struct {
 		name            string

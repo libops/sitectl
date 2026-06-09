@@ -387,6 +387,44 @@ func TestUpdateRouterConfigForBotMitigationHandlesNonCanonicalYAML(t *testing.T)
 	}
 }
 
+func TestUpdateRouterConfigForBotMitigationHandlesUnquotedTraefikTemplates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "drupal.yml")
+	if err := os.WriteFile(path, []byte(`http:
+  services:
+    drupal:
+      loadBalancer:
+        servers:
+          - url: {{ env "DRUPAL_UPSTREAM_URL" }}
+  routers:
+    drupal:
+      rule: Host(`+"`"+`{{ env "DOMAIN" }}`+"`"+`)
+      service: drupal
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	opts := NormalizeBotMitigationOptions(BotMitigationOptions{RouterName: "drupal"})
+	if err := updateRouterConfigForBotMitigation(path, opts, true); err != nil {
+		t.Fatalf("updateRouterConfigForBotMitigation() error = %v", err)
+	}
+
+	rendered := readText(t, path)
+	for _, want := range []string{
+		"middlewares:\n        - captcha-protect",
+		"captcha-protect:\n      plugin:",
+		`{{ env "DRUPAL_UPSTREAM_URL" }}`,
+		`{{ env "DOMAIN" }}`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected router config to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	if _, err := corecomponent.LoadYAMLDocument([]byte(rendered)); err != nil {
+		t.Fatalf("updated router config should be valid YAML: %v\n%s", err, rendered)
+	}
+}
+
 func TestUpdateRouterConfigForBotMitigationDisableOnlyRemovesMiddlewareBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ojs.yml")
