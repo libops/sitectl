@@ -2,9 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/healthcheck"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -24,9 +28,9 @@ runtime checks are also run and merged into the report.
 All flags not consumed by sitectl itself are forwarded to the plugin's
 healthcheck handler, allowing plugin-specific flags such as --codebase-rootfs.
 
-By default, healthcheck runs once, prints the current status of each check, and
-exits non-zero if any check fails. Use --persist to keep retrying until all
-checks pass or --timeout is reached.
+By default, healthcheck waits for Docker services that are still starting, then
+prints one status report and exits non-zero if any check fails. Use --persist to
+keep retrying all failures until every check passes or --timeout is reached.
 
 Examples:
   sitectl healthcheck
@@ -43,7 +47,7 @@ Examples:
 		if err != nil {
 			return err
 		}
-		if hostParams.Persist && hostParams.Interval <= 0 {
+		if hostParams.Interval <= 0 {
 			return fmt.Errorf("--interval must be greater than zero")
 		}
 
@@ -73,21 +77,16 @@ func init() {
 }
 
 func runHealthcheckReport(cmd *cobra.Command, ctx *config.Context, contextName string, hostParams healthcheckHostParams, healthcheckParams plugin.HealthcheckRunParams, pluginArgs []string) (sitevalidate.Report, error) {
-	if hostParams.Persist {
-		return runHealthcheckUntilHealthy(cmd, ctx, contextName, hostParams, healthcheckParams, pluginArgs)
-	}
-
-	results, err := runHealthcheckOnce(cmd, ctx, contextName, healthcheckParams, pluginArgs)
-	if err != nil {
-		return sitevalidate.Report{}, err
-	}
-	sitevalidate.SortResults(results)
-	return sitevalidate.NewReport(ctx, results), nil
-}
-
-func runHealthcheckUntilHealthy(cmd *cobra.Command, ctx *config.Context, contextName string, hostParams healthcheckHostParams, healthcheckParams plugin.HealthcheckRunParams, pluginArgs []string) (sitevalidate.Report, error) {
 	deadline := time.Now().Add(hostParams.Timeout)
 	var last sitevalidate.Report
+	var progress *healthcheckProgress
+	defer func() {
+		if progress != nil {
+			progress.Stop()
+		}
+	}()
+
+	attempt := 1
 	for {
 		results, err := runHealthcheckOnce(cmd, ctx, contextName, healthcheckParams, pluginArgs)
 		if err != nil {
@@ -95,8 +94,14 @@ func runHealthcheckUntilHealthy(cmd *cobra.Command, ctx *config.Context, context
 		}
 		sitevalidate.SortResults(results)
 		last = sitevalidate.NewReport(ctx, results)
-		if last.Valid || hostParams.Timeout <= 0 || time.Now().Add(hostParams.Interval).After(deadline) {
+		if last.Valid || !shouldRetryHealthcheck(last, hostParams) || hostParams.Timeout <= 0 || time.Now().Add(hostParams.Interval).After(deadline) {
 			return last, nil
+		}
+		message := healthcheckRetryMessage(last, hostParams, attempt)
+		if progress == nil {
+			progress = startHealthcheckProgress(cmd.ErrOrStderr(), message)
+		} else {
+			progress.Update(message)
 		}
 		timer := time.NewTimer(hostParams.Interval)
 		select {
@@ -105,6 +110,140 @@ func runHealthcheckUntilHealthy(cmd *cobra.Command, ctx *config.Context, context
 			return sitevalidate.Report{}, cmd.Context().Err()
 		case <-timer.C:
 		}
+		attempt++
+	}
+}
+
+func shouldRetryHealthcheck(report sitevalidate.Report, hostParams healthcheckHostParams) bool {
+	if report.Valid {
+		return false
+	}
+	if hostParams.Persist {
+		return true
+	}
+	return reportHasStartingComposeService(report)
+}
+
+func reportHasStartingComposeService(report sitevalidate.Report) bool {
+	for _, result := range report.Results {
+		if result.Status != sitevalidate.StatusFailed {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(result.Name), "service:") {
+			continue
+		}
+		if strings.Contains(result.Detail, "health=starting") {
+			return true
+		}
+	}
+	return false
+}
+
+func healthcheckRetryMessage(report sitevalidate.Report, hostParams healthcheckHostParams, attempt int) string {
+	reason := "healthcheck failed"
+	if !hostParams.Persist {
+		if services := startingComposeServiceNames(report); len(services) > 0 {
+			reason = strings.Join(services, ", ") + " starting"
+		}
+	}
+	return fmt.Sprintf("Waiting for healthcheck retry %d: %s; next check in %s", attempt, reason, hostParams.Interval)
+}
+
+func startingComposeServiceNames(report sitevalidate.Report) []string {
+	services := []string{}
+	for _, result := range report.Results {
+		if result.Status != sitevalidate.StatusFailed {
+			continue
+		}
+		name := strings.TrimSpace(result.Name)
+		if !strings.HasPrefix(name, "service:") || !strings.Contains(result.Detail, "health=starting") {
+			continue
+		}
+		services = append(services, strings.TrimPrefix(name, "service:"))
+	}
+	return services
+}
+
+type healthcheckProgressUpdateMsg struct {
+	message string
+}
+
+type healthcheckProgressDoneMsg struct{}
+
+type healthcheckSpinnerModel struct {
+	spin     spinner.Model
+	message  string
+	quitting bool
+}
+
+func newHealthcheckSpinnerModel(message string) healthcheckSpinnerModel {
+	return healthcheckSpinnerModel{
+		spin:    spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("205")))),
+		message: strings.TrimSpace(message),
+	}
+}
+
+func (m healthcheckSpinnerModel) Init() tea.Cmd {
+	return m.spin.Tick
+}
+
+func (m healthcheckSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+	case healthcheckProgressUpdateMsg:
+		m.message = strings.TrimSpace(msg.message)
+		return m, nil
+	case healthcheckProgressDoneMsg:
+		m.quitting = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m healthcheckSpinnerModel) View() tea.View {
+	if m.quitting {
+		return tea.NewView("")
+	}
+	return tea.NewView(m.spin.View() + " " + m.message + "\n")
+}
+
+type healthcheckProgress struct {
+	program *tea.Program
+	done    chan error
+}
+
+func startHealthcheckProgress(out io.Writer, message string) *healthcheckProgress {
+	progress := &healthcheckProgress{
+		program: tea.NewProgram(newHealthcheckSpinnerModel(message), tea.WithInput(nil), tea.WithOutput(out)),
+		done:    make(chan error, 1),
+	}
+	go func() {
+		_, err := progress.program.Run()
+		progress.done <- err
+	}()
+	return progress
+}
+
+func (p *healthcheckProgress) Update(message string) {
+	if p == nil || p.program == nil {
+		return
+	}
+	p.program.Send(healthcheckProgressUpdateMsg{message: message})
+}
+
+func (p *healthcheckProgress) Stop() {
+	if p == nil || p.program == nil {
+		return
+	}
+	p.program.Send(healthcheckProgressDoneMsg{})
+	select {
+	case <-p.done:
+	case <-time.After(2 * time.Second):
+		p.program.Kill()
+		<-p.done
 	}
 }
 

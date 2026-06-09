@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -102,18 +103,40 @@ func (c *DockerChecker) CheckMariaDB(ctx context.Context, service string) siteva
 	})
 }
 
-// CheckSolrCore verifies that a Solr core answers its admin ping endpoint from
-// inside the Solr container.
+// CheckSolrCore verifies that a Solr core is loaded from inside the Solr
+// container.
 func (c *DockerChecker) CheckSolrCore(ctx context.Context, service, core string) sitevalidate.Result {
 	service = firstNonEmpty(service, "solr")
 	core = firstNonEmpty(core, "default")
-	endpoint := fmt.Sprintf("http://127.0.0.1:8983/solr/%s/admin/ping?wt=json", url.PathEscape(core))
-	command := fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -fsS %q; elif command -v wget >/dev/null 2>&1; then wget -q -O- %q; else solr status >/dev/null; fi`, endpoint, endpoint)
-	result := c.checkExec(ctx, "solr:"+service, service, []string{"sh", "-lc", command})
-	if result.Status == sitevalidate.StatusOK && strings.TrimSpace(result.Detail) == "" {
-		result.Detail = "Solr core " + core + " answered ping"
+	name := "solr:" + service
+	if c == nil || c.Client == nil || c.Context == nil {
+		return failed(name, "docker checker is not initialized")
 	}
-	return result
+	containerName, err := c.Client.GetContainerNameContext(ctx, c.Context, service)
+	if err != nil {
+		return failed(name, err.Error())
+	}
+	if strings.TrimSpace(containerName) == "" {
+		return failed(name, "service "+service+" is not running")
+	}
+
+	endpoint := fmt.Sprintf("http://127.0.0.1:8983/solr/admin/cores?action=STATUS&core=%s&wt=json", url.QueryEscape(core))
+	command := fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 10 %q; elif command -v wget >/dev/null 2>&1; then wget -q --timeout=10 -O- %q; else echo "curl or wget is required"; exit 127; fi`, endpoint, endpoint)
+	execCtx, cancel := context.WithTimeout(ctx, defaultHTTPTimeout)
+	defer cancel()
+	output, err := sitectldocker.ExecCapture(execCtx, c.Client, containerName, "", []string{"sh", "-lc", command})
+	if err != nil {
+		detail := strings.TrimSpace(output)
+		if detail != "" {
+			detail += ": "
+		}
+		return failed(name, detail+err.Error())
+	}
+	detail, err := solrCoreStatusDetail(output, core)
+	if err != nil {
+		return failed(name, err.Error())
+	}
+	return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK, Detail: detail}
 }
 
 // CheckHTTPFromContainer verifies that url is reachable from inside service.
@@ -332,11 +355,28 @@ func isDefaultPort(scheme, port string) bool {
 }
 
 func trimOutput(output string) string {
-	output = strings.TrimSpace(output)
+	output = strings.Join(strings.Fields(output), " ")
 	if len(output) <= 200 {
 		return output
 	}
 	return output[:200] + "..."
+}
+
+func solrCoreStatusDetail(output, core string) (string, error) {
+	var payload struct {
+		InitFailures map[string]json.RawMessage `json:"initFailures"`
+		Status       map[string]json.RawMessage `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		return "", fmt.Errorf("parse Solr core status: %w: %s", err, trimOutput(output))
+	}
+	if raw, ok := payload.InitFailures[core]; ok {
+		return "", fmt.Errorf("solr core %s has init failure: %s", core, trimOutput(string(raw)))
+	}
+	if _, ok := payload.Status[core]; !ok {
+		return "", fmt.Errorf("solr core %s not found", core)
+	}
+	return "Solr core " + core + " is loaded", nil
 }
 
 func min(a, b int) int {
