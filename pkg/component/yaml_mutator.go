@@ -217,6 +217,13 @@ func (d *YAMLDocument) AppendUniqueString(path, value string) error {
 		if target.Value == value {
 			return nil
 		}
+		if target.Style == yaml.FoldedStyle || target.Style == yaml.LiteralStyle {
+			if scalarStringContains(target.Value, value) {
+				return nil
+			}
+			target.Value = appendScalarString(target.Value, value)
+			return nil
+		}
 		target = &yaml.Node{
 			Kind: yaml.SequenceNode,
 			Tag:  "!!seq",
@@ -272,6 +279,17 @@ func (d *YAMLDocument) RemoveString(path, value string) error {
 	if target.Kind == yaml.ScalarNode {
 		if target.Value == value {
 			deleteMappingValue(parent, key)
+			return nil
+		}
+		if target.Style == yaml.FoldedStyle || target.Style == yaml.LiteralStyle {
+			updated, changed := removeScalarString(target.Value, value)
+			if changed {
+				if strings.TrimSpace(updated) == "" {
+					deleteMappingValue(parent, key)
+					return nil
+				}
+				target.Value = updated
+			}
 		}
 		return nil
 	}
@@ -291,6 +309,61 @@ func (d *YAMLDocument) RemoveString(path, value string) error {
 	}
 	target.Content = filtered
 	return nil
+}
+
+func scalarStringContains(existing, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	if strings.ContainsAny(value, " \t\r\n") {
+		return strings.Contains(existing, value)
+	}
+	for _, field := range strings.Fields(existing) {
+		if field == value {
+			return true
+		}
+	}
+	return false
+}
+
+func appendScalarString(existing, value string) string {
+	existing = strings.TrimRight(existing, "\r\n")
+	value = strings.TrimSpace(value)
+	if strings.TrimSpace(existing) == "" {
+		return value
+	}
+	return existing + "\n" + value
+}
+
+func removeScalarString(existing, value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return existing, false
+	}
+	if strings.TrimSpace(existing) == value {
+		return "", true
+	}
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{old: "\n" + value + "\n", new: "\n"},
+		{old: "\r\n" + value + "\r\n", new: "\r\n"},
+		{old: "\n" + value, new: ""},
+		{old: "\r\n" + value, new: ""},
+		{old: value + "\n", new: ""},
+		{old: value + "\r\n", new: ""},
+		{old: " " + value + " ", new: " "},
+		{old: " " + value, new: ""},
+		{old: value + " ", new: ""},
+	}
+	for _, replacement := range replacements {
+		if strings.Contains(existing, replacement.old) {
+			return strings.Replace(existing, replacement.old, replacement.new, 1), true
+		}
+	}
+	return existing, false
 }
 
 // RemoveMatchingString removes string values matching match from a scalar or

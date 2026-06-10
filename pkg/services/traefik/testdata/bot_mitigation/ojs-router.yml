@@ -1,0 +1,10 @@
+http:
+  routers:
+    ojs:
+      rule: Host(`journal.example.org`)
+      service: ojs
+  services:
+    ojs:
+      loadBalancer:
+        servers:
+          - url: http://ojs:80

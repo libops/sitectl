@@ -1,0 +1,10 @@
+http:
+  services:
+    drupal:
+      loadBalancer:
+        servers:
+          - url: {{ env "DRUPAL_UPSTREAM_URL" }}
+  routers:
+    drupal:
+      rule: Host(`{{ env "DOMAIN" }}`)
+      service: drupal

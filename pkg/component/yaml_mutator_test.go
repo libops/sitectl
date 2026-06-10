@@ -142,6 +142,58 @@ func TestYAMLDocumentAppendUniqueStringConvertsScalar(t *testing.T) {
 	}
 }
 
+func TestYAMLDocumentAppendUniqueStringPreservesFoldedScalar(t *testing.T) {
+	t.Parallel()
+
+	input := `services:
+  traefik:
+    command: >-
+      --ping=true
+      --log.level=INFO
+`
+	doc, err := LoadYAMLDocument([]byte(input))
+	if err != nil {
+		t.Fatalf("LoadYAMLDocument() error = %v", err)
+	}
+	value := "--experimental.localPlugins.captcha-protect.modulename=github.com/libops/captcha-protect"
+	if err := doc.AppendUniqueString(".services.traefik.command", value); err != nil {
+		t.Fatalf("AppendUniqueString() error = %v", err)
+	}
+	if err := doc.AppendUniqueString(".services.traefik.command", value); err != nil {
+		t.Fatalf("AppendUniqueString(duplicate) error = %v", err)
+	}
+
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes() error = %v", err)
+	}
+	rendered := string(out)
+	if !strings.Contains(rendered, "command: >-") {
+		t.Fatalf("expected folded command scalar to remain folded, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "command:\n") {
+		t.Fatalf("expected folded command scalar not to become a sequence, got:\n%s", rendered)
+	}
+	if strings.Count(rendered, value) != 1 {
+		t.Fatalf("expected command value once, got:\n%s", rendered)
+	}
+
+	if err := doc.RemoveString(".services.traefik.command", value); err != nil {
+		t.Fatalf("RemoveString() error = %v", err)
+	}
+	out, err = doc.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes(after remove) error = %v", err)
+	}
+	rendered = string(out)
+	if strings.Contains(rendered, value) {
+		t.Fatalf("expected folded command scalar value removed, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "--ping=true") || !strings.Contains(rendered, "--log.level=INFO") {
+		t.Fatalf("expected original folded command values to remain, got:\n%s", rendered)
+	}
+}
+
 func TestYAMLDocumentRemoveStringRemovesEmptySequence(t *testing.T) {
 	t.Parallel()
 
