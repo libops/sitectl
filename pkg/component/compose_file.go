@@ -121,6 +121,137 @@ func (c *ComposeFile) SetServiceStringList(service, key string, values []string)
 	return nil
 }
 
+// AppendUniqueServiceString appends value to a service string list or block
+// scalar key while preserving the surrounding compose file text.
+func (c *ComposeFile) AppendUniqueServiceString(service, key, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	serviceIdx, ok := c.findService(service)
+	if !ok {
+		return fmt.Errorf("service %q not found in compose file", service)
+	}
+	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
+	if !ok {
+		insertAt := findBlockEnd(c.lines, serviceIdx, 2)
+		c.lines = insertLines(c.lines, insertAt, []string{
+			"    " + key + ":",
+			"      - " + value,
+		})
+		return nil
+	}
+
+	keyLine := strings.TrimSpace(c.lines[keyIdx])
+	if isBlockScalarKeyLine(keyLine, key) {
+		end := findBlockEnd(c.lines, keyIdx, 4)
+		for _, line := range c.lines[keyIdx+1 : end] {
+			if strings.TrimSpace(line) == value {
+				return nil
+			}
+		}
+		insertAt := insertionIndexBeforeTrailingBlanks(c.lines, end)
+		c.lines = insertLines(c.lines, insertAt, []string{"      " + value})
+		return nil
+	}
+	if keyLine == key+":" {
+		end := findBlockEnd(c.lines, keyIdx, 4)
+		for _, line := range c.lines[keyIdx+1 : end] {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "- ") {
+				if trimmed == "" {
+					continue
+				}
+				return fmt.Errorf("service %q key %q is not a string sequence", service, key)
+			}
+			if strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")) == value {
+				return nil
+			}
+		}
+		insertAt := insertionIndexBeforeTrailingBlanks(c.lines, end)
+		c.lines = insertLines(c.lines, insertAt, []string{"      - " + value})
+		return nil
+	}
+
+	prefix := key + ":"
+	if strings.HasPrefix(keyLine, prefix) {
+		existing := strings.TrimSpace(strings.TrimPrefix(keyLine, prefix))
+		if existing == value {
+			return nil
+		}
+		replacement := []string{"    " + key + ":"}
+		if existing != "" && existing != "{}" && existing != "[]" {
+			replacement = append(replacement, "      - "+existing)
+		}
+		replacement = append(replacement, "      - "+value)
+		end := findBlockEnd(c.lines, keyIdx, 4)
+		c.lines = append(c.lines[:keyIdx], append(replacement, c.lines[end:]...)...)
+		return nil
+	}
+	return fmt.Errorf("service %q key %q is not a string sequence", service, key)
+}
+
+// RemoveServiceString removes value from a service string list or block scalar
+// key while preserving the surrounding compose file text.
+func (c *ComposeFile) RemoveServiceString(service, key, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	serviceIdx, ok := c.findService(service)
+	if !ok {
+		return nil
+	}
+	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
+	if !ok {
+		return nil
+	}
+
+	keyLine := strings.TrimSpace(c.lines[keyIdx])
+	if isBlockScalarKeyLine(keyLine, key) {
+		end := findBlockEnd(c.lines, keyIdx, 4)
+		filtered := make([]string, 0, end-keyIdx)
+		filtered = append(filtered, c.lines[keyIdx])
+		for _, line := range c.lines[keyIdx+1 : end] {
+			if strings.TrimSpace(line) == value {
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		if len(composeContentLines(filtered[1:])) == 0 {
+			c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
+			return nil
+		}
+		c.lines = append(c.lines[:keyIdx], append(filtered, c.lines[end:]...)...)
+		return nil
+	}
+	if keyLine == key+":" {
+		end := findBlockEnd(c.lines, keyIdx, 4)
+		filtered := make([]string, 0, end-keyIdx)
+		filtered = append(filtered, c.lines[keyIdx])
+		for _, line := range c.lines[keyIdx+1 : end] {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "- ") && strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")) == value {
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		if len(composeContentLines(filtered[1:])) == 0 {
+			c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
+			return nil
+		}
+		c.lines = append(c.lines[:keyIdx], append(filtered, c.lines[end:]...)...)
+		return nil
+	}
+
+	prefix := key + ":"
+	if strings.HasPrefix(keyLine, prefix) && strings.TrimSpace(strings.TrimPrefix(keyLine, prefix)) == value {
+		end := findBlockEnd(c.lines, keyIdx, 4)
+		c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
+	}
+	return nil
+}
+
 func (c *ComposeFile) DeleteServiceKey(service, key string) error {
 	serviceIdx, ok := c.findService(service)
 	if !ok {
@@ -250,6 +381,15 @@ func (c *ComposeFile) findSectionEntry(section, key string) (int, bool) {
 		return 0, false
 	}
 	return findMapKey(c.lines, sectionIdx+1, key, 2)
+}
+
+func isBlockScalarKeyLine(line, key string) bool {
+	prefix := key + ":"
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	return strings.HasPrefix(value, ">") || strings.HasPrefix(value, "|")
 }
 
 func (c *ComposeFile) sectionEntryBlock(section, key string) (string, bool) {

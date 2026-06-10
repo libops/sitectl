@@ -149,38 +149,62 @@ func TestApplyBotMitigationRoundTripManagesAllArtifacts(t *testing.T) {
 	}
 }
 
+func TestUpdateComposeForBotMitigationPreservesFoldedTraefikCommand(t *testing.T) {
+	projectDir := t.TempDir()
+	copyTestFixture(t, filepath.Join(projectDir, "docker-compose.yml"), "docker-compose-isle.yml")
+
+	if err := updateComposeForBotMitigation(projectDir, true); err != nil {
+		t.Fatalf("updateComposeForBotMitigation(on) error = %v", err)
+	}
+	compose := readText(t, filepath.Join(projectDir, "docker-compose.yml"))
+	for _, want := range []string{
+		"<<: *common",
+		"--entryPoints.http.address=:80\n      --entryPoints.http.forwardedHeaders.trustedIPs=${FRONTEND_IP_1},${FRONTEND_IP_2},${FRONTEND_IP_3}",
+		"--api.debug=${DEVELOPMENT_ENVIRONMENT:-false}\n      " + captchaProtectCommand,
+		"      - ./certs:/certs:ro\n      - " + captchaProtectPluginVolume,
+		"      - " + captchaProtectTemplateMount,
+		`TURNSTILE_SITE_KEY: "` + turnstileSiteKeyDefault + `"`,
+		`TURNSTILE_SECRET_KEY: "` + turnstileSecretKeyDefault + `"`,
+	} {
+		if !strings.Contains(compose, want) {
+			t.Fatalf("expected compose to contain %q, got:\n%s", want, compose)
+		}
+	}
+	if strings.Count(compose, captchaProtectCommand) != 1 {
+		t.Fatalf("expected captcha command once, got:\n%s", compose)
+	}
+	if strings.Contains(compose, "--ping=true --log.level=INFO") {
+		t.Fatalf("expected folded command lines not to collapse, got:\n%s", compose)
+	}
+
+	if err := updateComposeForBotMitigation(projectDir, false); err != nil {
+		t.Fatalf("updateComposeForBotMitigation(off) error = %v", err)
+	}
+	compose = readText(t, filepath.Join(projectDir, "docker-compose.yml"))
+	for _, removed := range []string{captchaProtectCommand, captchaProtectPluginVolume, captchaProtectTemplateMount, "TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY"} {
+		if strings.Contains(compose, removed) {
+			t.Fatalf("expected compose to remove %q, got:\n%s", removed, compose)
+		}
+	}
+	for _, want := range []string{
+		"command: >-\n      --ping=true\n      --log.level=INFO",
+		"      --entryPoints.https.transport.respondingTimeouts.readTimeout=60",
+		"      --providers.file.directory=/etc/traefik/dynamic",
+		"      --api.debug=${DEVELOPMENT_ENVIRONMENT:-false}",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Fatalf("expected original folded command line %q preserved after disable, got:\n%s", want, compose)
+		}
+	}
+}
+
 func writeBotMitigationProjectFixture(t *testing.T, projectDir string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(projectDir, "conf", "traefik"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(conf/traefik) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte(`services:
-  traefik:
-    image: traefik:v3
-    command:
-      - --api.dashboard=true
-    volumes:
-      - ./certs:/certs:ro
-    environment:
-      TRAEFIK_LOG_LEVEL: INFO
-  ojs:
-    image: ojs
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "conf", "traefik", "ojs.yml"), []byte(`http:
-  routers:
-    ojs:
-      rule: Host(`+"`"+`journal.example.org`+"`"+`)
-      service: ojs
-  services:
-    ojs:
-      loadBalancer:
-        servers:
-          - url: http://ojs:80
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile(ojs.yml) error = %v", err)
-	}
+	copyTestFixture(t, filepath.Join(projectDir, "docker-compose.yml"), "docker-compose-sequence.yml")
+	copyTestFixture(t, filepath.Join(projectDir, "conf", "traefik", "ojs.yml"), "ojs-router.yml")
 }
 
 func testCaptchaProtectArchive(t *testing.T) []byte {
@@ -296,22 +320,24 @@ func readText(t *testing.T, path string) string {
 	return string(data)
 }
 
+func copyTestFixture(t *testing.T, targetPath, fixtureName string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "bot_mitigation", fixtureName))
+	if err != nil {
+		t.Fatalf("ReadFile(test fixture %s) error = %v", fixtureName, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", filepath.Dir(targetPath), err)
+	}
+	if err := os.WriteFile(targetPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", targetPath, err)
+	}
+}
+
 func TestUpdateRouterConfigForBotMitigationAppliesCustomMiddleware(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ojs.yml")
-	if err := os.WriteFile(path, []byte(`http:
-  routers:
-    ojs:
-      rule: Host(`+"`"+`journal.example.org`+"`"+`)
-      service: ojs
-  services:
-    ojs:
-      loadBalancer:
-        servers:
-          - url: http://ojs:80
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	copyTestFixture(t, path, "ojs-router.yml")
 
 	opts := NormalizeBotMitigationOptions(BotMitigationOptions{
 		RouterName: "ojs",
@@ -357,19 +383,7 @@ func TestUpdateRouterConfigForBotMitigationAppliesCustomMiddleware(t *testing.T)
 func TestUpdateRouterConfigForBotMitigationHandlesNonCanonicalYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ojs.yml")
-	if err := os.WriteFile(path, []byte(`http:
-    routers:
-        ojs:
-            rule: Host(`+"`"+`journal.example.org`+"`"+`)
-            service: ojs
-    services:
-        ojs:
-            loadBalancer:
-                servers:
-                    - url: http://ojs:80
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	copyTestFixture(t, path, "ojs-router-noncanonical.yml")
 
 	opts := NormalizeBotMitigationOptions(BotMitigationOptions{RouterName: "ojs"})
 	if err := updateRouterConfigForBotMitigation(path, opts, true); err != nil {
@@ -387,22 +401,81 @@ func TestUpdateRouterConfigForBotMitigationHandlesNonCanonicalYAML(t *testing.T)
 	}
 }
 
+func TestUpdateRouterConfigForBotMitigationHandlesTraefikTemplateControlLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "drupal.yml")
+	copyTestFixture(t, path, "drupal-router-template-control.yml")
+
+	opts := NormalizeBotMitigationOptions(BotMitigationOptions{RouterName: "drupal"})
+	if err := updateRouterConfigForBotMitigation(path, opts, true); err != nil {
+		t.Fatalf("updateRouterConfigForBotMitigation() error = %v", err)
+	}
+
+	rendered := readText(t, path)
+	for _, want := range []string{
+		"      service: drupal\n      middlewares:\n        - captcha-protect\n{{- if (eq (env \"TLS_PROVIDER\") \"letsencrypt\") }}",
+		"{{- else if (eq (env \"URI_SCHEME\") \"https\") }}",
+		"{{- end }}",
+		"captcha-protect:\n      plugin:",
+		`{{ env "DOMAIN" }}`,
+		"          siteKey: '{{ env \"TURNSTILE_SITE_KEY\" }}'",
+		"          secretKey: '{{ env \"TURNSTILE_SECRET_KEY\" }}'",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected router config to contain %q, got:\n%s", want, rendered)
+		}
+	}
+
+	if err := updateRouterConfigForBotMitigation(path, opts, false); err != nil {
+		t.Fatalf("updateRouterConfigForBotMitigation(disabled) error = %v", err)
+	}
+	rendered = readText(t, path)
+	if strings.Contains(rendered, "captcha-protect") {
+		t.Fatalf("expected disabled router config to remove captcha-protect, got:\n%s", rendered)
+	}
+	for _, want := range []string{
+		"      service: drupal\n{{- if (eq (env \"TLS_PROVIDER\") \"letsencrypt\") }}",
+		"      tls:\n        certResolver: letsencrypt",
+		"{{- else if (eq (env \"URI_SCHEME\") \"https\") }}",
+		"      tls: {}",
+		"{{- end }}",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected disabled router config to preserve %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestUpdateRouterConfigForBotMitigationHandlesUnquotedTraefikTemplates(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "drupal.yml")
-	if err := os.WriteFile(path, []byte(`http:
-  services:
-    drupal:
-      loadBalancer:
-        servers:
-          - url: {{ env "DRUPAL_UPSTREAM_URL" }}
-  routers:
-    drupal:
-      rule: Host(`+"`"+`{{ env "DOMAIN" }}`+"`"+`)
-      service: drupal
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	copyTestFixture(t, path, "drupal-router-isle-with-middlewares.yml")
+
+	opts := NormalizeBotMitigationOptions(BotMitigationOptions{RouterName: "drupal"})
+	if err := updateRouterConfigForBotMitigation(path, opts, true); err != nil {
+		t.Fatalf("updateRouterConfigForBotMitigation() error = %v", err)
 	}
+
+	rendered := readText(t, path)
+	for _, want := range []string{
+		"middlewares:\n        - drupal-compress\n        - captcha-protect",
+		"captcha-protect:\n      plugin:",
+		`{{ env "DRUPAL_UPSTREAM_URL" }}`,
+		`{{ env "DOMAIN" }}`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected router config to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	if _, err := corecomponent.LoadYAMLDocument([]byte(rendered)); err != nil {
+		t.Fatalf("updated router config should be valid YAML: %v\n%s", err, rendered)
+	}
+}
+
+func TestUpdateRouterConfigForBotMitigationHandlesDoubleQuotedTraefikTemplates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "drupal.yml")
+	copyTestFixture(t, path, "drupal-router-double-quoted-templates.yml")
 
 	opts := NormalizeBotMitigationOptions(BotMitigationOptions{RouterName: "drupal"})
 	if err := updateRouterConfigForBotMitigation(path, opts, true); err != nil {
@@ -412,7 +485,6 @@ func TestUpdateRouterConfigForBotMitigationHandlesUnquotedTraefikTemplates(t *te
 	rendered := readText(t, path)
 	for _, want := range []string{
 		"middlewares:\n        - captcha-protect",
-		"captcha-protect:\n      plugin:",
 		`{{ env "DRUPAL_UPSTREAM_URL" }}`,
 		`{{ env "DOMAIN" }}`,
 	} {
@@ -428,26 +500,7 @@ func TestUpdateRouterConfigForBotMitigationHandlesUnquotedTraefikTemplates(t *te
 func TestUpdateRouterConfigForBotMitigationDisableOnlyRemovesMiddlewareBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ojs.yml")
-	if err := os.WriteFile(path, []byte(`http:
-  routers:
-    ojs:
-      rule: Host(`+"`"+`journal.example.org`+"`"+`)
-      service: captcha-protect
-      middlewares:
-        - captcha-protect
-  services:
-    captcha-protect:
-      loadBalancer:
-        servers:
-          - url: http://ojs:80
-  middlewares:
-    captcha-protect:
-      plugin:
-        captcha-protect:
-          rateLimit: 0
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	copyTestFixture(t, path, "ojs-router-captcha-service.yml")
 
 	opts := NormalizeBotMitigationOptions(BotMitigationOptions{RouterName: "ojs"})
 	if err := updateRouterConfigForBotMitigation(path, opts, false); err != nil {

@@ -1,0 +1,11 @@
+services:
+  traefik:
+    image: traefik:v3
+    command:
+      - --api.dashboard=true
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      TRAEFIK_LOG_LEVEL: INFO
+  ojs:
+    image: ojs

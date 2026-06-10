@@ -1,0 +1,17 @@
+http:
+  routers:
+    ojs:
+      rule: Host(`journal.example.org`)
+      service: captcha-protect
+      middlewares:
+        - captcha-protect
+  services:
+    captcha-protect:
+      loadBalancer:
+        servers:
+          - url: http://ojs:80
+  middlewares:
+    captcha-protect:
+      plugin:
+        captcha-protect:
+          rateLimit: 0

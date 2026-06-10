@@ -125,6 +125,136 @@ func TestComposeFileDeleteServiceEnv(t *testing.T) {
 	}
 }
 
+func TestComposeFileAppendRemoveServiceStringPreservesFoldedScalar(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "docker-compose.yml")
+	input := `services:
+  traefik:
+    command: >-
+      --ping=true
+      --log.level=INFO
+      --entryPoints.http.address=:80
+`
+	if err := os.WriteFile(path, []byte(input), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	compose, err := LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile() error = %v", err)
+	}
+	value := "--experimental.localPlugins.captcha-protect.modulename=github.com/libops/captcha-protect"
+	if err := compose.AppendUniqueServiceString("traefik", "command", value); err != nil {
+		t.Fatalf("AppendUniqueServiceString() error = %v", err)
+	}
+	if err := compose.AppendUniqueServiceString("traefik", "command", value); err != nil {
+		t.Fatalf("AppendUniqueServiceString(duplicate) error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	rendered := string(out)
+	if !strings.Contains(rendered, "command: >-\n      --ping=true\n      --log.level=INFO\n      --entryPoints.http.address=:80\n      "+value) {
+		t.Fatalf("expected folded command lines preserved with appended value, got:\n%s", rendered)
+	}
+	if strings.Count(rendered, value) != 1 {
+		t.Fatalf("expected appended value once, got:\n%s", rendered)
+	}
+
+	compose, err = LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile(after append) error = %v", err)
+	}
+	if err := compose.RemoveServiceString("traefik", "command", value); err != nil {
+		t.Fatalf("RemoveServiceString() error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save(after remove) error = %v", err)
+	}
+	out, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(after remove) error = %v", err)
+	}
+	rendered = string(out)
+	if strings.Contains(rendered, value) {
+		t.Fatalf("expected appended value removed, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "command: >-\n      --ping=true\n      --log.level=INFO\n      --entryPoints.http.address=:80") {
+		t.Fatalf("expected original folded command lines preserved after remove, got:\n%s", rendered)
+	}
+}
+
+func TestComposeFileAppendRemoveServiceStringPreservesSequence(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "docker-compose.yml")
+	input := `services:
+  traefik:
+    volumes:
+      - ./certs:/certs:ro
+`
+	if err := os.WriteFile(path, []byte(input), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	compose, err := LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile() error = %v", err)
+	}
+	value := "./conf/traefik/challenge.tmpl.html:/challenge.tmpl.html:ro"
+	if err := compose.AppendUniqueServiceString("traefik", "volumes", value); err != nil {
+		t.Fatalf("AppendUniqueServiceString() error = %v", err)
+	}
+	if err := compose.AppendUniqueServiceString("traefik", "volumes", value); err != nil {
+		t.Fatalf("AppendUniqueServiceString(duplicate) error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	rendered := string(out)
+	if strings.Count(rendered, value) != 1 {
+		t.Fatalf("expected appended value once, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "      - ./certs:/certs:ro\n      - "+value) {
+		t.Fatalf("expected volume sequence preserved with appended value, got:\n%s", rendered)
+	}
+
+	compose, err = LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile(after append) error = %v", err)
+	}
+	if err := compose.RemoveServiceString("traefik", "volumes", value); err != nil {
+		t.Fatalf("RemoveServiceString() error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save(after remove) error = %v", err)
+	}
+	out, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(after remove) error = %v", err)
+	}
+	rendered = string(out)
+	if strings.Contains(rendered, value) {
+		t.Fatalf("expected appended value removed, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "      - ./certs:/certs:ro") {
+		t.Fatalf("expected original volume to remain, got:\n%s", rendered)
+	}
+}
+
 func TestComposeFileAddVolumeBlockInsertsBeforeSectionSeparatorBlank(t *testing.T) {
 	t.Parallel()
 

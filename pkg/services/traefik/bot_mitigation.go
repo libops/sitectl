@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	corecomponent "github.com/libops/sitectl/pkg/component"
+	yaml "gopkg.in/yaml.v3"
 )
 
 const (
@@ -308,54 +310,53 @@ func updateComposeForBotMitigation(projectDir string, enabled bool) error {
 	if defs == nil || defs.Services == nil || defs.Services["traefik"] == nil {
 		return fmt.Errorf("docker-compose.yml does not define services.traefik")
 	}
-	doc, err := corecomponent.LoadYAMLDocument(data)
+	compose, err := corecomponent.LoadComposeFile(path)
 	if err != nil {
-		return fmt.Errorf("load compose yaml: %w", err)
+		return err
 	}
 
 	if enabled {
-		if err := doc.AppendUniqueString(".services.traefik.command", captchaProtectCommand); err != nil {
+		if err := compose.AppendUniqueServiceString("traefik", "command", captchaProtectCommand); err != nil {
 			return fmt.Errorf("add captcha-protect Traefik command: %w", err)
 		}
 		for _, volume := range captchaProtectVolumes {
-			if err := doc.AppendUniqueString(".services.traefik.volumes", volume); err != nil {
+			if err := compose.AppendUniqueServiceString("traefik", "volumes", volume); err != nil {
 				return fmt.Errorf("add captcha-protect Traefik volume: %w", err)
 			}
 		}
-		if err := doc.SetString(".services.traefik.environment.TURNSTILE_SITE_KEY", turnstileSiteKeyDefault); err != nil {
+		if err := compose.SetServiceEnv("traefik", "TURNSTILE_SITE_KEY", turnstileSiteKeyDefault); err != nil {
 			return fmt.Errorf("set TURNSTILE_SITE_KEY: %w", err)
 		}
-		if err := doc.SetString(".services.traefik.environment.TURNSTILE_SECRET_KEY", turnstileSecretKeyDefault); err != nil {
+		if err := compose.SetServiceEnv("traefik", "TURNSTILE_SECRET_KEY", turnstileSecretKeyDefault); err != nil {
 			return fmt.Errorf("set TURNSTILE_SECRET_KEY: %w", err)
 		}
 	} else {
-		if err := doc.RemoveString(".services.traefik.command", captchaProtectCommand); err != nil {
+		if err := compose.RemoveServiceString("traefik", "command", captchaProtectCommand); err != nil {
 			return fmt.Errorf("remove captcha-protect Traefik command: %w", err)
 		}
 		for _, volume := range captchaProtectVolumes {
-			if err := doc.RemoveString(".services.traefik.volumes", volume); err != nil {
+			if err := compose.RemoveServiceString("traefik", "volumes", volume); err != nil {
 				return fmt.Errorf("remove captcha-protect Traefik volume: %w", err)
 			}
 		}
-		if err := doc.DeletePath(".services.traefik.environment.TURNSTILE_SITE_KEY"); err != nil {
+		if err := compose.DeleteServiceEnv("traefik", "TURNSTILE_SITE_KEY"); err != nil {
 			return fmt.Errorf("remove TURNSTILE_SITE_KEY: %w", err)
 		}
-		if err := doc.DeletePath(".services.traefik.environment.TURNSTILE_SECRET_KEY"); err != nil {
+		if err := compose.DeleteServiceEnv("traefik", "TURNSTILE_SECRET_KEY"); err != nil {
 			return fmt.Errorf("remove TURNSTILE_SECRET_KEY: %w", err)
 		}
 	}
 
-	out, err := doc.Bytes()
-	if err != nil {
-		return fmt.Errorf("marshal compose file: %w", err)
-	}
-	return os.WriteFile(path, out, 0o600) // #nosec G703 -- path is the selected project's docker-compose.yml.
+	return compose.Save()
 }
 
 func updateRouterConfigForBotMitigation(path string, opts BotMitigationOptions, enabled bool) error {
 	data, err := os.ReadFile(path) // #nosec G304 -- traefik config path is an explicit project configuration path.
 	if err != nil {
 		return fmt.Errorf("read traefik router config: %w", err)
+	}
+	if hasTraefikTemplateControlLines(data) {
+		return updateTemplatedRouterConfigForBotMitigation(path, data, opts, enabled)
 	}
 
 	doc, err := corecomponent.LoadYAMLDocument(quoteTraefikTemplateScalars(data))
@@ -404,6 +405,257 @@ func updateRouterConfigForBotMitigation(path string, opts BotMitigationOptions, 
 	return os.WriteFile(path, out, 0o600) // #nosec G703 -- path is the selected project's traefik router config.
 }
 
+func updateTemplatedRouterConfigForBotMitigation(path string, data []byte, opts BotMitigationOptions, enabled bool) error {
+	lines := strings.Split(string(data), "\n")
+	var err error
+	lines = removeTemplatedHTTPMiddlewareBlock(lines, opts.MiddlewareName)
+	if _, ok := findTemplatedRouter(lines, opts.RouterName); !ok {
+		return fmt.Errorf("traefik router config does not define http.routers.%s", opts.RouterName)
+	}
+	lines, err = removeTemplatedRouterMiddleware(lines, opts.RouterName, opts.MiddlewareName)
+	if err != nil {
+		return err
+	}
+	if enabled {
+		lines, err = appendTemplatedRouterMiddleware(lines, opts.RouterName, opts.MiddlewareName)
+		if err != nil {
+			return err
+		}
+		lines, err = appendTemplatedHTTPMiddlewareBlock(lines, opts)
+		if err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600) // #nosec G703 -- path is the selected project's traefik router config.
+}
+
+func hasTraefikTemplateControlLines(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		if isTraefikTemplateControlLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTraefikTemplateControlLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "{{") || !strings.HasSuffix(trimmed, "}}") {
+		return false
+	}
+	return strings.Contains(trimmed, " if ") ||
+		strings.Contains(trimmed, " if(") ||
+		strings.Contains(trimmed, " else") ||
+		strings.Contains(trimmed, " end ")
+}
+
+func findTemplatedRouter(lines []string, routerName string) (int, bool) {
+	routersIdx, ok := findTemplatedHTTPChild(lines, "routers")
+	if !ok {
+		return 0, false
+	}
+	routersEnd := findTemplatedBlockEnd(lines, routersIdx, 2)
+	return findTemplatedMapKey(lines, routersIdx+1, routersEnd, routerName, 4)
+}
+
+func removeTemplatedRouterMiddleware(lines []string, routerName, middlewareName string) ([]string, error) {
+	routerIdx, ok := findTemplatedRouter(lines, routerName)
+	if !ok {
+		return lines, fmt.Errorf("traefik router config does not define http.routers.%s", routerName)
+	}
+	middlewaresIdx, ok := findTemplatedRouterChild(lines, routerIdx, "middlewares")
+	if !ok {
+		return lines, nil
+	}
+	middlewaresEnd := findTemplatedBlockEnd(lines, middlewaresIdx, 6)
+	filtered := make([]string, 0, middlewaresEnd-middlewaresIdx)
+	filtered = append(filtered, lines[middlewaresIdx])
+	for _, line := range lines[middlewaresIdx+1 : middlewaresEnd] {
+		if strings.TrimSpace(line) == "- "+middlewareName {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	if !hasIndentedTemplatedContent(filtered[1:]) {
+		return append(lines[:middlewaresIdx], lines[middlewaresEnd:]...), nil
+	}
+	return append(lines[:middlewaresIdx], append(filtered, lines[middlewaresEnd:]...)...), nil
+}
+
+func appendTemplatedRouterMiddleware(lines []string, routerName, middlewareName string) ([]string, error) {
+	routerIdx, ok := findTemplatedRouter(lines, routerName)
+	if !ok {
+		return lines, fmt.Errorf("traefik router config does not define http.routers.%s", routerName)
+	}
+	middlewaresIdx, ok := findTemplatedRouterChild(lines, routerIdx, "middlewares")
+	if ok {
+		middlewaresEnd := findTemplatedBlockEnd(lines, middlewaresIdx, 6)
+		for _, line := range lines[middlewaresIdx+1 : middlewaresEnd] {
+			if strings.TrimSpace(line) == "- "+middlewareName {
+				return lines, nil
+			}
+		}
+		insertAt := insertionIndexBeforeTrailingBlanks(lines, middlewaresEnd)
+		return insertLines(lines, insertAt, []string{"        - " + middlewareName}), nil
+	}
+	routerEnd := findTemplatedRouterEditableEnd(lines, routerIdx)
+	return insertLines(lines, routerEnd, []string{
+		"      middlewares:",
+		"        - " + middlewareName,
+	}), nil
+}
+
+func removeTemplatedHTTPMiddlewareBlock(lines []string, middlewareName string) []string {
+	middlewaresIdx, ok := findTemplatedHTTPChild(lines, "middlewares")
+	if !ok {
+		return lines
+	}
+	middlewaresEnd := findTemplatedBlockEnd(lines, middlewaresIdx, 2)
+	childIdx, ok := findTemplatedMapKey(lines, middlewaresIdx+1, middlewaresEnd, middlewareName, 4)
+	if !ok {
+		return lines
+	}
+	childEnd := findTemplatedBlockEnd(lines, childIdx, 4)
+	lines = append(lines[:childIdx], lines[childEnd:]...)
+
+	middlewaresIdx, ok = findTemplatedHTTPChild(lines, "middlewares")
+	if !ok {
+		return lines
+	}
+	middlewaresEnd = findTemplatedBlockEnd(lines, middlewaresIdx, 2)
+	if !hasIndentedTemplatedContent(lines[middlewaresIdx+1 : middlewaresEnd]) {
+		return append(lines[:middlewaresIdx], lines[middlewaresEnd:]...)
+	}
+	return lines
+}
+
+func appendTemplatedHTTPMiddlewareBlock(lines []string, opts BotMitigationOptions) ([]string, error) {
+	entry, err := renderTemplatedHTTPMiddlewareEntry(opts)
+	if err != nil {
+		return nil, err
+	}
+	middlewaresIdx, ok := findTemplatedHTTPChild(lines, "middlewares")
+	if ok {
+		middlewaresEnd := findTemplatedBlockEnd(lines, middlewaresIdx, 2)
+		insertAt := insertionIndexBeforeTrailingBlanks(lines, middlewaresEnd)
+		return insertLines(lines, insertAt, entry), nil
+	}
+	insertAt := insertionIndexBeforeTrailingBlanks(lines, len(lines))
+	block := append([]string{"  middlewares:"}, entry...)
+	return insertLines(lines, insertAt, block), nil
+}
+
+func renderTemplatedHTTPMiddlewareEntry(opts BotMitigationOptions) ([]string, error) {
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(map[string]traefikPluginMiddleware{
+		opts.MiddlewareName: captchaProtectMiddlewareDefinition(opts.Middleware),
+	}); err != nil {
+		_ = encoder.Close()
+		return nil, fmt.Errorf("marshal %s middleware block: %w", opts.MiddlewareName, err)
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, fmt.Errorf("close %s middleware encoder: %w", opts.MiddlewareName, err)
+	}
+	raw := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	for i := range raw {
+		raw[i] = "    " + raw[i]
+	}
+	return raw, nil
+}
+
+func findTemplatedRouterChild(lines []string, routerIdx int, key string) (int, bool) {
+	end := findTemplatedRouterEditableEnd(lines, routerIdx)
+	return findTemplatedMapKey(lines, routerIdx+1, end, key, 6)
+}
+
+func findTemplatedRouterEditableEnd(lines []string, routerIdx int) int {
+	for i := routerIdx + 1; i < len(lines); i++ {
+		line := lines[i]
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if isTraefikTemplateControlLine(line) {
+			return i
+		}
+		if leadingSpaces(line) <= 4 {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+func findTemplatedHTTPChild(lines []string, key string) (int, bool) {
+	httpIdx, ok := findTemplatedMapKey(lines, 0, len(lines), "http", 0)
+	if !ok {
+		return 0, false
+	}
+	return findTemplatedMapKey(lines, httpIdx+1, len(lines), key, 2)
+}
+
+func findTemplatedMapKey(lines []string, start, end int, key string, indent int) (int, bool) {
+	prefix := strings.Repeat(" ", indent) + key + ":"
+	for i := start; i < end && i < len(lines); i++ {
+		line := lines[i]
+		if strings.TrimSpace(line) == "" || isTraefikTemplateControlLine(line) {
+			continue
+		}
+		currentIndent := leadingSpaces(line)
+		if currentIndent < indent {
+			continue
+		}
+		if currentIndent == indent && strings.HasPrefix(line, prefix) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func findTemplatedBlockEnd(lines []string, start int, indent int) int {
+	for i := start + 1; i < len(lines); i++ {
+		line := lines[i]
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if isTraefikTemplateControlLine(line) {
+			return i
+		}
+		if leadingSpaces(line) <= indent {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+func hasIndentedTemplatedContent(lines []string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" && !isTraefikTemplateControlLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func insertLines(lines []string, index int, inserted []string) []string {
+	result := make([]string, 0, len(lines)+len(inserted))
+	result = append(result, lines[:index]...)
+	result = append(result, inserted...)
+	result = append(result, lines[index:]...)
+	return result
+}
+
+func insertionIndexBeforeTrailingBlanks(lines []string, index int) int {
+	for index > 0 && strings.TrimSpace(lines[index-1]) == "" {
+		index--
+	}
+	return index
+}
+
+func leadingSpaces(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
+}
+
 func quoteTraefikTemplateScalars(data []byte) []byte {
 	lines := strings.SplitAfter(string(data), "\n")
 	for i, line := range lines {
@@ -416,24 +668,64 @@ func quoteTraefikTemplateScalars(data []byte) []byte {
 			lineEnd = "\n"
 			body = strings.TrimSuffix(body, "\n")
 		}
-		colon := strings.Index(body, ":")
-		if colon < 0 || colon+1 >= len(body) {
+		prefix, value, ok := splitInlineYAMLValue(body)
+		if !ok {
 			continue
 		}
-		valueStart := colon + 1
-		for valueStart < len(body) && (body[valueStart] == ' ' || body[valueStart] == '\t') {
-			valueStart++
-		}
-		if valueStart >= len(body) {
+		trimmed := strings.TrimSpace(value)
+		if strings.HasPrefix(trimmed, "|") || strings.HasPrefix(trimmed, ">") {
 			continue
 		}
-		value := body[valueStart:]
-		if strings.HasPrefix(value, "'") || strings.HasPrefix(value, `"`) {
-			continue
-		}
-		lines[i] = body[:valueStart] + singleQuoteYAMLScalar(value) + lineEnd
+		lines[i] = prefix + singleQuoteYAMLScalar(unwrapYAMLScalarQuotes(trimmed)) + lineEnd
 	}
 	return []byte(strings.Join(lines, ""))
+}
+
+func splitInlineYAMLValue(line string) (string, string, bool) {
+	for i := 0; i < len(line); i++ {
+		if line[i] != ':' {
+			continue
+		}
+		if i+1 < len(line) && line[i+1] != ' ' && line[i+1] != '\t' {
+			continue
+		}
+		valueStart := i + 1
+		for valueStart < len(line) && (line[valueStart] == ' ' || line[valueStart] == '\t') {
+			valueStart++
+		}
+		if valueStart >= len(line) {
+			return "", "", false
+		}
+		return line[:valueStart], line[valueStart:], true
+	}
+
+	trimmed := strings.TrimLeft(line, " \t")
+	indentLen := len(line) - len(trimmed)
+	if !strings.HasPrefix(trimmed, "- ") {
+		return "", "", false
+	}
+	valueStart := indentLen + len("- ")
+	if valueStart >= len(line) {
+		return "", "", false
+	}
+	return line[:valueStart], line[valueStart:], true
+}
+
+func unwrapYAMLScalarQuotes(value string) string {
+	if len(value) < 2 {
+		return value
+	}
+	quote := value[0]
+	if (quote != '\'' && quote != '"') || value[len(value)-1] != quote {
+		return value
+	}
+	if quote == '"' {
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			return unquoted
+		}
+		return value[1 : len(value)-1]
+	}
+	return strings.ReplaceAll(value[1:len(value)-1], "''", "'")
 }
 
 func singleQuoteYAMLScalar(value string) string {
