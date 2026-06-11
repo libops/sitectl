@@ -93,9 +93,29 @@ func TestIsInteractiveArgsClassifiesComposeCommands(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "exec shell without tty flag runs in terminal",
+			args: []string{"compose", "exec", "drupal", "bash"},
+			want: true,
+		},
+		{
+			name: "exec shell command streams in dashboard",
+			args: []string{"compose", "exec", "drupal", "sh", "-lc", "drush uli"},
+			want: false,
+		},
+		{
+			name: "exec drush uli streams in dashboard",
+			args: []string{"compose", "exec", "drupal", "drush", "uli"},
+			want: false,
+		},
+		{
 			name: "exec without tty streams in dashboard",
 			args: []string{"compose", "exec", "-T", "drupal", "drush", "status"},
 			want: false,
+		},
+		{
+			name: "drush sql cli runs in terminal",
+			args: []string{"compose", "exec", "drupal", "drush", "sql:cli"},
+			want: true,
 		},
 		{
 			name: "context flag inside compose args",
@@ -108,6 +128,49 @@ func TestIsInteractiveArgsClassifiesComposeCommands(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isInteractiveArgs(tt.args); got != tt.want {
 				t.Fatalf("isInteractiveArgs(%#v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStreamSafeSitectlArgsAddsNoTTYForComposeExecRun(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "exec gets no tty flag",
+			args: []string{"--context", "stage", "compose", "exec", "drupal", "drush", "uli"},
+			want: []string{"--context", "stage", "compose", "exec", "-T", "drupal", "drush", "uli"},
+		},
+		{
+			name: "run gets no tty flag",
+			args: []string{"compose", "run", "--rm", "drupal", "drush", "status"},
+			want: []string{"compose", "run", "-T", "--rm", "drupal", "drush", "status"},
+		},
+		{
+			name: "existing no tty flag is preserved",
+			args: []string{"compose", "exec", "-T", "drupal", "drush", "uli"},
+			want: []string{"compose", "exec", "-T", "drupal", "drush", "uli"},
+		},
+		{
+			name: "compose flags stay before subcommand",
+			args: []string{"--context", "stage", "compose", "-f", "compose.yml", "exec", "drupal", "drush", "uli"},
+			want: []string{"--context", "stage", "compose", "-f", "compose.yml", "exec", "-T", "drupal", "drush", "uli"},
+		},
+		{
+			name: "non compose command is unchanged",
+			args: []string{"config", "current-context"},
+			want: []string{"config", "current-context"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := streamSafeSitectlArgs(tt.args)
+			if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
+				t.Fatalf("streamSafeSitectlArgs(%#v) = %#v, want %#v", tt.args, got, tt.want)
 			}
 		})
 	}
