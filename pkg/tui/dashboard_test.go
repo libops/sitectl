@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/textinput"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/plugin"
 )
@@ -173,6 +174,78 @@ func TestStreamSafeSitectlArgsAddsNoTTYForComposeExecRun(t *testing.T) {
 				t.Fatalf("streamSafeSitectlArgs(%#v) = %#v, want %#v", tt.args, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStateReloadPreservesCommandOutputPane(t *testing.T) {
+	cfg := &config.Config{
+		CurrentContext: "stage",
+		Contexts: []config.Context{{
+			Name:        "stage",
+			Site:        "site",
+			Environment: "stage",
+		}},
+	}
+	m := newDashboardModel(cfg, nil)
+	m.screen = screenLogs
+	m.logsTitle = "Command Output"
+	m.logsBody = "https://example.test/user/reset"
+	m.logs.SetContent(m.logsBody)
+	m.logTarget = ""
+
+	model, _ := m.Update(stateReloadedMsg{
+		Config:         cfg,
+		CurrentContext: "stage",
+	})
+	got := model.(*dashboardModel)
+	if got.screen != screenLogs {
+		t.Fatalf("expected command output pane to stay open, got screen %v", got.screen)
+	}
+	if got.logsTitle != "Command Output" {
+		t.Fatalf("expected command output title to be preserved, got %q", got.logsTitle)
+	}
+	if got.logsBody != "https://example.test/user/reset" {
+		t.Fatalf("expected command output body to be preserved, got %q", got.logsBody)
+	}
+}
+
+func TestCommandHistoryNavigation(t *testing.T) {
+	m := &dashboardModel{commandHistoryAt: commandHistoryBrowseNone}
+	m.commandInput = textinput.New()
+	m.addCommandHistory("compose ps")
+	m.addCommandHistory("compose exec drupal drush uli")
+	m.addCommandHistory("compose exec drupal drush uli")
+	if len(m.commandHistory) != 2 {
+		t.Fatalf("expected consecutive duplicate command to be skipped, got %#v", m.commandHistory)
+	}
+
+	m.commandInput.SetValue("draft")
+	if !m.previousCommandHistory() {
+		t.Fatal("expected previous history entry")
+	}
+	if got := m.commandInput.Value(); got != "compose exec drupal drush uli" {
+		t.Fatalf("first previous command = %q", got)
+	}
+	if !m.previousCommandHistory() {
+		t.Fatal("expected older history entry")
+	}
+	if got := m.commandInput.Value(); got != "compose ps" {
+		t.Fatalf("second previous command = %q", got)
+	}
+	if !m.nextCommandHistory() {
+		t.Fatal("expected newer history entry")
+	}
+	if got := m.commandInput.Value(); got != "compose exec drupal drush uli" {
+		t.Fatalf("next command = %q", got)
+	}
+	if !m.nextCommandHistory() {
+		t.Fatal("expected draft restoration")
+	}
+	if got := m.commandInput.Value(); got != "draft" {
+		t.Fatalf("restored draft = %q", got)
+	}
+	if m.nextCommandHistory() {
+		t.Fatal("expected no next entry after restoring draft")
 	}
 }
 

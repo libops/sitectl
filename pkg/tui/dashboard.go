@@ -46,6 +46,8 @@ const (
 )
 
 const maxCommandOutputBytes = 1 << 20
+const maxCommandHistoryEntries = 100
+const commandHistoryBrowseNone = -1
 
 type refreshTickMsg time.Time
 
@@ -189,6 +191,9 @@ type dashboardModel struct {
 	commandRunID     int
 	commandCancel    context.CancelFunc
 	commandOutput    bool
+	commandHistory   []string
+	commandHistoryAt int
+	commandDraft     string
 }
 
 type networkSample struct {
@@ -222,20 +227,21 @@ func newDashboardModel(cfg *config.Config, plugins []plugin.InstalledPlugin) *da
 	keys := defaultKeyMap()
 
 	m := &dashboardModel{
-		cfg:            cfg,
-		sites:          groupContexts(cfg),
-		plugins:        plugins,
-		tourPanes:      loadTourPanes(),
-		currentContext: current,
-		width:          120,
-		height:         36,
-		keys:           keys,
-		help:           help.New(),
-		spin:           spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(spinnerStyle)),
-		historyCPU:     map[string][]float64{},
-		historyMemory:  map[string][]float64{},
-		historyNet:     map[string][]float64{},
-		lastNetSample:  map[string]networkSample{},
+		cfg:              cfg,
+		sites:            groupContexts(cfg),
+		plugins:          plugins,
+		tourPanes:        loadTourPanes(),
+		currentContext:   current,
+		width:            120,
+		height:           36,
+		keys:             keys,
+		help:             help.New(),
+		spin:             spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(spinnerStyle)),
+		historyCPU:       map[string][]float64{},
+		historyMemory:    map[string][]float64{},
+		historyNet:       map[string][]float64{},
+		lastNetSample:    map[string]networkSample{},
+		commandHistoryAt: commandHistoryBrowseNone,
 	}
 	m.help.Styles = helpStyles()
 	m.siteIndex, m.envIndex = defaultSelection(m.sites, current)
@@ -369,6 +375,7 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.commandCancel = nil
 		m.screen = screenLogs
 		m.logsTitle = "Command Output"
+		m.logTarget = ""
 		content := msg.Output
 		if msg.Err != nil {
 			if strings.TrimSpace(content) == "" {
@@ -401,6 +408,7 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastMessage = fmt.Sprintf("Failed to reload sitectl state: %v", msg.Err)
 			return m, nil
 		}
+		preserveCommandOutput := m.screen == screenLogs && m.logsTitle == "Command Output"
 		m.cfg = msg.Config
 		m.sites = groupContexts(msg.Config)
 		m.plugins = msg.Plugins
@@ -411,8 +419,11 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.loadingLog = false
 		m.logsErr = nil
-		m.logsTitle = "Logs"
-		m.screen = screenDashboard
+		if !preserveCommandOutput {
+			m.logsTitle = "Logs"
+			m.logTarget = ""
+			m.screen = screenDashboard
+		}
 		m.chooser = newMenuModel(chooserTitle(m.sites), chooserItems(m.sites, m.plugins))
 		m.refreshCommandSuggestions()
 		m.syncLayout()
@@ -487,6 +498,7 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			if strings.TrimSpace(m.commandInput.Value()) != "" {
 				m.commandInput.SetValue("")
+				m.resetCommandHistoryNavigation()
 				m.commandQuitArmed = false
 				m.lastMessage = "Command cleared."
 				return m, nil
@@ -503,16 +515,28 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.Back):
 			m.commandQuitArmed = false
+			m.resetCommandHistoryNavigation()
 			m.commandInput.Blur()
 			return m, nil
 		case key.Matches(msg, m.keys.Terminal):
 			m.commandQuitArmed = false
+			m.resetCommandHistoryNavigation()
 			return m.runCommand(true)
 		case msg.String() == "enter":
 			m.commandQuitArmed = false
+			m.resetCommandHistoryNavigation()
 			return m.runCommand(false)
+		case msg.String() == "up":
+			m.commandQuitArmed = false
+			m.previousCommandHistory()
+			return m, nil
+		case msg.String() == "down":
+			m.commandQuitArmed = false
+			m.nextCommandHistory()
+			return m, nil
 		default:
 			m.commandQuitArmed = false
+			m.resetCommandHistoryNavigation()
 			var cmd tea.Cmd
 			m.commandInput, cmd = m.commandInput.Update(msg)
 			return m, cmd
@@ -1309,6 +1333,7 @@ func (m *dashboardModel) runCommand(interactive bool) (tea.Model, tea.Cmd) {
 		m.lastMessage = err.Error()
 		return m, nil
 	}
+	m.addCommandHistory(raw)
 
 	if interactive || isInteractiveArgs(args) {
 		m.commandRunning = true
@@ -1327,11 +1352,67 @@ func (m *dashboardModel) runCommand(interactive bool) (tea.Model, tea.Cmd) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.commandCancel = cancel
 	m.logsTitle = "Command Output"
+	m.logTarget = ""
 	m.logsBody = "Running " + streamDisplay + "..."
 	m.logs.SetContent(m.logsBody)
 	m.screen = screenLogs
 	m.commandInput.SetValue("")
 	return m, runSitectlStreamCmd(runCtx, runID, streamDisplay, streamArgs)
+}
+
+func (m *dashboardModel) addCommandHistory(raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return
+	}
+	if len(m.commandHistory) > 0 && m.commandHistory[len(m.commandHistory)-1] == raw {
+		m.resetCommandHistoryNavigation()
+		return
+	}
+	m.commandHistory = append(m.commandHistory, raw)
+	if len(m.commandHistory) > maxCommandHistoryEntries {
+		m.commandHistory = m.commandHistory[len(m.commandHistory)-maxCommandHistoryEntries:]
+	}
+	m.resetCommandHistoryNavigation()
+}
+
+func (m *dashboardModel) previousCommandHistory() bool {
+	if len(m.commandHistory) == 0 {
+		return false
+	}
+	if m.commandHistoryAt == commandHistoryBrowseNone {
+		m.commandDraft = m.commandInput.Value()
+		m.commandHistoryAt = len(m.commandHistory) - 1
+	} else if m.commandHistoryAt > 0 {
+		m.commandHistoryAt--
+	}
+	m.setCommandInputValue(m.commandHistory[m.commandHistoryAt])
+	return true
+}
+
+func (m *dashboardModel) nextCommandHistory() bool {
+	if len(m.commandHistory) == 0 || m.commandHistoryAt == commandHistoryBrowseNone {
+		return false
+	}
+	if m.commandHistoryAt < len(m.commandHistory)-1 {
+		m.commandHistoryAt++
+		m.setCommandInputValue(m.commandHistory[m.commandHistoryAt])
+		return true
+	}
+	m.commandHistoryAt = commandHistoryBrowseNone
+	m.setCommandInputValue(m.commandDraft)
+	m.commandDraft = ""
+	return true
+}
+
+func (m *dashboardModel) resetCommandHistoryNavigation() {
+	m.commandHistoryAt = commandHistoryBrowseNone
+	m.commandDraft = ""
+}
+
+func (m *dashboardModel) setCommandInputValue(value string) {
+	m.commandInput.SetValue(value)
+	m.commandInput.SetCursor(len([]rune(value)))
 }
 
 func (m *dashboardModel) executeChooserAction(action string) (tea.Model, tea.Cmd) {
