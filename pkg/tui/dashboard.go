@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -1317,6 +1318,8 @@ func (m *dashboardModel) runCommand(interactive bool) (tea.Model, tea.Cmd) {
 		return m, runSitectlInteractiveCmd(display, args)
 	}
 
+	streamArgs := streamSafeSitectlArgs(args)
+	streamDisplay := "sitectl " + shellquote.Join(streamArgs...)
 	m.commandRunning = true
 	m.commandOutput = false
 	m.commandRunID++
@@ -1324,11 +1327,11 @@ func (m *dashboardModel) runCommand(interactive bool) (tea.Model, tea.Cmd) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.commandCancel = cancel
 	m.logsTitle = "Command Output"
-	m.logsBody = "Running " + display + "..."
+	m.logsBody = "Running " + streamDisplay + "..."
 	m.logs.SetContent(m.logsBody)
 	m.screen = screenLogs
 	m.commandInput.SetValue("")
-	return m, runSitectlStreamCmd(runCtx, runID, display, args)
+	return m, runSitectlStreamCmd(runCtx, runID, streamDisplay, streamArgs)
 }
 
 func (m *dashboardModel) executeChooserAction(action string) (tea.Model, tea.Cmd) {
@@ -1546,7 +1549,7 @@ func isInteractiveArgs(args []string) bool {
 		case "attach", "watch":
 			return true
 		case "exec", "run":
-			return !hasComposeNoTTYFlag(composeArgs[1:])
+			return composeExecRunNeedsTerminal(composeArgs[1:])
 		}
 	}
 	return false
@@ -1571,10 +1574,21 @@ func stripSitectlGlobalFlags(args []string) []string {
 }
 
 func composeSubcommandArgs(args []string) []string {
+	offset := composeSubcommandOffset(args)
+	if offset < 0 {
+		return nil
+	}
+	return args[offset:]
+}
+
+func composeSubcommandOffset(args []string) int {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
-			return args[i+1:]
+			if i+1 >= len(args) {
+				return -1
+			}
+			return i + 1
 		}
 		if arg == "--context" || arg == "--log-level" {
 			i++
@@ -1584,13 +1598,13 @@ func composeSubcommandArgs(args []string) []string {
 			continue
 		}
 		if !strings.HasPrefix(arg, "-") {
-			return args[i:]
+			return i
 		}
 		if composeFlagTakesValue(arg) && !strings.Contains(arg, "=") {
 			i++
 		}
 	}
-	return nil
+	return -1
 }
 
 func composeFlagTakesValue(arg string) bool {
@@ -1608,6 +1622,222 @@ func hasComposeNoTTYFlag(args []string) bool {
 		}
 	}
 	return false
+}
+
+func hasComposeDetachFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-d" || arg == "--detach" {
+			return true
+		}
+	}
+	return false
+}
+
+func composeExecRunNeedsTerminal(args []string) bool {
+	flags, command := composeExecRunInvocation(args)
+	if flags.noTTY || flags.detached {
+		return false
+	}
+	if flags.explicitInteractive {
+		return true
+	}
+	return containerCommandNeedsTerminal(command)
+}
+
+type composeExecRunFlags struct {
+	noTTY               bool
+	detached            bool
+	explicitInteractive bool
+}
+
+func composeExecRunInvocation(args []string) (composeExecRunFlags, []string) {
+	var flags composeExecRunFlags
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			if i+1 >= len(args) {
+				return flags, nil
+			}
+			args = args[i+1:]
+			i = -1
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			if i+1 >= len(args) {
+				return flags, nil
+			}
+			return flags, args[i+1:]
+		}
+
+		updateComposeExecRunFlags(&flags, arg)
+		if composeExecRunFlagTakesValue(arg) && !strings.Contains(arg, "=") {
+			i++
+		}
+	}
+	return flags, nil
+}
+
+func updateComposeExecRunFlags(flags *composeExecRunFlags, arg string) {
+	switch {
+	case arg == "-T" || arg == "--no-TTY" || arg == "--no-tty":
+		flags.noTTY = true
+	case arg == "-d" || arg == "--detach":
+		flags.detached = true
+	case arg == "-i" || arg == "--interactive" || arg == "-t" || arg == "--tty":
+		flags.explicitInteractive = true
+	case strings.HasPrefix(arg, "--interactive="):
+		flags.explicitInteractive = !strings.HasSuffix(arg, "=false")
+	case strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && !strings.Contains(arg, "="):
+		for _, r := range strings.TrimPrefix(arg, "-") {
+			switch r {
+			case 'T':
+				flags.noTTY = true
+			case 'd':
+				flags.detached = true
+			case 'i', 't':
+				flags.explicitInteractive = true
+			}
+		}
+	}
+}
+
+func composeExecRunFlagTakesValue(arg string) bool {
+	switch arg {
+	case "-e", "--env", "--env-file", "--index", "-u", "--user", "-w", "--workdir",
+		"--entrypoint", "--name", "-p", "--publish", "--pull", "-l", "--label", "-v", "--volume":
+		return true
+	}
+	return false
+}
+
+func containerCommandNeedsTerminal(command []string) bool {
+	if len(command) == 0 {
+		return true
+	}
+	name := path.Base(command[0])
+	switch name {
+	case "ash", "bash", "csh", "dash", "fish", "ksh", "sh", "tcsh", "zsh":
+		return shellCommandNeedsTerminal(command[1:])
+	case "less", "more", "nano", "vi", "vim", "nvim":
+		return true
+	case "mysql", "mariadb", "psql", "redis-cli", "valkey-cli":
+		return !hasNonInteractiveClientQuery(command[1:])
+	case "node", "python", "python2", "python3", "ipython", "irb", "php":
+		return replCommandNeedsTerminal(name, command[1:])
+	case "drush":
+		return drushCommandNeedsTerminal(command[1:])
+	}
+	return false
+}
+
+func shellCommandNeedsTerminal(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	for _, arg := range args {
+		if arg == "-c" || arg == "--command" {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") {
+			flags := strings.TrimLeft(arg, "-")
+			if strings.Contains(flags, "i") {
+				return true
+			}
+			if strings.Contains(flags, "c") {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func replCommandNeedsTerminal(name string, args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	for _, arg := range args {
+		switch arg {
+		case "-i", "--interactive", "-a":
+			return true
+		case "-c", "-m", "-e", "--eval", "-r":
+			return false
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return false
+	}
+	return name != "php"
+}
+
+func drushCommandNeedsTerminal(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "sql:cli", "sql-cli", "php:cli", "php-cli":
+		return true
+	}
+	return false
+}
+
+func hasNonInteractiveClientQuery(args []string) bool {
+	for _, arg := range args {
+		if arg == "-e" || arg == "--execute" || strings.HasPrefix(arg, "-e") || strings.HasPrefix(arg, "--execute=") {
+			return true
+		}
+	}
+	return false
+}
+
+func streamSafeSitectlArgs(args []string) []string {
+	subcommandIndex, ok := composeSubcommandIndex(args)
+	if !ok {
+		return args
+	}
+	switch args[subcommandIndex] {
+	case "exec", "run":
+		if hasComposeNoTTYFlag(args[subcommandIndex+1:]) || hasComposeDetachFlag(args[subcommandIndex+1:]) {
+			return args
+		}
+		streamArgs := make([]string, 0, len(args)+1)
+		streamArgs = append(streamArgs, args[:subcommandIndex+1]...)
+		streamArgs = append(streamArgs, "-T")
+		streamArgs = append(streamArgs, args[subcommandIndex+1:]...)
+		return streamArgs
+	default:
+		return args
+	}
+}
+
+func composeSubcommandIndex(args []string) (int, bool) {
+	commandOffset := sitectlCommandOffset(args)
+	if commandOffset < 0 || args[commandOffset] != "compose" {
+		return 0, false
+	}
+	subcommandOffset := composeSubcommandOffset(args[commandOffset+1:])
+	if subcommandOffset < 0 {
+		return 0, false
+	}
+	return commandOffset + 1 + subcommandOffset, true
+}
+
+func sitectlCommandOffset(args []string) int {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--context" && i+1 < len(args):
+			i++
+		case strings.HasPrefix(args[i], "--context="):
+		case args[i] == "--log-level" && i+1 < len(args):
+			i++
+		case strings.HasPrefix(args[i], "--log-level="):
+		default:
+			return i
+		}
+	}
+	return -1
 }
 
 func runSitectlStreamCmd(ctx context.Context, id int, display string, args []string) tea.Cmd {
