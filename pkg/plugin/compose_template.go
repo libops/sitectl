@@ -20,14 +20,18 @@ import (
 // ComposeTemplateCreateOptions configures the SDK's standard Docker Compose
 // template create runner.
 type ComposeTemplateCreateOptions struct {
-	DefaultPath         string
-	DefaultPlugin       string
-	DefaultEnvironment  string
-	DefaultDrupalRootfs string
-	DrupalContainerRoot string
-	ConfirmOverwrite    bool
-	ReadyMessage        string
-	Input               config.InputFunc
+	DefaultPath                   string
+	DefaultPlugin                 string
+	DefaultEnvironment            string
+	DefaultDatabaseService        string
+	DefaultDatabaseUser           string
+	DefaultDatabasePasswordSecret string
+	DefaultDatabaseName           string
+	DefaultDrupalRootfs           string
+	DrupalContainerRoot           string
+	ConfirmOverwrite              bool
+	ReadyMessage                  string
+	Input                         config.InputFunc
 }
 
 // StandardComposeCommandOptions configures standard Docker Compose helper
@@ -46,16 +50,20 @@ type StandardComposeCommandOptions struct {
 // StandardComposeTemplateOptions configures the SDK's standard Compose
 // template create runner and lifecycle commands from one application spec.
 type StandardComposeTemplateOptions struct {
-	DefaultPath         string
-	DefaultPlugin       string
-	DefaultEnvironment  string
-	DefaultDrupalRootfs string
-	DrupalContainerRoot string
-	ConfirmOverwrite    bool
-	ReadyMessage        string
-	DisplayName         string
-	LogsTail            int
-	Input               config.InputFunc
+	DefaultPath                   string
+	DefaultPlugin                 string
+	DefaultEnvironment            string
+	DefaultDatabaseService        string
+	DefaultDatabaseUser           string
+	DefaultDatabasePasswordSecret string
+	DefaultDatabaseName           string
+	DefaultDrupalRootfs           string
+	DrupalContainerRoot           string
+	ConfirmOverwrite              bool
+	ReadyMessage                  string
+	DisplayName                   string
+	LogsTail                      int
+	Input                         config.InputFunc
 }
 
 type composeTemplateCreateRunner struct {
@@ -93,14 +101,18 @@ func RegisterStandardComposeTemplate(s *SDK, spec CreateSpec, opts StandardCompo
 	}
 	spec = normalizeCreateSpec(spec)
 	RegisterComposeTemplateCreateRunner(s, spec, ComposeTemplateCreateOptions{
-		DefaultPath:         opts.DefaultPath,
-		DefaultPlugin:       opts.DefaultPlugin,
-		DefaultEnvironment:  opts.DefaultEnvironment,
-		DefaultDrupalRootfs: opts.DefaultDrupalRootfs,
-		DrupalContainerRoot: opts.DrupalContainerRoot,
-		ConfirmOverwrite:    opts.ConfirmOverwrite,
-		ReadyMessage:        opts.ReadyMessage,
-		Input:               opts.Input,
+		DefaultPath:                   opts.DefaultPath,
+		DefaultPlugin:                 opts.DefaultPlugin,
+		DefaultEnvironment:            opts.DefaultEnvironment,
+		DefaultDatabaseService:        opts.DefaultDatabaseService,
+		DefaultDatabaseUser:           opts.DefaultDatabaseUser,
+		DefaultDatabasePasswordSecret: opts.DefaultDatabasePasswordSecret,
+		DefaultDatabaseName:           opts.DefaultDatabaseName,
+		DefaultDrupalRootfs:           opts.DefaultDrupalRootfs,
+		DrupalContainerRoot:           opts.DrupalContainerRoot,
+		ConfirmOverwrite:              opts.ConfirmOverwrite,
+		ReadyMessage:                  opts.ReadyMessage,
+		Input:                         opts.Input,
 	})
 	AddStandardComposeCommands(s, StandardComposeCommandOptions{
 		DisplayName:     opts.DisplayName,
@@ -151,16 +163,20 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	defaultPath := helpers.FirstNonEmpty(strings.TrimSpace(r.opts.DefaultPath), "./"+helpers.FirstNonEmpty(strings.TrimSpace(r.opts.DefaultPlugin), r.sdk.Metadata.Name))
 	defaultBase := filepath.Base(helpers.FirstNonEmpty(req.Path, defaultPath))
 	ctx, err := r.sdk.EnsureComposeCreateContext(req, ComposeCreateContextOptions{
-		DefaultName:         defaultBase + "-local",
-		DefaultSite:         defaultBase,
-		DefaultPlugin:       helpers.FirstNonEmpty(strings.TrimSpace(r.opts.DefaultPlugin), r.spec.Plugin, r.sdk.Metadata.Name),
-		DefaultProjectDir:   defaultPath,
-		DefaultProjectName:  defaultBase,
-		DefaultEnvironment:  helpers.FirstNonEmpty(strings.TrimSpace(r.opts.DefaultEnvironment), "local"),
-		DefaultDrupalRootfs: r.opts.DefaultDrupalRootfs,
-		DrupalContainerRoot: r.opts.DrupalContainerRoot,
-		ConfirmOverwrite:    r.opts.ConfirmOverwrite,
-		Input:               input,
+		DefaultName:                   defaultBase + "-local",
+		DefaultSite:                   defaultBase,
+		DefaultPlugin:                 helpers.FirstNonEmpty(strings.TrimSpace(r.opts.DefaultPlugin), r.spec.Plugin, r.sdk.Metadata.Name),
+		DefaultProjectDir:             defaultPath,
+		DefaultProjectName:            defaultBase,
+		DefaultEnvironment:            helpers.FirstNonEmpty(strings.TrimSpace(r.opts.DefaultEnvironment), "local"),
+		DefaultDatabaseService:        r.opts.DefaultDatabaseService,
+		DefaultDatabaseUser:           r.opts.DefaultDatabaseUser,
+		DefaultDatabasePasswordSecret: r.opts.DefaultDatabasePasswordSecret,
+		DefaultDatabaseName:           r.opts.DefaultDatabaseName,
+		DefaultDrupalRootfs:           r.opts.DefaultDrupalRootfs,
+		DrupalContainerRoot:           r.opts.DrupalContainerRoot,
+		ConfirmOverwrite:              r.opts.ConfirmOverwrite,
+		Input:                         input,
 	})
 	if err != nil {
 		return err

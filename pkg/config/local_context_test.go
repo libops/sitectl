@@ -75,6 +75,42 @@ func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
 	}
 }
 
+func TestPromptAndSaveLocalContextUsesDatabaseOptions(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	projectDir := filepath.Join(tempHome, "archivesspace")
+	ctx, err := PromptAndSaveLocalContext(LocalContextCreateOptions{
+		Name:                "archivesspace-local",
+		ProjectDir:          projectDir,
+		DatabaseService:     "mysql",
+		DatabaseUser:        "as",
+		DatabaseSecret:      "ARCHIVESSPACE_DB_PASSWORD",
+		DatabaseName:        "archivesspace",
+		ProjectDirValidator: func(string) error { return nil },
+		Input: func(question ...string) (string, error) {
+			t.Fatal("did not expect prompt")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("PromptAndSaveLocalContext() error = %v", err)
+	}
+
+	if ctx.DatabaseService != "mysql" {
+		t.Fatalf("expected database service mysql, got %q", ctx.DatabaseService)
+	}
+	if ctx.DatabaseUser != "as" {
+		t.Fatalf("expected database user as, got %q", ctx.DatabaseUser)
+	}
+	if ctx.DatabasePasswordSecret != "ARCHIVESSPACE_DB_PASSWORD" {
+		t.Fatalf("expected database password secret ARCHIVESSPACE_DB_PASSWORD, got %q", ctx.DatabasePasswordSecret)
+	}
+	if ctx.DatabaseName != "archivesspace" {
+		t.Fatalf("expected database name archivesspace, got %q", ctx.DatabaseName)
+	}
+}
+
 func TestPromptAndSaveLocalContextPromptsForMissingValues(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

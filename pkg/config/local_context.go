@@ -27,6 +27,10 @@ type LocalContextCreateOptions struct {
 	ComposeNetwork      string
 	Environment         string
 	DockerSocket        string
+	DatabaseService     string
+	DatabaseUser        string
+	DatabaseSecret      string
+	DatabaseName        string
 	DrupalRootfs        string
 	DrupalContainerRoot string
 	SetDefault          bool
@@ -98,18 +102,22 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 	dockerSocket := GetDefaultLocalDockerSocket(helpers.FirstNonEmpty(opts.DockerSocket, existing.DockerSocket, "/var/run/docker.sock"))
 
 	ctx := &Context{
-		Name:                name,
-		Site:                site,
-		Plugin:              plugin,
-		DockerHostType:      ContextLocal,
-		Environment:         environment,
-		DockerSocket:        dockerSocket,
-		ProjectName:         projectName,
-		ComposeProjectName:  composeProjectName,
-		ComposeNetwork:      composeNetwork,
-		ProjectDir:          projectDir,
-		DrupalRootfs:        helpers.FirstNonEmpty(opts.DrupalRootfs, existing.DrupalRootfs),
-		DrupalContainerRoot: helpers.FirstNonEmpty(opts.DrupalContainerRoot, existing.DrupalContainerRoot),
+		Name:                   name,
+		Site:                   site,
+		Plugin:                 plugin,
+		DockerHostType:         ContextLocal,
+		Environment:            environment,
+		DockerSocket:           dockerSocket,
+		ProjectName:            projectName,
+		ComposeProjectName:     composeProjectName,
+		ComposeNetwork:         composeNetwork,
+		ProjectDir:             projectDir,
+		DatabaseService:        helpers.FirstNonEmpty(opts.DatabaseService, existing.DatabaseService),
+		DatabaseUser:           helpers.FirstNonEmpty(opts.DatabaseUser, existing.DatabaseUser),
+		DatabasePasswordSecret: helpers.FirstNonEmpty(opts.DatabaseSecret, existing.DatabasePasswordSecret),
+		DatabaseName:           helpers.FirstNonEmpty(opts.DatabaseName, existing.DatabaseName),
+		DrupalRootfs:           helpers.FirstNonEmpty(opts.DrupalRootfs, existing.DrupalRootfs),
+		DrupalContainerRoot:    helpers.FirstNonEmpty(opts.DrupalContainerRoot, existing.DrupalContainerRoot),
 	}
 
 	if err := SaveContext(ctx, opts.SetDefault); err != nil {
