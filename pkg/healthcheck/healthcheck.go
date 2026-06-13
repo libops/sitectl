@@ -96,7 +96,18 @@ func (c *DockerChecker) ServiceExists(ctx context.Context, service string) (bool
 // connections from inside its own container.
 func (c *DockerChecker) CheckMariaDB(ctx context.Context, service string) sitevalidate.Result {
 	service = firstNonEmpty(service, "mariadb")
-	return c.checkExec(ctx, "mariadb:"+service, service, []string{
+	return c.checkMySQLCompatible(ctx, "mariadb:"+service, service)
+}
+
+// CheckMySQL verifies that a MySQL/MariaDB service is accepting local
+// connections from inside its own container.
+func (c *DockerChecker) CheckMySQL(ctx context.Context, service string) sitevalidate.Result {
+	service = firstNonEmpty(service, "mysql")
+	return c.checkMySQLCompatible(ctx, "mysql:"+service, service)
+}
+
+func (c *DockerChecker) checkMySQLCompatible(ctx context.Context, name, service string) sitevalidate.Result {
+	return c.checkExec(ctx, name, service, []string{
 		"sh",
 		"-lc",
 		`if command -v mariadb-admin >/dev/null 2>&1; then mariadb-admin ping -h 127.0.0.1 --silent; elif command -v mysqladmin >/dev/null 2>&1; then mysqladmin ping -h 127.0.0.1 --silent; else test -S /run/mysqld/mysqld.sock || test -S /var/run/mysqld/mysqld.sock; fi`,

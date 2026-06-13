@@ -74,17 +74,21 @@ type ComposeCreateRequest struct {
 }
 
 type ComposeCreateContextOptions struct {
-	DefaultName         string
-	DefaultSite         string
-	DefaultPlugin       string
-	DefaultProjectDir   string
-	DefaultProjectName  string
-	DefaultEnvironment  string
-	DefaultDockerSocket string
-	DefaultDrupalRootfs string
-	DrupalContainerRoot string
-	ConfirmOverwrite    bool
-	Input               config.InputFunc
+	DefaultName                   string
+	DefaultSite                   string
+	DefaultPlugin                 string
+	DefaultProjectDir             string
+	DefaultProjectName            string
+	DefaultEnvironment            string
+	DefaultDockerSocket           string
+	DefaultDatabaseService        string
+	DefaultDatabaseUser           string
+	DefaultDatabasePasswordSecret string
+	DefaultDatabaseName           string
+	DefaultDrupalRootfs           string
+	DrupalContainerRoot           string
+	ConfirmOverwrite              bool
+	Input                         config.InputFunc
 }
 
 func (s *SDK) RegisterCreate(spec CreateSpec, cmd *cobra.Command) {
@@ -383,6 +387,10 @@ func (s *SDK) EnsureComposeCreateContext(req ComposeCreateRequest, opts ComposeC
 			ComposeProjectName:  req.ComposeProjectName,
 			ComposeNetwork:      req.ComposeNetwork,
 			DockerSocket:        defaultDockerSocket,
+			DatabaseService:     opts.DefaultDatabaseService,
+			DatabaseUser:        opts.DefaultDatabaseUser,
+			DatabaseSecret:      opts.DefaultDatabasePasswordSecret,
+			DatabaseName:        opts.DefaultDatabaseName,
 			SSHHostname:         req.SSHHostname,
 			SSHUser:             req.SSHUser,
 			SSHPort:             req.SSHPort,
@@ -410,6 +418,10 @@ func (s *SDK) EnsureComposeCreateContext(req ComposeCreateRequest, opts ComposeC
 		ComposeNetwork:      req.ComposeNetwork,
 		Environment:         defaultEnvironment,
 		DockerSocket:        defaultDockerSocket,
+		DatabaseService:     opts.DefaultDatabaseService,
+		DatabaseUser:        opts.DefaultDatabaseUser,
+		DatabaseSecret:      opts.DefaultDatabasePasswordSecret,
+		DatabaseName:        opts.DefaultDatabaseName,
 		DrupalRootfs:        helpers.FirstNonEmpty(req.DrupalRootfs, opts.DefaultDrupalRootfs),
 		DrupalContainerRoot: opts.DrupalContainerRoot,
 		SetDefault:          req.SetDefaultContext,
@@ -501,6 +513,10 @@ type ComposeRemoteContextOptions struct {
 	ComposeProjectName  string
 	ComposeNetwork      string
 	DockerSocket        string
+	DatabaseService     string
+	DatabaseUser        string
+	DatabaseSecret      string
+	DatabaseName        string
 	SSHHostname         string
 	SSHUser             string
 	SSHPort             uint
@@ -587,22 +603,26 @@ func promptAndSaveRemoteContext(opts ComposeRemoteContextOptions) (*config.Conte
 	dockerSocket := helpers.FirstNonEmpty(strings.TrimSpace(opts.DockerSocket), "/var/run/docker.sock")
 
 	ctx := &config.Context{
-		Name:                name,
-		Site:                site,
-		Plugin:              helpers.FirstNonEmpty(strings.TrimSpace(opts.Plugin), "core"),
-		DockerHostType:      config.ContextRemote,
-		Environment:         environment,
-		DockerSocket:        dockerSocket,
-		ProjectName:         projectName,
-		ComposeProjectName:  composeProjectName,
-		ComposeNetwork:      composeNetwork,
-		ProjectDir:          projectDir,
-		DrupalRootfs:        strings.TrimSpace(opts.DrupalRootfs),
-		DrupalContainerRoot: strings.TrimSpace(opts.DrupalContainerRoot),
-		SSHHostname:         hostname,
-		SSHUser:             sshUser,
-		SSHPort:             sshPort,
-		SSHKeyPath:          sshKeyPath,
+		Name:                   name,
+		Site:                   site,
+		Plugin:                 helpers.FirstNonEmpty(strings.TrimSpace(opts.Plugin), "core"),
+		DockerHostType:         config.ContextRemote,
+		Environment:            environment,
+		DockerSocket:           dockerSocket,
+		ProjectName:            projectName,
+		ComposeProjectName:     composeProjectName,
+		ComposeNetwork:         composeNetwork,
+		ProjectDir:             projectDir,
+		DatabaseService:        strings.TrimSpace(opts.DatabaseService),
+		DatabaseUser:           strings.TrimSpace(opts.DatabaseUser),
+		DatabasePasswordSecret: strings.TrimSpace(opts.DatabaseSecret),
+		DatabaseName:           strings.TrimSpace(opts.DatabaseName),
+		DrupalRootfs:           strings.TrimSpace(opts.DrupalRootfs),
+		DrupalContainerRoot:    strings.TrimSpace(opts.DrupalContainerRoot),
+		SSHHostname:            hostname,
+		SSHUser:                sshUser,
+		SSHPort:                sshPort,
+		SSHKeyPath:             sshKeyPath,
 	}
 	if err := config.SaveContext(ctx, opts.SetDefault); err != nil {
 		return nil, err
