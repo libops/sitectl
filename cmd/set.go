@@ -25,7 +25,7 @@ All flags and arguments are forwarded to the plugin's set handler.
 Examples:
   sitectl set fcrepo off
   sitectl set isle/fcrepo disabled
-  sitectl set isle-tls on --tls-mode letsencrypt`,
+  sitectl set iiif triplet`,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filteredArgs, contextName, err := getContextFromArgs(cmd, args)

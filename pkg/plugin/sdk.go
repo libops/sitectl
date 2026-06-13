@@ -78,6 +78,8 @@ type SDK struct {
 	validateRunner              ValidateRunner
 	healthcheckCmd              *cobra.Command
 	healthcheckRunner           HealthcheckRunner
+	verifyCmd                   *cobra.Command
+	verifyRunner                VerifyRunner
 	componentDefs               []component.Definition
 	serviceComponents           []component.ComposeServiceComponent
 	serviceComponentDisplayName string
@@ -89,6 +91,7 @@ type SDK struct {
 	hasSet                      bool
 	hasValidate                 bool
 	hasHealthcheck              bool
+	hasVerify                   bool
 }
 
 // NewSDK creates a new plugin SDK instance

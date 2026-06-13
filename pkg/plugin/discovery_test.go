@@ -172,7 +172,7 @@ func TestDiscoverInstalledFromPathPropagatesAdvertisedCapabilities(t *testing.T)
 		t.Fatalf("expected one plugin, got %d", len(plugins))
 	}
 	got := plugins[0]
-	if !got.CanCreate || !got.CanDeploy || !got.CanDebug || !got.CanConverge || !got.CanSet || !got.CanValidate || !got.CanHealthcheck {
+	if !got.CanCreate || !got.CanDeploy || !got.CanDebug || !got.CanConverge || !got.CanSet || !got.CanValidate || !got.CanHealthcheck || !got.CanVerify {
 		t.Fatalf("advertised capabilities were not propagated: %+v", got)
 	}
 	if !reflect.DeepEqual(got.Includes, metadata.Includes) {
@@ -202,6 +202,7 @@ func fullPluginMetadataForTest() PluginMetadata {
 		CanSet:          true,
 		CanValidate:     true,
 		CanHealthcheck:  true,
+		CanVerify:       true,
 		Includes:        []string{"drupal", "libops"},
 		CreateDefinitions: []CreateSpec{{
 			Name:                "default",

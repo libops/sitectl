@@ -29,6 +29,15 @@ func extractValidateRPCParams(args []string) (string, plugin.ValidateRunParams, 
 	return format, params, passthrough, err
 }
 
+func extractVerifyRPCParams(args []string) (string, plugin.VerifyRunParams, []string, error) {
+	format, remaining, err := extractValidateFormat(args)
+	if err != nil {
+		return "", plugin.VerifyRunParams{}, nil, err
+	}
+	params, passthrough, err := plugin.ExtractRPCParamsFromArgs[plugin.VerifyRunParams](remaining)
+	return format, params, passthrough, err
+}
+
 type healthcheckHostParams struct {
 	Format   string
 	Persist  bool

@@ -133,6 +133,24 @@ func TestExtractHealthcheckRPCParamsDefaultsToOneShot(t *testing.T) {
 	}
 }
 
+func TestExtractVerifyRPCParamsPromotesReportFormat(t *testing.T) {
+	format, _, passthrough, err := extractVerifyRPCParams([]string{
+		"--format", "json",
+		"--bot-mitigation", "on",
+	})
+	if err != nil {
+		t.Fatalf("extractVerifyRPCParams() error = %v", err)
+	}
+
+	if format != "json" {
+		t.Fatalf("format = %q, want json", format)
+	}
+	wantPassthrough := []string{"--bot-mitigation", "on"}
+	if !reflect.DeepEqual(passthrough, wantPassthrough) {
+		t.Fatalf("passthrough = %#v, want %#v", passthrough, wantPassthrough)
+	}
+}
+
 func TestExtractHealthcheckRPCParamsRejectsInvalidPersist(t *testing.T) {
 	_, _, _, err := extractHealthcheckRPCParams([]string{"--persist=maybe"})
 	if err == nil {
@@ -339,6 +357,35 @@ func TestRPCParamsRoundTripFromHostArgvToPluginCommand(t *testing.T) {
 			wantFormat: "json",
 		},
 		{
+			name: "verify.run",
+			argv: []string{
+				"--format", "json",
+				"--bot-mitigation", "on",
+			},
+			configure: func(t *testing.T, sdk *plugin.SDK, argv []string) (plugin.RPCRequest, *rpcRoundTripCapture) {
+				t.Helper()
+				format, params, passthrough, err := extractVerifyRPCParams(argv)
+				if err != nil {
+					t.Fatalf("extractVerifyRPCParams() error = %v", err)
+				}
+				capture := &rpcRoundTripCapture{format: format}
+				sdk.RegisterVerifyRunner(verifyRoundTripRunner{
+					capture: capture,
+					bind: func(cmd *cobra.Command) {
+						cmd.Flags().String("bot-mitigation", "", "")
+					},
+				})
+				req, err := plugin.NewVerifyRunRequest(params, passthrough...)
+				if err != nil {
+					t.Fatalf("NewVerifyRunRequest() error = %v", err)
+				}
+				return req, capture
+			},
+			wantArgs:   []string{},
+			wantFlags:  map[string]string{"bot-mitigation": "on"},
+			wantFormat: "json",
+		},
+		{
 			name: "component.set",
 			argv: []string{
 				"--path", "/srv/site",
@@ -475,6 +522,22 @@ func (r validateRoundTripRunner) BindFlags(cmd *cobra.Command) {
 }
 
 func (r validateRoundTripRunner) Run(cmd *cobra.Command, ctx *config.Context) ([]sitevalidate.Result, error) {
+	r.capture.record(cmd, cmd.Flags().Args())
+	return nil, nil
+}
+
+type verifyRoundTripRunner struct {
+	capture *rpcRoundTripCapture
+	bind    func(*cobra.Command)
+}
+
+func (r verifyRoundTripRunner) BindFlags(cmd *cobra.Command) {
+	if r.bind != nil {
+		r.bind(cmd)
+	}
+}
+
+func (r verifyRoundTripRunner) Run(cmd *cobra.Command, ctx *config.Context) ([]sitevalidate.Result, error) {
 	r.capture.record(cmd, cmd.Flags().Args())
 	return nil, nil
 }
