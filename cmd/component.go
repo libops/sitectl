@@ -500,7 +500,7 @@ EXAMPLES
   sitectl component set fcrepo superceded --isle-file-system-uri private
   sitectl component set iiif triplet
   sitectl component set iiif-topology distributed --iiif-upstream-url https://iiif.example.org
-  sitectl component set isle-tls enabled --tls-mode letsencrypt
+  sitectl component set homarus distributed
 
 COMMON FLAGS
 

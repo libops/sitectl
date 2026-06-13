@@ -46,6 +46,8 @@ const (
 	MethodValidateRun = "validate.run"
 	// MethodHealthcheckRun runs plugin health checks.
 	MethodHealthcheckRun = "healthcheck.run"
+	// MethodVerifyRun runs plugin behavioral verification checks.
+	MethodVerifyRun = "verify.run"
 	// MethodDebugRun renders plugin debug sections.
 	MethodDebugRun = "debug.run"
 	// MethodSetRun runs the plugin-level set handler.
@@ -287,6 +289,9 @@ type ValidateRunParams struct {
 // HealthcheckRunParams is the params payload for MethodHealthcheckRun.
 type HealthcheckRunParams struct{}
 
+// VerifyRunParams is the params payload for MethodVerifyRun.
+type VerifyRunParams struct{}
+
 // NewRPCRequest creates a request envelope for a plugin RPC method.
 func NewRPCRequest(method string) RPCRequest {
 	return RPCRequest{
@@ -380,6 +385,13 @@ func NewValidateRunRequest(params ValidateRunParams, args ...string) (RPCRequest
 // NewHealthcheckRunRequest creates a typed healthcheck.run request.
 func NewHealthcheckRunRequest(params HealthcheckRunParams, args ...string) (RPCRequest, error) {
 	req := NewRPCRequest(MethodHealthcheckRun)
+	req.Args = copyRPCArgs(args)
+	return withRPCParams(req, params)
+}
+
+// NewVerifyRunRequest creates a typed verify.run request.
+func NewVerifyRunRequest(params VerifyRunParams, args ...string) (RPCRequest, error) {
+	req := NewRPCRequest(MethodVerifyRun)
 	req.Args = copyRPCArgs(args)
 	return withRPCParams(req, params)
 }
