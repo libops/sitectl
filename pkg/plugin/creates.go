@@ -70,6 +70,7 @@ type ComposeCreateRequest struct {
 	DrupalRootfs       string
 	SetDefaultContext  bool
 	SetupOnly          bool
+	ImageOverrides     ComposeImageOverrides
 	Decisions          map[string]corecomponent.ReviewDecision
 }
 
@@ -222,6 +223,10 @@ func (s *SDK) BindComposeCreateFlags(cmd *cobra.Command, spec CreateSpec, drupal
 	cmd.Flags().String("template-branch", normalizeCreateSpec(spec).DockerComposeBranch, "Branch or ref to clone from the template repository.")
 	cmd.Flags().Bool("default-context", false, "Set the new context as the default sitectl context.")
 	cmd.Flags().Bool("setup-only", false, "Clone and configure the checkout but do not start the stack.")
+	cmd.Flags().String("buildkit-tag", "", "Buildkit runtime tag to use as the template base image, such as php83 or php84.")
+	cmd.Flags().String("buildkit-repository", "libops", "Container repository for --buildkit-tag image refs.")
+	cmd.Flags().StringArray("image-ref", []string{}, "Override a Compose service image as SERVICE=IMAGE; may be passed more than once.")
+	cmd.Flags().StringArray("build-arg", []string{}, "Override a Compose service build arg as SERVICE.ARG=VALUE; may be passed more than once.")
 	cmd.Flags().String("ssh-hostname", "", "SSH hostname for a remote target.")
 	cmd.Flags().Uint("ssh-port", 0, "SSH port for a remote target.")
 	cmd.Flags().String("ssh-user", "", "SSH user for a remote target.")
@@ -247,7 +252,7 @@ func (s *SDK) BindComposeCreateFlags(cmd *cobra.Command, spec CreateSpec, drupal
 	return nil
 }
 
-func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.InputFunc, drupalRootfs, defaultPath, defaultRepo, defaultBranch string) (ComposeCreateRequest, error) {
+func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.InputFunc, pluginName, drupalRootfs, defaultPath, defaultRepo, defaultBranch string) (ComposeCreateRequest, error) {
 	if cmd == nil {
 		return ComposeCreateRequest{}, fmt.Errorf("create command is nil")
 	}
@@ -328,6 +333,10 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 	request.SSHPort, _ = cmd.Flags().GetUint("ssh-port")
 	request.SSHKeyPath, _ = cmd.Flags().GetString("ssh-key")
 	request.SSHKeyPath = strings.TrimSpace(request.SSHKeyPath)
+	request.ImageOverrides, err = resolveCreateImageOverrides(cmd, request, pluginName)
+	if err != nil {
+		return ComposeCreateRequest{}, err
+	}
 
 	if request.TargetType == config.ContextRemote {
 		if err := populateRemoteCreateRequest(&request, input); err != nil {

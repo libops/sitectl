@@ -202,10 +202,7 @@ func defaultProjectDiscoveryReason(spec ComposeProjectDiscovery) string {
 
 func readComposerPackages(projectDir string, files []string) (map[string]bool, error) {
 	if len(files) == 0 {
-		files = []string{
-			"composer.json",
-			"drupal/rootfs/var/www/drupal/composer.json",
-		}
+		files = []string{"composer.json"}
 	}
 	packages := map[string]bool{}
 	for _, rel := range files {

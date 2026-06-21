@@ -22,11 +22,11 @@ func TestResolveDrupalLayoutDefaultsToProjectRoot(t *testing.T) {
 	}
 }
 
-func TestResolveDrupalLayoutUsesRelativeRootfs(t *testing.T) {
+func TestResolveDrupalLayoutUsesRelativeDrupalRoot(t *testing.T) {
 	t.Parallel()
 
-	layout := ResolveDrupalLayout("/tmp/project", "drupal/rootfs/var/www/drupal")
-	expectedRoot := filepath.Join("/tmp/project", "drupal", "rootfs", "var", "www", "drupal")
+	layout := ResolveDrupalLayout("/tmp/project", "drupal")
+	expectedRoot := filepath.Join("/tmp/project", "drupal")
 	if layout.Root != expectedRoot {
 		t.Fatalf("expected %q, got %q", expectedRoot, layout.Root)
 	}
