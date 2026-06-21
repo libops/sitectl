@@ -156,7 +156,8 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	if input == nil {
 		input = config.GetInput
 	}
-	req, err := r.sdk.ResolveComposeCreateRequest(cmd, input, r.drupalRootfs, "", r.spec.DockerComposeRepo, r.spec.DockerComposeBranch)
+	pluginName := helpers.FirstNonEmpty(strings.TrimSpace(r.opts.DefaultPlugin), r.spec.Plugin, r.sdk.Metadata.Name)
+	req, err := r.sdk.ResolveComposeCreateRequest(cmd, input, pluginName, r.drupalRootfs, "", r.spec.DockerComposeRepo, r.spec.DockerComposeBranch)
 	if err != nil {
 		return err
 	}
@@ -165,7 +166,7 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	ctx, err := r.sdk.EnsureComposeCreateContext(req, ComposeCreateContextOptions{
 		DefaultName:                   defaultBase + "-local",
 		DefaultSite:                   defaultBase,
-		DefaultPlugin:                 helpers.FirstNonEmpty(strings.TrimSpace(r.opts.DefaultPlugin), r.spec.Plugin, r.sdk.Metadata.Name),
+		DefaultPlugin:                 pluginName,
 		DefaultProjectDir:             defaultPath,
 		DefaultProjectName:            defaultBase,
 		DefaultEnvironment:            helpers.FirstNonEmpty(strings.TrimSpace(r.opts.DefaultEnvironment), "local"),
@@ -187,6 +188,15 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	}
 	if err := r.sdk.reconcileCreateServiceComponents(cmd.Context(), ctx, req.Decisions); err != nil {
 		return err
+	}
+	if !req.ImageOverrides.Empty() {
+		if ctx.DockerHostType != config.ContextLocal {
+			return fmt.Errorf("image overrides during create currently require a local context")
+		}
+		if err := ApplyComposeImageOverrides(ctx.ProjectDir, req.ImageOverrides); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", ComposeImageOverrideFile)
 	}
 	if cloned {
 		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeInit); err != nil {

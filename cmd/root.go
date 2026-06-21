@@ -130,5 +130,5 @@ func discoverAndRegisterPlugins() {
 }
 
 func isRetiredPluginName(name string) bool {
-	return name == "postgres"
+	return false
 }
