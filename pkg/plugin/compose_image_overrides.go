@@ -148,16 +148,18 @@ func buildkitBaseImageTarget(pluginName string) (service, image string, ok bool)
 	switch strings.ToLower(strings.TrimSpace(pluginName)) {
 	case "archivesspace":
 		return "archivesspace", "archivesspace", true
-	case "drupal", "isle", "islandora":
-		return "drupal", "nginx", true
+	case "drupal":
+		return "drupal", "drupal", true
+	case "isle", "islandora":
+		return "drupal", "islandora", true
 	case "ojs":
-		return "ojs", "nginx", true
+		return "ojs", "ojs", true
 	case "omeka-classic":
-		return "omeka-classic", "nginx", true
+		return "omeka-classic", "omeka-classic", true
 	case "omeka-s":
-		return "omeka-s", "nginx", true
+		return "omeka-s", "omeka-s", true
 	case "wp", "wordpress":
-		return "wp", "nginx", true
+		return "wp", "wp", true
 	default:
 		return "", "", false
 	}

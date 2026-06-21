@@ -223,7 +223,7 @@ func (s *SDK) BindComposeCreateFlags(cmd *cobra.Command, spec CreateSpec, drupal
 	cmd.Flags().String("template-branch", normalizeCreateSpec(spec).DockerComposeBranch, "Branch or ref to clone from the template repository.")
 	cmd.Flags().Bool("default-context", false, "Set the new context as the default sitectl context.")
 	cmd.Flags().Bool("setup-only", false, "Clone and configure the checkout but do not start the stack.")
-	cmd.Flags().String("buildkit-tag", "", "Buildkit runtime tag to use as the template base image, such as php83 or php84.")
+	cmd.Flags().String("buildkit-tag", "", "Buildkit runtime tag to use as the template base image, such as nginx-1.30.2-php84.")
 	cmd.Flags().String("buildkit-repository", "libops", "Container repository for --buildkit-tag image refs.")
 	cmd.Flags().StringArray("image-ref", []string{}, "Override a Compose service image as SERVICE=IMAGE; may be passed more than once.")
 	cmd.Flags().StringArray("build-arg", []string{}, "Override a Compose service build arg as SERVICE.ARG=VALUE; may be passed more than once.")
