@@ -93,7 +93,10 @@ var defaultCaptchaProtectMiddleware = CaptchaProtectMiddlewareOptions{ // #nosec
 	EnableUptimeRobotBypass:   "true",
 }
 
-var fetchCaptchaProtectArchive = fetchVerifiedCaptchaProtectArchive
+var (
+	fetchCaptchaProtectArchive       = fetchVerifiedCaptchaProtectArchive
+	captchaProtectExpectedTreeSHA256 = captchaProtectExtractedTreeSHA256
+)
 
 // CaptchaProtectMiddlewareOptions configures the generated captcha-protect
 // middleware block.
@@ -798,6 +801,9 @@ func installCaptchaProtectPlugin(ctx context.Context, targetDir string) error {
 	if err := extractCaptchaProtectArchive(archiveData, tmpDir); err != nil {
 		return err
 	}
+	if err := verifyCaptchaProtectSourceTree(tmpDir, captchaProtectExpectedTreeSHA256); err != nil {
+		return err
+	}
 	if err := writeCaptchaProtectInstallMarker(tmpDir); err != nil {
 		return err
 	}
@@ -812,7 +818,7 @@ func installCaptchaProtectPlugin(ctx context.Context, targetDir string) error {
 }
 
 func captchaProtectPluginCurrent(targetDir string) (bool, error) {
-	return captchaProtectPluginCurrentForTreeSHA(targetDir, captchaProtectExtractedTreeSHA256)
+	return captchaProtectPluginCurrentForTreeSHA(targetDir, captchaProtectExpectedTreeSHA256)
 }
 
 func captchaProtectPluginCurrentForTreeSHA(targetDir, expectedTreeSHA string) (bool, error) {
@@ -827,25 +833,22 @@ func captchaProtectPluginCurrentForTreeSHA(targetDir, expectedTreeSHA string) (b
 		return false, nil
 	}
 
-	marker, err := readCaptchaProtectInstallMarker(targetDir)
-	if err != nil {
-		return false, err
-	}
-	if marker == nil {
-		treeSHA, err := hashCaptchaProtectSourceTree(targetDir)
-		if err != nil {
-			return false, err
-		}
-		return treeSHA == expectedTreeSHA, nil
-	}
 	treeSHA, err := hashCaptchaProtectSourceTree(targetDir)
 	if err != nil {
 		return false, err
 	}
-	if marker["source_url"] == captchaProtectSourceURL && marker["archive_sha256"] == captchaProtectSourceSHA256 && marker["tree_sha256"] == treeSHA {
-		return true, nil
-	}
 	return treeSHA == expectedTreeSHA, nil
+}
+
+func verifyCaptchaProtectSourceTree(root, expectedTreeSHA string) error {
+	treeSHA, err := hashCaptchaProtectSourceTree(root)
+	if err != nil {
+		return err
+	}
+	if treeSHA != expectedTreeSHA {
+		return fmt.Errorf("captcha-protect extracted tree sha256 mismatch: expected %s, got %s", expectedTreeSHA, treeSHA)
+	}
+	return nil
 }
 
 func readCaptchaProtectInstallMarker(targetDir string) (map[string]string, error) {

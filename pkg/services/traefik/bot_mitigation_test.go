@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -67,12 +68,16 @@ func TestApplyBotMitigationRoundTripManagesAllArtifacts(t *testing.T) {
 	projectDir := t.TempDir()
 	writeBotMitigationProjectFixture(t, projectDir)
 
+	archive := testCaptchaProtectArchive(t)
 	oldFetch := fetchCaptchaProtectArchive
+	oldExpectedTreeSHA := captchaProtectExpectedTreeSHA256
+	captchaProtectExpectedTreeSHA256 = testCaptchaProtectArchiveTreeSHA(t, archive)
 	fetchCaptchaProtectArchive = func(context.Context) ([]byte, error) {
-		return testCaptchaProtectArchive(t), nil
+		return archive, nil
 	}
 	t.Cleanup(func() {
 		fetchCaptchaProtectArchive = oldFetch
+		captchaProtectExpectedTreeSHA256 = oldExpectedTreeSHA
 	})
 
 	opts := BotMitigationOptions{
@@ -223,6 +228,19 @@ func testCaptchaProtectArchive(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func testCaptchaProtectArchiveTreeSHA(t *testing.T, archive []byte) string {
+	t.Helper()
+	targetDir := t.TempDir()
+	if err := extractCaptchaProtectArchive(archive, targetDir); err != nil {
+		t.Fatalf("extractCaptchaProtectArchive() error = %v", err)
+	}
+	treeSHA, err := hashCaptchaProtectSourceTree(targetDir)
+	if err != nil {
+		t.Fatalf("hashCaptchaProtectSourceTree() error = %v", err)
+	}
+	return treeSHA
+}
+
 func TestCaptchaProtectArchiveTreeHashMatchesInstallMarker(t *testing.T) {
 	targetDir := t.TempDir()
 
@@ -265,12 +283,12 @@ func TestCaptchaProtectArchiveTreeHashMatchesInstallMarker(t *testing.T) {
 	if marker["tree_sha256"] != treeAfterMarker {
 		t.Fatalf("marker tree_sha256 = %s, want %s", marker["tree_sha256"], treeAfterMarker)
 	}
-	current, err := captchaProtectPluginCurrent(targetDir)
+	current, err := captchaProtectPluginCurrentForTreeSHA(targetDir, treeAfterMarker)
 	if err != nil {
-		t.Fatalf("captchaProtectPluginCurrent(marker) error = %v", err)
+		t.Fatalf("captchaProtectPluginCurrentForTreeSHA(marker) error = %v", err)
 	}
 	if !current {
-		t.Fatal("expected marker install to be current")
+		t.Fatal("expected plugin tree to be current when its pinned tree hash matches")
 	}
 
 	if err := os.Remove(filepath.Join(targetDir, captchaProtectInstallMarker)); err != nil {
@@ -282,6 +300,52 @@ func TestCaptchaProtectArchiveTreeHashMatchesInstallMarker(t *testing.T) {
 	}
 	if !current {
 		t.Fatal("expected markerless plugin tree to be current when its tree hash matches")
+	}
+}
+
+func TestCaptchaProtectPluginCurrentRejectsTamperedTreeWithForgedMarker(t *testing.T) {
+	targetDir := t.TempDir()
+	pluginPath := filepath.Join(targetDir, "plugin.go")
+	if err := os.WriteFile(pluginPath, []byte("package plugin\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(plugin) error = %v", err)
+	}
+	expectedTreeSHA, err := hashCaptchaProtectSourceTree(targetDir)
+	if err != nil {
+		t.Fatalf("hashCaptchaProtectSourceTree(expected) error = %v", err)
+	}
+
+	if err := os.WriteFile(pluginPath, []byte("package compromised\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(tampered plugin) error = %v", err)
+	}
+	tamperedTreeSHA, err := hashCaptchaProtectSourceTree(targetDir)
+	if err != nil {
+		t.Fatalf("hashCaptchaProtectSourceTree(tampered) error = %v", err)
+	}
+	forgedMarker := "source_url=" + captchaProtectSourceURL + "\n" +
+		"archive_sha256=" + captchaProtectSourceSHA256 + "\n" +
+		"tree_sha256=" + tamperedTreeSHA + "\n"
+	if err := os.WriteFile(filepath.Join(targetDir, captchaProtectInstallMarker), []byte(forgedMarker), 0o644); err != nil {
+		t.Fatalf("WriteFile(forged marker) error = %v", err)
+	}
+
+	current, err := captchaProtectPluginCurrentForTreeSHA(targetDir, expectedTreeSHA)
+	if err != nil {
+		t.Fatalf("captchaProtectPluginCurrentForTreeSHA() error = %v", err)
+	}
+	if current {
+		t.Fatal("expected pinned tree hash to reject a tampered plugin with a forged marker")
+	}
+}
+
+func TestVerifyCaptchaProtectSourceTreeRejectsMismatch(t *testing.T) {
+	targetDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(targetDir, "plugin.go"), []byte("package plugin\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(plugin) error = %v", err)
+	}
+
+	err := verifyCaptchaProtectSourceTree(targetDir, strings.Repeat("0", sha256.Size*2))
+	if err == nil || !strings.Contains(err.Error(), "extracted tree sha256 mismatch") {
+		t.Fatalf("verifyCaptchaProtectSourceTree() error = %v, want tree hash mismatch", err)
 	}
 }
 
@@ -526,14 +590,18 @@ func TestEnsureBotMitigationFilesSkipsCurrentPluginInstall(t *testing.T) {
 		t.Fatalf("MkdirAll(conf/traefik) error = %v", err)
 	}
 
+	archive := testCaptchaProtectArchive(t)
 	oldFetch := fetchCaptchaProtectArchive
+	oldExpectedTreeSHA := captchaProtectExpectedTreeSHA256
+	captchaProtectExpectedTreeSHA256 = testCaptchaProtectArchiveTreeSHA(t, archive)
 	fetches := 0
 	fetchCaptchaProtectArchive = func(context.Context) ([]byte, error) {
 		fetches++
-		return testCaptchaProtectArchive(t), nil
+		return archive, nil
 	}
 	t.Cleanup(func() {
 		fetchCaptchaProtectArchive = oldFetch
+		captchaProtectExpectedTreeSHA256 = oldExpectedTreeSHA
 	})
 
 	if err := ensureBotMitigationFiles(context.Background(), projectDir); err != nil {
