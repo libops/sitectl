@@ -60,7 +60,7 @@ var imageSetCmd = &cobra.Command{
 }
 
 func init() {
-	imageSetCmd.Flags().String("buildkit-tag", "", "Buildkit runtime tag to use as the template base image, such as php83 or php84.")
+	imageSetCmd.Flags().String("buildkit-tag", "", "Buildkit runtime tag to use as the template base image, such as nginx-1.30.2-php84.")
 	imageSetCmd.Flags().String("buildkit-repository", "libops", "Container repository for --buildkit-tag image refs.")
 	imageSetCmd.Flags().StringArray("image-ref", []string{}, "Override a Compose service image as SERVICE=IMAGE; may be passed more than once.")
 	imageSetCmd.Flags().StringArray("build-arg", []string{}, "Override a Compose service build arg as SERVICE.ARG=VALUE; may be passed more than once.")
