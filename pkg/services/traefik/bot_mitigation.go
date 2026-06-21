@@ -32,8 +32,8 @@ const (
 	captchaProtectTemplateMount = "./conf/traefik/challenge.tmpl.html:/challenge.tmpl.html:ro"
 	turnstileSiteKeyDefault     = "${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}"
 	turnstileSecretKeyDefault   = "${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}" // #nosec G101 -- documented Cloudflare Turnstile test key fallback; runtime warning tells users to configure real keys.
-	captchaProtectSourceURL     = "https://github.com/libops/captcha-protect/archive/refs/tags/v1.12.3.zip"
-	captchaProtectSourceSHA256  = "0492f8c2c5d951d499370a95d2232d7bc07581567e4d3c9348a848b172585b09"
+	captchaProtectSourceURL     = "https://github.com/libops/captcha-protect/archive/refs/tags/v1.13.0.zip"
+	captchaProtectSourceSHA256  = "32306c0d331a4b193ce787e06cfeff6964ecb12c800050582944cce50d655bb7"
 	// maxCaptchaProtectArchiveBytes bounds memory use before the archive hash is verified.
 	maxCaptchaProtectArchiveBytes = 8 << 20
 	captchaProtectInstallMarker   = ".sitectl-source"
@@ -47,7 +47,7 @@ const (
 	// before writeCaptchaProtectInstallMarker adds captchaProtectInstallMarker.
 	// The extraction filter intentionally drops ci/, .github/, renovate.json5,
 	// and *_test.go files before this hash is computed.
-	captchaProtectExtractedTreeSHA256 = "9f1c1a7bcb4fc807b50bc0bc7ef309b9641a9f71e2cf9741b09f8fe6668bee9d"
+	captchaProtectExtractedTreeSHA256 = "2e743a105233f29963bb146896e17ae3f1f51d11f85c1c94fd929b2ff5a65ea6"
 )
 
 var captchaProtectVolumes = []string{
@@ -90,6 +90,7 @@ var defaultCaptchaProtectMiddleware = CaptchaProtectMiddlewareOptions{ // #nosec
 	PeriodSeconds:             30,
 	FailureThreshold:          3,
 	EnableGooglebotIPCheck:    "true",
+	EnableUptimeRobotBypass:   "true",
 }
 
 var fetchCaptchaProtectArchive = fetchVerifiedCaptchaProtectArchive
@@ -118,6 +119,7 @@ type CaptchaProtectMiddlewareOptions struct {
 	PeriodSeconds             int
 	FailureThreshold          int
 	EnableGooglebotIPCheck    string
+	EnableUptimeRobotBypass   string
 }
 
 // BotMitigationOptions configures a reusable Traefik bot-mitigation component
@@ -266,6 +268,9 @@ func normalizeCaptchaProtectMiddlewareOptions(opts CaptchaProtectMiddlewareOptio
 	}
 	if strings.TrimSpace(opts.EnableGooglebotIPCheck) == "" {
 		opts.EnableGooglebotIPCheck = defaults.EnableGooglebotIPCheck
+	}
+	if strings.TrimSpace(opts.EnableUptimeRobotBypass) == "" {
+		opts.EnableUptimeRobotBypass = defaults.EnableUptimeRobotBypass
 	}
 	return opts
 }
@@ -1076,6 +1081,7 @@ type captchaProtectMiddlewareConfig struct {
 	PeriodSeconds             int      `yaml:"periodSeconds"`
 	FailureThreshold          int      `yaml:"failureThreshold"`
 	EnableGooglebotIPCheck    string   `yaml:"enableGooglebotIPCheck"`
+	EnableUptimeRobotBypass   string   `yaml:"enableUptimeRobotBypass"`
 }
 
 func captchaProtectMiddlewareDefinition(opts CaptchaProtectMiddlewareOptions) traefikPluginMiddleware {
@@ -1103,6 +1109,7 @@ func captchaProtectMiddlewareDefinition(opts CaptchaProtectMiddlewareOptions) tr
 				PeriodSeconds:             opts.PeriodSeconds,
 				FailureThreshold:          opts.FailureThreshold,
 				EnableGooglebotIPCheck:    opts.EnableGooglebotIPCheck,
+				EnableUptimeRobotBypass:   opts.EnableUptimeRobotBypass,
 			},
 		},
 	}

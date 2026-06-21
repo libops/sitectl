@@ -58,6 +58,9 @@ func TestNormalizeBotMitigationOptionsAllowsAppMiddlewareOverrides(t *testing.T)
 	if opts.Middleware.CaptchaProvider != "turnstile" {
 		t.Fatalf("expected default captcha provider, got %q", opts.Middleware.CaptchaProvider)
 	}
+	if opts.Middleware.EnableUptimeRobotBypass != "true" {
+		t.Fatalf("expected UptimeRobot bypass enabled, got %q", opts.Middleware.EnableUptimeRobotBypass)
+	}
 }
 
 func TestApplyBotMitigationRoundTripManagesAllArtifacts(t *testing.T) {
@@ -104,6 +107,7 @@ func TestApplyBotMitigationRoundTripManagesAllArtifacts(t *testing.T) {
 		"      middlewares:\n        - captcha-protect",
 		"          protectRoutes: ^/(issues|articles)",
 		"          excludeRoutes:\n            - \\/api\\/v1",
+		"          enableUptimeRobotBypass: \"true\"",
 	} {
 		if !strings.Contains(router, want) {
 			t.Fatalf("expected router config to contain %q, got:\n%s", want, router)
