@@ -278,6 +278,16 @@ func dispositionHelp(guidance StateGuidance, disposition Disposition) string {
 			return guidance.DisabledHelp
 		}
 		return guidance.OffHelp
+	case DispositionGitRoot:
+		if strings.TrimSpace(guidance.EnabledHelp) != "" {
+			return guidance.EnabledHelp
+		}
+		return guidance.OnHelp
+	case DispositionNested:
+		if strings.TrimSpace(guidance.DisabledHelp) != "" {
+			return guidance.DisabledHelp
+		}
+		return guidance.OffHelp
 	default:
 		return ""
 	}
