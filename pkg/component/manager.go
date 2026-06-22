@@ -31,6 +31,8 @@ const (
 	DispositionDistributed Disposition = "distributed"
 	DispositionCantaloupe  Disposition = "cantaloupe"
 	DispositionTriplet     Disposition = "triplet"
+	DispositionNested      Disposition = "nested"
+	DispositionGitRoot     Disposition = "git-root"
 )
 
 type ComposeSpec struct {
@@ -516,10 +518,10 @@ func normalizeState(state State) State {
 func ParseDisposition(value string) (Disposition, error) {
 	disposition := normalizeDisposition(Disposition(value))
 	switch disposition {
-	case DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed, DispositionCantaloupe, DispositionTriplet:
+	case DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed, DispositionCantaloupe, DispositionTriplet, DispositionNested, DispositionGitRoot:
 		return disposition, nil
 	default:
-		return "", fmt.Errorf("invalid component disposition %q: expected one of %s, %s, %s, %s, %s, %s", value, DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed, DispositionCantaloupe, DispositionTriplet)
+		return "", fmt.Errorf("invalid component disposition %q: expected one of %s, %s, %s, %s, %s, %s, %s, %s", value, DispositionDisabled, DispositionSuperseded, DispositionEnabled, DispositionDistributed, DispositionCantaloupe, DispositionTriplet, DispositionNested, DispositionGitRoot)
 	}
 }
 
@@ -544,6 +546,10 @@ func normalizeDisposition(disposition Disposition) Disposition {
 		return DispositionCantaloupe
 	case string(DispositionTriplet):
 		return DispositionTriplet
+	case string(DispositionNested):
+		return DispositionNested
+	case string(DispositionGitRoot):
+		return DispositionGitRoot
 	default:
 		return Disposition(strings.ToLower(strings.TrimSpace(string(disposition))))
 	}
@@ -551,7 +557,7 @@ func normalizeDisposition(disposition Disposition) Disposition {
 
 func DispositionToState(disposition Disposition) State {
 	switch normalizeDisposition(disposition) {
-	case DispositionEnabled, DispositionDistributed, DispositionTriplet:
+	case DispositionEnabled, DispositionDistributed, DispositionTriplet, DispositionGitRoot:
 		return StateOn
 	default:
 		return StateOff

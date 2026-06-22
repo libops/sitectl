@@ -29,6 +29,26 @@ func TestParseStateOverridesRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestParseDispositionAcceptsCodebaseLayouts(t *testing.T) {
+	t.Parallel()
+
+	nested, err := ParseDisposition("nested")
+	if err != nil {
+		t.Fatalf("ParseDisposition(nested) error = %v", err)
+	}
+	if nested != DispositionNested || DispositionToState(nested) != StateOff {
+		t.Fatalf("expected nested/off, got %q/%q", nested, DispositionToState(nested))
+	}
+
+	gitRoot, err := ParseDisposition("git-root")
+	if err != nil {
+		t.Fatalf("ParseDisposition(git-root) error = %v", err)
+	}
+	if gitRoot != DispositionGitRoot || DispositionToState(gitRoot) != StateOn {
+		t.Fatalf("expected git-root/on, got %q/%q", gitRoot, DispositionToState(gitRoot))
+	}
+}
+
 func TestDependenciesDrupalModulesForEnable(t *testing.T) {
 	t.Parallel()
 
