@@ -32,8 +32,8 @@ const (
 	captchaProtectTemplateMount = "./conf/traefik/challenge.tmpl.html:/challenge.tmpl.html:ro"
 	turnstileSiteKeyDefault     = "${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}"
 	turnstileSecretKeyDefault   = "${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}" // #nosec G101 -- documented Cloudflare Turnstile test key fallback; runtime warning tells users to configure real keys.
-	captchaProtectSourceURL     = "https://github.com/libops/captcha-protect/archive/refs/tags/v1.13.0.zip"
-	captchaProtectSourceSHA256  = "32306c0d331a4b193ce787e06cfeff6964ecb12c800050582944cce50d655bb7"
+	captchaProtectSourceURL     = "https://github.com/libops/captcha-protect/archive/refs/tags/v2.0.0.zip"
+	captchaProtectSourceSHA256  = "eed10b2f3deb816971cb93cec5f95bf208b9cff527517834d82c2ea51cf76f87"
 	// maxCaptchaProtectArchiveBytes bounds memory use before the archive hash is verified.
 	maxCaptchaProtectArchiveBytes = 8 << 20
 	captchaProtectInstallMarker   = ".sitectl-source"
@@ -47,7 +47,7 @@ const (
 	// before writeCaptchaProtectInstallMarker adds captchaProtectInstallMarker.
 	// The extraction filter intentionally drops ci/, .github/, renovate.json5,
 	// and *_test.go files before this hash is computed.
-	captchaProtectExtractedTreeSHA256 = "2e743a105233f29963bb146896e17ae3f1f51d11f85c1c94fd929b2ff5a65ea6"
+	captchaProtectExtractedTreeSHA256 = "de7856faaea3e0c6f029f3e02975b9ae096f6f4316895a4d521b3fc9b3229bca"
 )
 
 var captchaProtectVolumes = []string{
@@ -56,8 +56,6 @@ var captchaProtectVolumes = []string{
 }
 
 var defaultCaptchaProtectMiddleware = CaptchaProtectMiddlewareOptions{ // #nosec G101 -- Turnstile fields are environment-template names, not embedded credential values.
-	RateLimit:           0,
-	IPv4SubnetMask:      8,
 	Window:              864000,
 	Mode:                "regex",
 	ProtectRoutes:       "^/",
@@ -84,13 +82,12 @@ var defaultCaptchaProtectMiddleware = CaptchaProtectMiddlewareOptions{ // #nosec
 		"twitter.com",
 		"x.com",
 	},
-	PersistentStateFile:       "/acme/state.json",
-	ProtectFileExtensions:     "php,html,jp2,tif,tiff",
-	EnableStateReconciliation: "false",
-	PeriodSeconds:             30,
-	FailureThreshold:          3,
-	EnableGooglebotIPCheck:    "true",
-	EnableUptimeRobotBypass:   "true",
+	PersistentStateFile:     "/acme/state.json",
+	ProtectFileExtensions:   "php,html,jp2,tif,tiff",
+	PeriodSeconds:           30,
+	FailureThreshold:        3,
+	EnableGooglebotIPCheck:  "true",
+	EnableUptimeRobotBypass: "true",
 }
 
 var (
@@ -101,28 +98,25 @@ var (
 // CaptchaProtectMiddlewareOptions configures the generated captcha-protect
 // middleware block.
 type CaptchaProtectMiddlewareOptions struct {
-	RateLimit                 int
-	IPv4SubnetMask            int
-	Window                    int
-	Mode                      string
-	ProtectRoutes             string
-	ExcludeRoutes             []string
-	ProtectParameters         string
-	ChallengeTemplate         string
-	ChallengeURL              string
-	ChallengeStatusCode       int
-	CaptchaProvider           string
-	SiteKey                   string
-	SecretKey                 string
-	IPForwardedHeader         string
-	GoodBots                  []string
-	PersistentStateFile       string
-	ProtectFileExtensions     string
-	EnableStateReconciliation string
-	PeriodSeconds             int
-	FailureThreshold          int
-	EnableGooglebotIPCheck    string
-	EnableUptimeRobotBypass   string
+	Window                  int
+	Mode                    string
+	ProtectRoutes           string
+	ExcludeRoutes           []string
+	ProtectParameters       string
+	ChallengeTemplate       string
+	ChallengeURL            string
+	ChallengeStatusCode     int
+	CaptchaProvider         string
+	SiteKey                 string
+	SecretKey               string
+	IPForwardedHeader       string
+	GoodBots                []string
+	PersistentStateFile     string
+	ProtectFileExtensions   string
+	PeriodSeconds           int
+	FailureThreshold        int
+	EnableGooglebotIPCheck  string
+	EnableUptimeRobotBypass string
 }
 
 // BotMitigationOptions configures a reusable Traefik bot-mitigation component
@@ -215,9 +209,6 @@ func NormalizeBotMitigationOptions(opts BotMitigationOptions) BotMitigationOptio
 
 func normalizeCaptchaProtectMiddlewareOptions(opts CaptchaProtectMiddlewareOptions) CaptchaProtectMiddlewareOptions {
 	defaults := defaultCaptchaProtectMiddlewareOptions()
-	if opts.IPv4SubnetMask == 0 {
-		opts.IPv4SubnetMask = defaults.IPv4SubnetMask
-	}
 	if opts.Window == 0 {
 		opts.Window = defaults.Window
 	}
@@ -259,9 +250,6 @@ func normalizeCaptchaProtectMiddlewareOptions(opts CaptchaProtectMiddlewareOptio
 	}
 	if strings.TrimSpace(opts.ProtectFileExtensions) == "" {
 		opts.ProtectFileExtensions = defaults.ProtectFileExtensions
-	}
-	if strings.TrimSpace(opts.EnableStateReconciliation) == "" {
-		opts.EnableStateReconciliation = defaults.EnableStateReconciliation
 	}
 	if opts.PeriodSeconds == 0 {
 		opts.PeriodSeconds = defaults.PeriodSeconds
@@ -1063,56 +1051,50 @@ type traefikPluginMiddleware struct {
 }
 
 type captchaProtectMiddlewareConfig struct {
-	RateLimit                 int      `yaml:"rateLimit"`
-	IPv4SubnetMask            int      `yaml:"ipv4subnetMask"`
-	Window                    int      `yaml:"window"`
-	Mode                      string   `yaml:"mode"`
-	ProtectRoutes             string   `yaml:"protectRoutes"`
-	ExcludeRoutes             []string `yaml:"excludeRoutes"`
-	ProtectParameters         string   `yaml:"protectParameters"`
-	ChallengeTemplate         string   `yaml:"challengeTmpl"`
-	ChallengeURL              string   `yaml:"challengeURL"`
-	ChallengeStatusCode       int      `yaml:"challengeStatusCode"`
-	CaptchaProvider           string   `yaml:"captchaProvider"`
-	SiteKey                   string   `yaml:"siteKey"`
-	SecretKey                 string   `yaml:"secretKey"`
-	IPForwardedHeader         string   `yaml:"ipForwardedHeader"`
-	GoodBots                  []string `yaml:"goodBots"`
-	PersistentStateFile       string   `yaml:"persistentStateFile"`
-	ProtectFileExtensions     string   `yaml:"protectFileExtensions"`
-	EnableStateReconciliation string   `yaml:"enableStateReconciliation"`
-	PeriodSeconds             int      `yaml:"periodSeconds"`
-	FailureThreshold          int      `yaml:"failureThreshold"`
-	EnableGooglebotIPCheck    string   `yaml:"enableGooglebotIPCheck"`
-	EnableUptimeRobotBypass   string   `yaml:"enableUptimeRobotBypass"`
+	Window                  int      `yaml:"window"`
+	Mode                    string   `yaml:"mode"`
+	ProtectRoutes           string   `yaml:"protectRoutes"`
+	ExcludeRoutes           []string `yaml:"excludeRoutes"`
+	ProtectParameters       string   `yaml:"protectParameters"`
+	ChallengeTemplate       string   `yaml:"challengeTmpl"`
+	ChallengeURL            string   `yaml:"challengeURL"`
+	ChallengeStatusCode     int      `yaml:"challengeStatusCode"`
+	CaptchaProvider         string   `yaml:"captchaProvider"`
+	SiteKey                 string   `yaml:"siteKey"`
+	SecretKey               string   `yaml:"secretKey"`
+	IPForwardedHeader       string   `yaml:"ipForwardedHeader"`
+	GoodBots                []string `yaml:"goodBots"`
+	PersistentStateFile     string   `yaml:"persistentStateFile"`
+	ProtectFileExtensions   string   `yaml:"protectFileExtensions"`
+	PeriodSeconds           int      `yaml:"periodSeconds"`
+	FailureThreshold        int      `yaml:"failureThreshold"`
+	EnableGooglebotIPCheck  string   `yaml:"enableGooglebotIPCheck"`
+	EnableUptimeRobotBypass string   `yaml:"enableUptimeRobotBypass"`
 }
 
 func captchaProtectMiddlewareDefinition(opts CaptchaProtectMiddlewareOptions) traefikPluginMiddleware {
 	return traefikPluginMiddleware{
 		Plugin: map[string]captchaProtectMiddlewareConfig{
 			"captcha-protect": {
-				RateLimit:                 opts.RateLimit,
-				IPv4SubnetMask:            opts.IPv4SubnetMask,
-				Window:                    opts.Window,
-				Mode:                      opts.Mode,
-				ProtectRoutes:             opts.ProtectRoutes,
-				ExcludeRoutes:             append([]string{}, opts.ExcludeRoutes...),
-				ProtectParameters:         opts.ProtectParameters,
-				ChallengeTemplate:         opts.ChallengeTemplate,
-				ChallengeURL:              opts.ChallengeURL,
-				ChallengeStatusCode:       opts.ChallengeStatusCode,
-				CaptchaProvider:           opts.CaptchaProvider,
-				SiteKey:                   opts.SiteKey,
-				SecretKey:                 opts.SecretKey,
-				IPForwardedHeader:         opts.IPForwardedHeader,
-				GoodBots:                  append([]string{}, opts.GoodBots...),
-				PersistentStateFile:       opts.PersistentStateFile,
-				ProtectFileExtensions:     opts.ProtectFileExtensions,
-				EnableStateReconciliation: opts.EnableStateReconciliation,
-				PeriodSeconds:             opts.PeriodSeconds,
-				FailureThreshold:          opts.FailureThreshold,
-				EnableGooglebotIPCheck:    opts.EnableGooglebotIPCheck,
-				EnableUptimeRobotBypass:   opts.EnableUptimeRobotBypass,
+				Window:                  opts.Window,
+				Mode:                    opts.Mode,
+				ProtectRoutes:           opts.ProtectRoutes,
+				ExcludeRoutes:           append([]string{}, opts.ExcludeRoutes...),
+				ProtectParameters:       opts.ProtectParameters,
+				ChallengeTemplate:       opts.ChallengeTemplate,
+				ChallengeURL:            opts.ChallengeURL,
+				ChallengeStatusCode:     opts.ChallengeStatusCode,
+				CaptchaProvider:         opts.CaptchaProvider,
+				SiteKey:                 opts.SiteKey,
+				SecretKey:               opts.SecretKey,
+				IPForwardedHeader:       opts.IPForwardedHeader,
+				GoodBots:                append([]string{}, opts.GoodBots...),
+				PersistentStateFile:     opts.PersistentStateFile,
+				ProtectFileExtensions:   opts.ProtectFileExtensions,
+				PeriodSeconds:           opts.PeriodSeconds,
+				FailureThreshold:        opts.FailureThreshold,
+				EnableGooglebotIPCheck:  opts.EnableGooglebotIPCheck,
+				EnableUptimeRobotBypass: opts.EnableUptimeRobotBypass,
 			},
 		},
 	}
