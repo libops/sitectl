@@ -372,6 +372,13 @@ func (m *Manager) composePath() string {
 	if len(m.ctx.ComposeFile) > 0 {
 		return filepath.Join(m.ctx.ProjectDir, m.ctx.ComposeFile[0])
 	}
+	for _, candidate := range defaultComposeRuleFiles {
+		path := filepath.Join(m.ctx.ProjectDir, candidate)
+		exists, err := m.ctx.FileExists(path)
+		if err == nil && exists {
+			return path
+		}
+	}
 	return filepath.Join(m.ctx.ProjectDir, "docker-compose.yml")
 }
 
@@ -393,24 +400,8 @@ func (r *Runtime) close() {
 }
 
 func (m *Manager) newRuntime(hookSets ...[]Hook) (*Runtime, error) {
-	needsDocker := false
-	for _, hooks := range hookSets {
-		if len(hooks) > 0 {
-			needsDocker = true
-			break
-		}
-	}
-	if !needsDocker {
-		return &Runtime{Context: m.ctx}, nil
-	}
-
-	dockerClient, err := docker.GetDockerCli(m.ctx)
-	if err != nil {
-		return nil, fmt.Errorf("create docker client: %w", err)
-	}
 	return &Runtime{
 		Context: m.ctx,
-		Docker:  dockerClient,
 	}, nil
 }
 

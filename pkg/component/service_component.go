@@ -16,36 +16,50 @@ var defaultComposeRuleFiles = []string{
 // ComposeServiceComponentOptions describes a service component backed by
 // Docker Compose definitions and optional target application wiring.
 type ComposeServiceComponentOptions struct {
-	Name                string
-	Description         string
-	ComposeYAML         []byte
-	Definitions         *ComposeDefinitions
-	ServiceNames        []string
-	AppService          string
-	AppDependencies     map[string]any
-	AppEnvironment      map[string]string
-	DefaultState        State
-	DefaultDisposition  Disposition
-	AllowedDispositions []Disposition
-	Dependencies        Dependencies
-	Guidance            StateGuidance
-	PromptOnCreate      bool
-	FollowUps           []FollowUpSpec
-	Gates               GateSpec
-	Behavior            Behavior
-	ExtraOnRules        []YAMLRule
-	ExtraOffRules       []YAMLRule
-	FileOnRules         []FileRule
-	FileOffRules        []FileRule
-	ApplyFollowUps      func(map[string]string) []YAMLRule
+	Name                 string
+	Description          string
+	ComposeYAML          []byte
+	Definitions          *ComposeDefinitions
+	ServiceNames         []string
+	AppService           string
+	AppDependencies      map[string]any
+	AppEnvironment       map[string]string
+	DefaultState         State
+	DefaultDisposition   Disposition
+	AllowedDispositions  []Disposition
+	Dependencies         Dependencies
+	Guidance             StateGuidance
+	PromptOnCreate       bool
+	FollowUps            []FollowUpSpec
+	Gates                GateSpec
+	Behavior             Behavior
+	ExtraOnRules         []YAMLRule
+	ExtraOffRules        []YAMLRule
+	DefinitionOnRules    []YAMLRule
+	DefinitionOffRules   []YAMLRule
+	FileOnRules          []FileRule
+	FileOffRules         []FileRule
+	ApplyFollowUps       func(map[string]string) []YAMLRule
+	BeforeDisable        []Hook
+	AfterDisable         []Hook
+	BeforeEnable         []Hook
+	AfterEnable          []Hook
+	BeforeDisableOptions func(map[string]string) []Hook
+	AfterDisableOptions  func(map[string]string) []Hook
+	BeforeEnableOptions  func(map[string]string) []Hook
+	AfterEnableOptions   func(map[string]string) []Hook
 }
 
 // ComposeServiceComponent is a component implementation that applies or
 // removes Docker Compose service definitions.
 type ComposeServiceComponent struct {
-	definition     Definition
-	component      StaticComponent
-	applyFollowUps func(map[string]string) []YAMLRule
+	definition           Definition
+	component            StaticComponent
+	applyFollowUps       func(map[string]string) []YAMLRule
+	beforeDisableOptions func(map[string]string) []Hook
+	afterDisableOptions  func(map[string]string) []Hook
+	beforeEnableOptions  func(map[string]string) []Hook
+	afterEnableOptions   func(map[string]string) []Hook
 }
 
 // NewComposeServiceComponent builds a service component from compose
@@ -58,19 +72,20 @@ func NewComposeServiceComponent(opts ComposeServiceComponentOptions) (ComposeSer
 
 	defs := opts.Definitions
 	if defs == nil {
-		if len(opts.ComposeYAML) == 0 {
-			return ComposeServiceComponent{}, fmt.Errorf("compose service component %q needs compose definitions", name)
+		if len(opts.ComposeYAML) > 0 {
+			parsed, err := ParseComposeDefinitions(opts.ComposeYAML)
+			if err != nil {
+				return ComposeServiceComponent{}, fmt.Errorf("parse %s compose definitions: %w", name, err)
+			}
+			defs = parsed
+		} else {
+			defs = &ComposeDefinitions{}
 		}
-		parsed, err := ParseComposeDefinitions(opts.ComposeYAML)
-		if err != nil {
-			return ComposeServiceComponent{}, fmt.Errorf("parse %s compose definitions: %w", name, err)
-		}
-		defs = parsed
 	}
 
 	serviceNames := normalizeServiceNames(opts.ServiceNames, defs)
-	if len(serviceNames) == 0 {
-		return ComposeServiceComponent{}, fmt.Errorf("compose service component %q has no services", name)
+	if len(serviceNames) == 0 && len(opts.ExtraOnRules) == 0 && len(opts.ExtraOffRules) == 0 && len(opts.DefinitionOnRules) == 0 && len(opts.DefinitionOffRules) == 0 && len(opts.FileOnRules) == 0 && len(opts.FileOffRules) == 0 && opts.ApplyFollowUps == nil && len(opts.BeforeDisable) == 0 && len(opts.AfterDisable) == 0 && len(opts.BeforeEnable) == 0 && len(opts.AfterEnable) == 0 && opts.BeforeDisableOptions == nil && opts.AfterDisableOptions == nil && opts.BeforeEnableOptions == nil && opts.AfterEnableOptions == nil {
+		return ComposeServiceComponent{}, fmt.Errorf("compose service component %q has no services or mutations", name)
 	}
 
 	onRules := composeDefinitionRules(defs, OpRestore)
@@ -82,8 +97,10 @@ func NewComposeServiceComponent(opts ComposeServiceComponentOptions) (ComposeSer
 	applyOffRules = append(applyOffRules, opts.ExtraOffRules...)
 	onRules = append(onRules, targetOn...)
 	onRules = append(onRules, opts.ExtraOnRules...)
+	onRules = append(onRules, opts.DefinitionOnRules...)
 	offRules = append(offRules, targetOff...)
 	offRules = append(offRules, opts.ExtraOffRules...)
+	offRules = append(offRules, opts.DefinitionOffRules...)
 
 	defaultState := normalizeState(opts.DefaultState)
 	if defaultState == "" {
@@ -120,17 +137,21 @@ func NewComposeServiceComponent(opts ComposeServiceComponentOptions) (ComposeSer
 	}
 
 	on := ComponentSpec{
-		Name:  name,
-		Gates: opts.Gates,
+		Name:         name,
+		Gates:        opts.Gates,
+		BeforeEnable: append([]Hook{}, opts.BeforeEnable...),
+		AfterEnable:  append([]Hook{}, opts.AfterEnable...),
 		Compose: ComposeSpec{
-			Definitions: defs,
+			Definitions: nonEmptyComposeDefinitions(defs),
 			Rules:       applyOnRules,
 		},
 		Files: FileStateSpec{Rules: opts.FileOnRules},
 	}
 	off := ComponentSpec{
-		Name:  name,
-		Gates: opts.Gates,
+		Name:          name,
+		Gates:         opts.Gates,
+		BeforeDisable: append([]Hook{}, opts.BeforeDisable...),
+		AfterDisable:  append([]Hook{}, opts.AfterDisable...),
 		Compose: ComposeSpec{
 			RemoveServices:      serviceNames,
 			PruneUnusedResource: true,
@@ -140,10 +161,24 @@ func NewComposeServiceComponent(opts ComposeServiceComponentOptions) (ComposeSer
 	}
 
 	return ComposeServiceComponent{
-		definition:     definition,
-		component:      NewStaticComponent(name, defaultState, on, off),
-		applyFollowUps: opts.ApplyFollowUps,
+		definition:           definition,
+		component:            NewStaticComponent(name, defaultState, on, off),
+		applyFollowUps:       opts.ApplyFollowUps,
+		beforeDisableOptions: opts.BeforeDisableOptions,
+		afterDisableOptions:  opts.AfterDisableOptions,
+		beforeEnableOptions:  opts.BeforeEnableOptions,
+		afterEnableOptions:   opts.AfterEnableOptions,
 	}, nil
+}
+
+func nonEmptyComposeDefinitions(defs *ComposeDefinitions) *ComposeDefinitions {
+	if defs == nil {
+		return nil
+	}
+	if len(defs.Services) == 0 && len(defs.Networks) == 0 && len(defs.Volumes) == 0 && len(defs.Secrets) == 0 && len(defs.Configs) == 0 {
+		return nil
+	}
+	return defs
 }
 
 // Definition returns the user-facing component definition.
@@ -170,8 +205,24 @@ func (c ComposeServiceComponent) SpecFor(state State) ComponentSpec {
 // after applying option-derived follow-up rules.
 func (c ComposeServiceComponent) SpecForWithOptions(state State, options map[string]string) ComponentSpec {
 	spec := c.SpecFor(state)
-	if normalizeState(state) == StateOn && c.applyFollowUps != nil {
-		spec.Compose.Rules = append(spec.Compose.Rules, c.applyFollowUps(options)...)
+	switch normalizeState(state) {
+	case StateOn:
+		if c.applyFollowUps != nil {
+			spec.Compose.Rules = append(spec.Compose.Rules, c.applyFollowUps(options)...)
+		}
+		if c.beforeEnableOptions != nil {
+			spec.BeforeEnable = append(spec.BeforeEnable, c.beforeEnableOptions(options)...)
+		}
+		if c.afterEnableOptions != nil {
+			spec.AfterEnable = append(spec.AfterEnable, c.afterEnableOptions(options)...)
+		}
+	case StateOff:
+		if c.beforeDisableOptions != nil {
+			spec.BeforeDisable = append(spec.BeforeDisable, c.beforeDisableOptions(options)...)
+		}
+		if c.afterDisableOptions != nil {
+			spec.AfterDisable = append(spec.AfterDisable, c.afterDisableOptions(options)...)
+		}
 	}
 	return spec
 }

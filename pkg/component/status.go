@@ -348,9 +348,54 @@ func evaluateRuleForFile(ctx *config.Context, root, rel string, rule YAMLRule, c
 				return false, fmt.Sprintf("found unreplaced value %q", oldValue), nil
 			}
 			return true, fmt.Sprintf("value %q not present at path", oldValue), nil
+		case OpContains:
+			needle := fmt.Sprint(rule.Value)
+			if !found {
+				return false, "expected path to exist", nil
+			}
+			if yamlValueContains(value, needle) {
+				return true, fmt.Sprintf("path contains %q", needle), nil
+			}
+			return false, fmt.Sprintf("expected path to contain %q", needle), nil
+		case OpNotContains:
+			needle := fmt.Sprint(rule.Value)
+			if !found {
+				return true, "path absent", nil
+			}
+			if yamlValueContains(value, needle) {
+				return false, fmt.Sprintf("path contains %q", needle), nil
+			}
+			return true, fmt.Sprintf("path does not contain %q", needle), nil
 		default:
 			return false, "unsupported operation", nil
 		}
+	}
+}
+
+func yamlValueContains(value any, needle string) bool {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return true
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.Contains(typed, needle)
+	case []any:
+		for _, item := range typed {
+			if yamlValueContains(item, needle) {
+				return true
+			}
+		}
+		return false
+	case []string:
+		for _, item := range typed {
+			if strings.Contains(item, needle) {
+				return true
+			}
+		}
+		return false
+	default:
+		return strings.Contains(fmt.Sprint(value), needle)
 	}
 }
 

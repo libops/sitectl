@@ -11,10 +11,12 @@ type RepoSource struct {
 type RuleOp string
 
 const (
-	OpSet     RuleOp = "set"
-	OpDelete  RuleOp = "delete"
-	OpRestore RuleOp = "restore"
-	OpReplace RuleOp = "replace"
+	OpSet         RuleOp = "set"
+	OpDelete      RuleOp = "delete"
+	OpRestore     RuleOp = "restore"
+	OpReplace     RuleOp = "replace"
+	OpContains    RuleOp = "contains"
+	OpNotContains RuleOp = "not_contains"
 )
 
 type YAMLRule struct {
@@ -83,6 +85,8 @@ type FollowUpSpec struct {
 	Question             string      `json:"question,omitempty" yaml:"question,omitempty"`
 	Choices              []Choice    `json:"choices,omitempty" yaml:"choices,omitempty"`
 	DefaultValue         string      `json:"default_value,omitempty" yaml:"default_value,omitempty"`
+	MultiValue           bool        `json:"multi_value,omitempty" yaml:"multi_value,omitempty"`
+	Required             bool        `json:"required,omitempty" yaml:"required,omitempty"`
 	PromptOnCreate       bool        `json:"prompt_on_create,omitempty" yaml:"prompt_on_create,omitempty"`
 	AppliesTo            State       `json:"applies_to,omitempty" yaml:"applies_to,omitempty"`
 	AppliesToDisposition Disposition `json:"applies_to_disposition,omitempty" yaml:"applies_to_disposition,omitempty"`

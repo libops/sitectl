@@ -11,6 +11,34 @@ type FollowUpValue struct {
 	Value string
 }
 
+func SplitFollowUpValues(value string) []string {
+	out := []string{}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func JoinFollowUpValues(values []string) string {
+	out := []string{}
+	for _, value := range values {
+		out = append(out, SplitFollowUpValues(value)...)
+	}
+	return strings.Join(out, ",")
+}
+
+func NormalizeFollowUpValue(value string) string {
+	return JoinFollowUpValues([]string{value})
+}
+
+func FollowUpValuePresent(value string) bool {
+	return len(SplitFollowUpValues(value)) > 0
+}
+
 func followUpsForDisposition(specs []FollowUpSpec, disposition Disposition, state State) []FollowUpSpec {
 	if len(specs) == 0 {
 		return nil
@@ -81,7 +109,13 @@ func PromptFollowUp(componentName string, spec FollowUpSpec, defaultValue string
 			return "", err
 		}
 		if strings.TrimSpace(value) == "" {
+			if spec.MultiValue {
+				return NormalizeFollowUpValue(defaultValue), nil
+			}
 			return strings.TrimSpace(defaultValue), nil
+		}
+		if spec.MultiValue {
+			return NormalizeFollowUpValue(value), nil
 		}
 		return strings.TrimSpace(value), nil
 	}
@@ -105,6 +139,9 @@ func PromptFollowUp(componentName string, spec FollowUpSpec, defaultValue string
 			return "", err
 		}
 		return strings.TrimSpace(customValue), nil
+	}
+	if spec.MultiValue {
+		return NormalizeFollowUpValue(value), nil
 	}
 	return strings.TrimSpace(value), nil
 }
@@ -171,7 +208,14 @@ func PromptDeclaredReviewFollowUps(view ReviewView, decision *ReviewDecision, in
 		if err != nil {
 			return err
 		}
-		decision.Options[spec.Name] = strings.TrimSpace(value)
+		if spec.MultiValue {
+			decision.Options[spec.Name] = NormalizeFollowUpValue(value)
+		} else {
+			decision.Options[spec.Name] = strings.TrimSpace(value)
+		}
+		if spec.Required && !FollowUpValuePresent(decision.Options[spec.Name]) {
+			return fmt.Errorf("%s is required when enabling component %q", spec.Name, view.Name)
+		}
 	}
 	return nil
 }

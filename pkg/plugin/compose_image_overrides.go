@@ -17,6 +17,20 @@ type ComposeImageOverrides struct {
 	BuildArgs map[string]map[string]string
 }
 
+type serviceTagOverrideKind int
+
+const (
+	serviceTagOverrideBaseImageArg serviceTagOverrideKind = iota
+	serviceTagOverrideRepositoryTagArgs
+	serviceTagOverrideImageRef
+)
+
+type serviceTagTarget struct {
+	Service string
+	Image   string
+	Kind    serviceTagOverrideKind
+}
+
 func (o ComposeImageOverrides) Empty() bool {
 	return len(o.Images) == 0 && len(o.BuildArgs) == 0
 }
@@ -49,23 +63,25 @@ func (o *ComposeImageOverrides) AddBuildArg(service, name, value string) {
 	o.BuildArgs[service][name] = value
 }
 
-func ResolveComposeImageOverrides(pluginName, buildkitRepository, buildkitTag string, imageRefs, buildArgs []string) (ComposeImageOverrides, error) {
+func ResolveComposeImageOverrides(pluginName string, imageTags, images, buildArgs []string) (ComposeImageOverrides, error) {
 	var overrides ComposeImageOverrides
-	repository := strings.Trim(strings.TrimSpace(buildkitRepository), "/")
-	if repository == "" {
-		repository = "libops"
-	}
-	if tag := strings.TrimSpace(buildkitTag); tag != "" {
-		service, imageName, ok := buildkitBaseImageTarget(pluginName)
-		if !ok {
-			return overrides, fmt.Errorf("--buildkit-tag is not supported for plugin %q; use --build-arg SERVICE.ARG=VALUE instead", pluginName)
-		}
-		overrides.AddBuildArg(service, "BASE_IMAGE", repository+"/"+imageName+":"+tag)
-	}
-	for _, value := range imageRefs {
-		service, image, err := parseServiceAssignment(value)
+	for _, value := range imageTags {
+		service, tag, err := parseServiceAssignment(value, "TAG")
 		if err != nil {
-			return overrides, fmt.Errorf("parse --image-ref: %w", err)
+			return overrides, fmt.Errorf("parse --tag: %w", err)
+		}
+		target, ok := serviceTagTargetForService(pluginName, service)
+		if !ok {
+			return overrides, fmt.Errorf("--tag does not know service %q for plugin %q; use --image SERVICE=IMAGE or --build-arg SERVICE.ARG=VALUE instead", service, pluginName)
+		}
+		if err := addServiceTagOverride(&overrides, tag, target); err != nil {
+			return overrides, err
+		}
+	}
+	for _, value := range images {
+		service, image, err := parseServiceAssignment(value, "IMAGE")
+		if err != nil {
+			return overrides, fmt.Errorf("parse --image: %w", err)
 		}
 		overrides.AddImage(service, image)
 	}
@@ -77,6 +93,23 @@ func ResolveComposeImageOverrides(pluginName, buildkitRepository, buildkitTag st
 		overrides.AddBuildArg(service, name, argValue)
 	}
 	return overrides, nil
+}
+
+func addServiceTagOverride(overrides *ComposeImageOverrides, tag string, target serviceTagTarget) error {
+	switch target.Kind {
+	case serviceTagOverrideRepositoryTagArgs:
+		repository, _, ok := strings.Cut(target.Image, "/")
+		if !ok || strings.TrimSpace(repository) == "" {
+			return fmt.Errorf("cannot derive repository for image %q", target.Image)
+		}
+		overrides.AddBuildArg(target.Service, "REPOSITORY", repository)
+		overrides.AddBuildArg(target.Service, "TAG", tag)
+	case serviceTagOverrideImageRef:
+		overrides.AddImage(target.Service, target.Image+":"+tag)
+	default:
+		overrides.AddBuildArg(target.Service, "BASE_IMAGE", target.Image+":"+tag)
+	}
+	return nil
 }
 
 func ApplyComposeImageOverrides(projectDir string, overrides ComposeImageOverrides) error {
@@ -121,17 +154,13 @@ func ApplyComposeImageOverrides(projectDir string, overrides ComposeImageOverrid
 }
 
 func resolveCreateImageOverrides(cmd *cobra.Command, req ComposeCreateRequest, pluginName string) (ComposeImageOverrides, error) {
-	buildkitTag, err := cmd.Flags().GetString("buildkit-tag")
+	imageTags, err := cmd.Flags().GetStringArray("tag")
 	if err != nil {
-		return ComposeImageOverrides{}, fmt.Errorf("get buildkit-tag flag: %w", err)
+		return ComposeImageOverrides{}, fmt.Errorf("get tag flag: %w", err)
 	}
-	buildkitRepository, err := cmd.Flags().GetString("buildkit-repository")
+	images, err := cmd.Flags().GetStringArray("image")
 	if err != nil {
-		return ComposeImageOverrides{}, fmt.Errorf("get buildkit-repository flag: %w", err)
-	}
-	imageRefs, err := cmd.Flags().GetStringArray("image-ref")
-	if err != nil {
-		return ComposeImageOverrides{}, fmt.Errorf("get image-ref flag: %w", err)
+		return ComposeImageOverrides{}, fmt.Errorf("get image flag: %w", err)
 	}
 	buildArgs, err := cmd.Flags().GetStringArray("build-arg")
 	if err != nil {
@@ -141,34 +170,99 @@ func resolveCreateImageOverrides(cmd *cobra.Command, req ComposeCreateRequest, p
 	if name == "" {
 		name = strings.TrimSpace(req.ProjectName)
 	}
-	return ResolveComposeImageOverrides(name, buildkitRepository, buildkitTag, imageRefs, buildArgs)
+	return ResolveComposeImageOverrides(name, imageTags, images, buildArgs)
 }
 
-func buildkitBaseImageTarget(pluginName string) (service, image string, ok bool) {
+func defaultServiceTagTarget(pluginName string) (serviceTagTarget, bool) {
 	switch strings.ToLower(strings.TrimSpace(pluginName)) {
 	case "archivesspace":
-		return "archivesspace", "archivesspace", true
+		return serviceTagTarget{Service: "archivesspace", Image: "libops/archivesspace", Kind: serviceTagOverrideBaseImageArg}, true
 	case "drupal":
-		return "drupal", "drupal", true
+		return serviceTagTarget{Service: "drupal", Image: "libops/drupal", Kind: serviceTagOverrideBaseImageArg}, true
 	case "isle", "islandora":
-		return "drupal", "islandora", true
+		return serviceTagTarget{Service: "drupal", Image: "libops/drupal", Kind: serviceTagOverrideRepositoryTagArgs}, true
 	case "ojs":
-		return "ojs", "ojs", true
+		return serviceTagTarget{Service: "ojs", Image: "libops/ojs", Kind: serviceTagOverrideBaseImageArg}, true
 	case "omeka-classic":
-		return "omeka-classic", "omeka-classic", true
+		return serviceTagTarget{Service: "omeka-classic", Image: "libops/omeka-classic", Kind: serviceTagOverrideBaseImageArg}, true
 	case "omeka-s":
-		return "omeka-s", "omeka-s", true
+		return serviceTagTarget{Service: "omeka-s", Image: "libops/omeka-s", Kind: serviceTagOverrideBaseImageArg}, true
 	case "wp", "wordpress":
-		return "wp", "wp", true
+		return serviceTagTarget{Service: "wp", Image: "libops/wp", Kind: serviceTagOverrideBaseImageArg}, true
 	default:
-		return "", "", false
+		return serviceTagTarget{}, false
 	}
 }
 
-func parseServiceAssignment(value string) (string, string, error) {
+func serviceTagTargetForService(pluginName, service string) (serviceTagTarget, bool) {
+	service = strings.ToLower(strings.TrimSpace(service))
+	if service == "" {
+		return serviceTagTarget{}, false
+	}
+	if target, ok := defaultServiceTagTarget(pluginName); ok && service == target.Service {
+		return target, true
+	}
+	if strings.EqualFold(strings.TrimSpace(pluginName), "archivesspace") && service == "solr" {
+		return serviceTagTarget{Service: "solr", Image: "libops/solr", Kind: serviceTagOverrideBaseImageArg}, true
+	}
+	if isIslandoraPluginName(pluginName) && service == "drupal" {
+		return serviceTagTarget{Service: "drupal", Image: "libops/drupal", Kind: serviceTagOverrideRepositoryTagArgs}, true
+	}
+	if image, ok := publishedImageByService(service); ok {
+		return serviceTagTarget{Service: service, Image: image, Kind: serviceTagOverrideImageRef}, true
+	}
+	return serviceTagTarget{}, false
+}
+
+func isIslandoraPluginName(pluginName string) bool {
+	switch strings.ToLower(strings.TrimSpace(pluginName)) {
+	case "isle", "islandora":
+		return true
+	default:
+		return false
+	}
+}
+
+func publishedImageByService(service string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(service)) {
+	case "activemq":
+		return "libops/activemq", true
+	case "alpaca":
+		return "libops/alpaca", true
+	case "base", "init":
+		return "libops/base", true
+	case "blazegraph":
+		return "libops/blazegraph", true
+	case "crayfits":
+		return "libops/crayfits", true
+	case "fcrepo":
+		return "libops/fcrepo", true
+	case "fits":
+		return "libops/fits", true
+	case "homarus":
+		return "libops/homarus", true
+	case "houdini":
+		return "libops/houdini", true
+	case "hypercube":
+		return "libops/hypercube", true
+	case "mariadb":
+		return "libops/mariadb", true
+	case "mergepdf":
+		return "libops/mergepdf", true
+	case "solr":
+		return "libops/solr", true
+	default:
+		return "", false
+	}
+}
+
+func parseServiceAssignment(value, rightName string) (string, string, error) {
 	left, right, ok := strings.Cut(strings.TrimSpace(value), "=")
 	if !ok || strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
-		return "", "", fmt.Errorf("expected SERVICE=IMAGE, got %q", value)
+		if strings.TrimSpace(rightName) == "" {
+			rightName = "VALUE"
+		}
+		return "", "", fmt.Errorf("expected SERVICE=%s, got %q", rightName, value)
 	}
 	return strings.TrimSpace(left), strings.TrimSpace(right), nil
 }
