@@ -78,7 +78,10 @@ Examples:
 			"-h",
 			"--help",
 		}
-		if len(filteredArgs) == 0 || !slices.Contains(validCommands, filteredArgs[0]) {
+		if len(filteredArgs) == 0 {
+			return fmt.Errorf("missing docker compose command")
+		}
+		if !slices.Contains(validCommands, filteredArgs[0]) {
 			return fmt.Errorf("unknown docker compose command: %s", filteredArgs[0])
 		}
 
@@ -107,6 +110,15 @@ Examples:
 		}
 		if filteredArgs[0] == "build" && !slices.Contains(filteredArgs, "--pull") {
 			filteredArgs = append(filteredArgs, "--pull")
+		}
+		if isComposeUpCommand(filteredArgs) {
+			handled, err := maybeRunComposeReconcile(cmd, &context)
+			if err != nil {
+				return err
+			}
+			if handled {
+				return nil
+			}
 		}
 
 		cmdArgs := []string{"compose"}

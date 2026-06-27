@@ -37,12 +37,22 @@ func (c *Context) runCommandContext(ctx context.Context, cmd *exec.Cmd, printOut
 	defer cancel()
 	var output strings.Builder
 	if c.DockerHostType == ContextLocal {
-		cmd = exec.CommandContext(runCtx, cmd.Path, cmd.Args[1:]...) // #nosec G204 -- command path is selected by sitectl and arguments are forwarded without a shell.
-		cmd.Env = os.Environ()
-		if printOutput {
-			cmd.Stdin = os.Stdin
+		original := cmd
+		cmd = exec.CommandContext(runCtx, original.Path, original.Args[1:]...) // #nosec G204 -- command path is selected by sitectl and arguments are forwarded without a shell.
+		cmd.Env = original.Env
+		if len(cmd.Env) == 0 {
+			cmd.Env = os.Environ()
 		}
-		cmd.Dir = c.ProjectDir
+		cmd.Dir = original.Dir
+		if cmd.Dir == "" {
+			cmd.Dir = c.ProjectDir
+		}
+		if printOutput {
+			cmd.Stdin = original.Stdin
+			if cmd.Stdin == nil {
+				cmd.Stdin = os.Stdin
+			}
+		}
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
 			return "", fmt.Errorf("error creating stdout pipe for command %s: %v", cmd.String(), err)

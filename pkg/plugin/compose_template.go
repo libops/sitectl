@@ -204,6 +204,9 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 		}
 	}
 	if !req.SetupOnly {
+		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeBuild); err != nil {
+			return err
+		}
 		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeUp); err != nil {
 			return err
 		}
