@@ -1,13 +1,18 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/joho/godotenv"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -18,6 +23,7 @@ const (
 	defaultHTTPSFallback  = 8443
 	hostInsecurePortEnv   = "HOST_INSECURE_PORT"
 	hostSecurePortEnv     = "HOST_SECURE_PORT"
+	siteURLEnv            = "SITE_URL"
 	composeProjectLabel   = "com.docker.compose.project"
 	maxPortSearchAttempts = 200
 )
@@ -39,7 +45,8 @@ func (c Context) ComposeUpPortEnv() (map[string]string, []string, error) {
 		return nil, nil, nil
 	}
 	project := c.EffectiveComposeProjectName()
-	httpStart := envPort(hostInsecurePortEnv, defaultHTTPPort)
+	projectEnv := c.composeProjectEnv()
+	httpStart := envPort(projectEnv, hostInsecurePortEnv, defaultHTTPPort)
 
 	httpPort, httpMessages, err := c.resolveLocalDevPort(project, httpStart, defaultHTTPFallback)
 	if err != nil {
@@ -55,7 +62,7 @@ func (c Context) ComposeUpPortEnv() (map[string]string, []string, error) {
 		return nil, nil, err
 	}
 	if usesHTTPS {
-		httpsStart := envPort(hostSecurePortEnv, defaultHTTPSPort)
+		httpsStart := envPort(projectEnv, hostSecurePortEnv, defaultHTTPSPort)
 		httpsPort, httpsMessages, err := c.resolveLocalDevPort(project, httpsStart, defaultHTTPSFallback)
 		if err != nil {
 			return nil, nil, fmt.Errorf("resolve HTTPS host port: %w", err)
@@ -63,7 +70,82 @@ func (c Context) ComposeUpPortEnv() (map[string]string, []string, error) {
 		values[hostSecurePortEnv] = strconv.Itoa(httpsPort)
 		messages = append(messages, httpsMessages...)
 	}
+	values[siteURLEnv] = localDevSiteURL(projectEnv, values)
 	return values, messages, nil
+}
+
+func (c Context) PersistComposeUpPortEnv(values map[string]string) ([]string, error) {
+	if !c.IsLocalDevelopment() || len(values) == 0 {
+		return nil, nil
+	}
+	envPath := c.composeEnvFilePath()
+	raw, existing, err := c.readComposeEnvFile(envPath)
+	if err != nil {
+		return nil, err
+	}
+
+	updates := map[string]string{}
+	maybePersist := func(name string, defaultPort int) {
+		value := strings.TrimSpace(values[name])
+		if value == "" {
+			return
+		}
+		if value == strconv.Itoa(defaultPort) && strings.TrimSpace(existing[name]) == "" {
+			return
+		}
+		if existing[name] != value {
+			updates[name] = value
+		}
+	}
+	maybePersist(hostInsecurePortEnv, defaultHTTPPort)
+	maybePersist(hostSecurePortEnv, defaultHTTPSPort)
+	if nonDefaultLocalDevPort(values) {
+		if value := strings.TrimSpace(values[siteURLEnv]); value != "" && existing[siteURLEnv] != value {
+			updates[siteURLEnv] = value
+		}
+	}
+	if len(updates) == 0 {
+		return nil, nil
+	}
+	if err := c.WriteFile(envPath, []byte(updateDotEnvText(raw, updates))); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(updates))
+	for key := range updates {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return []string{fmt.Sprintf("Wrote %s to %s", strings.Join(keys, ", "), envPath)}, nil
+}
+
+func (c Context) composeProjectEnv() map[string]string {
+	raw, env, err := c.readComposeEnvFile(c.composeEnvFilePath())
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return map[string]string{}
+	}
+	return env
+}
+
+func (c Context) readComposeEnvFile(path string) (string, map[string]string, error) {
+	raw, err := (&c).ReadSmallFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", map[string]string{}, nil
+		}
+		return "", nil, err
+	}
+	env, err := godotenv.Parse(strings.NewReader(raw))
+	if err != nil {
+		env = parseDotEnvText(raw)
+	}
+	return raw, env, nil
+}
+
+func (c Context) composeEnvFilePath() string {
+	if len(c.EnvFile) > 0 && strings.TrimSpace(c.EnvFile[0]) != "" {
+		return c.ResolveProjectPath(c.EnvFile[0])
+	}
+	return c.ResolveProjectPath(".env")
 }
 
 func (c Context) composePublishesSecurePort() (bool, error) {
@@ -202,8 +284,11 @@ func (c Context) resolveLocalDevPort(project string, start, fallback int) (int, 
 	return 0, messages, fmt.Errorf("no available port found after %d attempts starting at %d", maxPortSearchAttempts, start)
 }
 
-func envPort(name string, fallback int) int {
+func envPort(projectEnv map[string]string, name string, fallback int) int {
 	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" && projectEnv != nil {
+		value = strings.TrimSpace(projectEnv[name])
+	}
 	if value == "" {
 		return fallback
 	}
@@ -212,6 +297,90 @@ func envPort(name string, fallback int) int {
 		return fallback
 	}
 	return port
+}
+
+func localDevSiteURL(projectEnv, values map[string]string) string {
+	scheme := firstNonEmptyEnv(projectEnv, "URI_SCHEME", "http")
+	if strings.EqualFold(firstNonEmptyEnv(projectEnv, "TRAEFIK_TLS_ENABLED", ""), "true") && strings.TrimSpace(firstNonEmptyEnv(projectEnv, "URI_SCHEME", "")) == "" {
+		scheme = "https"
+	}
+	domain := firstNonEmptyEnv(projectEnv, "DOMAIN", "localhost")
+	port := ""
+	if scheme == "https" {
+		port = strings.TrimSpace(values[hostSecurePortEnv])
+	} else {
+		port = strings.TrimSpace(values[hostInsecurePortEnv])
+	}
+	host := domain
+	if port != "" && !isDefaultPort(scheme, port) && !strings.Contains(domain, ":") {
+		host = domain + ":" + port
+	}
+	return (&url.URL{Scheme: scheme, Host: host, Path: "/"}).String()
+}
+
+func nonDefaultLocalDevPort(values map[string]string) bool {
+	return strings.TrimSpace(values[hostInsecurePortEnv]) != "" && values[hostInsecurePortEnv] != strconv.Itoa(defaultHTTPPort) ||
+		strings.TrimSpace(values[hostSecurePortEnv]) != "" && values[hostSecurePortEnv] != strconv.Itoa(defaultHTTPSPort)
+}
+
+func firstNonEmptyEnv(env map[string]string, key, fallback string) string {
+	if env != nil && strings.TrimSpace(env[key]) != "" {
+		return strings.TrimSpace(env[key])
+	}
+	return fallback
+}
+
+func isDefaultPort(scheme, port string) bool {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "https":
+		return strings.TrimSpace(port) == strconv.Itoa(defaultHTTPSPort)
+	default:
+		return strings.TrimSpace(port) == strconv.Itoa(defaultHTTPPort)
+	}
+}
+
+func parseDotEnvText(raw string) map[string]string {
+	values := map[string]string{}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		values[strings.TrimSpace(parts[0])] = strings.Trim(strings.TrimSpace(parts[1]), `"`)
+	}
+	return values
+}
+
+func updateDotEnvText(raw string, values map[string]string) string {
+	lines := []string{}
+	if strings.TrimSpace(raw) != "" {
+		lines = strings.Split(strings.TrimRight(raw, "\n"), "\n")
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := values[key]
+		lineValue := fmt.Sprintf(`%s="%s"`, key, strings.ReplaceAll(value, `"`, `\"`))
+		updated := false
+		for i, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), key+"=") {
+				lines[i] = lineValue
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			lines = append(lines, lineValue)
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func tcpPortInUse(port int) bool {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,104 @@ func TestComposeUpPortEnvOnlySetsSecurePortWhenComposePublishesHTTPS(t *testing.
 	}
 	if values[hostSecurePortEnv] != strconv.Itoa(httpsPort) {
 		t.Fatalf("expected HTTPS port %d, got %+v", httpsPort, values)
+	}
+}
+
+func TestComposeUpPortEnvReadsProjectEnvAndSetsSiteURL(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := Context{
+		DockerHostType: ContextLocal,
+		Environment:    "dev",
+		ProjectDir:     projectDir,
+		ProjectName:    "ports-test",
+	}
+	httpPort := freeTCPPort(t)
+	writePortCompose(t, projectDir, `services:
+  traefik:
+    ports:
+      - "${HOST_INSECURE_PORT:-80}:80"
+`)
+	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte("DOMAIN=example.test\nHOST_INSECURE_PORT="+strconv.Itoa(httpPort)+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(.env) error = %v", err)
+	}
+
+	values, _, err := ctx.ComposeUpPortEnv()
+	if err != nil {
+		t.Fatalf("ComposeUpPortEnv() error = %v", err)
+	}
+	if values[hostInsecurePortEnv] != strconv.Itoa(httpPort) {
+		t.Fatalf("HOST_INSECURE_PORT = %q, want %d", values[hostInsecurePortEnv], httpPort)
+	}
+	wantURL := "http://example.test:" + strconv.Itoa(httpPort) + "/"
+	if values[siteURLEnv] != wantURL {
+		t.Fatalf("SITE_URL = %q, want %q", values[siteURLEnv], wantURL)
+	}
+}
+
+func TestPersistComposeUpPortEnvWritesNonDefaultPorts(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := Context{
+		DockerHostType: ContextLocal,
+		Environment:    "dev",
+		ProjectDir:     projectDir,
+		ProjectName:    "ports-test",
+	}
+	httpPort := freeTCPPort(t)
+	writePortCompose(t, projectDir, `services:
+  traefik:
+    ports:
+      - "${HOST_INSECURE_PORT:-80}:80"
+`)
+	values := map[string]string{
+		hostInsecurePortEnv: strconv.Itoa(httpPort),
+		siteURLEnv:          "http://localhost:" + strconv.Itoa(httpPort) + "/",
+	}
+
+	messages, err := ctx.PersistComposeUpPortEnv(values)
+	if err != nil {
+		t.Fatalf("PersistComposeUpPortEnv() error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected one persistence message, got %#v", messages)
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, ".env"))
+	if err != nil {
+		t.Fatalf("ReadFile(.env) error = %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`HOST_INSECURE_PORT="` + strconv.Itoa(httpPort) + `"`,
+		`SITE_URL="http://localhost:` + strconv.Itoa(httpPort) + `/"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected .env to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+func TestPersistComposeUpPortEnvSkipsDefaultPorts(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := Context{
+		DockerHostType: ContextLocal,
+		Environment:    "dev",
+		ProjectDir:     projectDir,
+		ProjectName:    "ports-test",
+	}
+
+	messages, err := ctx.PersistComposeUpPortEnv(map[string]string{
+		hostInsecurePortEnv: strconv.Itoa(defaultHTTPPort),
+		siteURLEnv:          "http://localhost/",
+	})
+	if err != nil {
+		t.Fatalf("PersistComposeUpPortEnv() error = %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("expected no persistence message for default port, got %#v", messages)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".env")); err == nil {
+		t.Fatal("default port persistence unexpectedly created .env")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("Stat(.env) error = %v", err)
 	}
 }
 

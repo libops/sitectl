@@ -132,6 +132,13 @@ Examples:
 			for _, message := range messages {
 				fmt.Fprintln(cmd.ErrOrStderr(), message)
 			}
+			persistMessages, err := context.PersistComposeUpPortEnv(envValues)
+			if err != nil {
+				return err
+			}
+			for _, message := range persistMessages {
+				fmt.Fprintln(cmd.ErrOrStderr(), message)
+			}
 			c.Env = config.AppendEnvOverrides(os.Environ(), envValues)
 		}
 		_, err = context.RunCommandContext(cmd.Context(), c)

@@ -185,6 +185,9 @@ func CheckHTTP(ctx context.Context, name, targetURL string) sitevalidate.Result 
 // HOST_SECURE_PORT, and the common TRAEFIK_TLS_ENABLED flag.
 func PublicURLFromEnv(ctx *config.Context, defaultScheme, defaultDomain string) string {
 	env := ProjectEnv(ctx)
+	if siteURL := strings.TrimSpace(env["SITE_URL"]); siteURL != "" {
+		return siteURL
+	}
 	scheme := firstNonEmpty(env["URI_SCHEME"], defaultScheme, "http")
 	if strings.EqualFold(env["TRAEFIK_TLS_ENABLED"], "true") && strings.TrimSpace(env["URI_SCHEME"]) == "" {
 		scheme = "https"
@@ -211,6 +214,14 @@ func ProjectEnv(ctx *config.Context) map[string]string {
 		return map[string]string{}
 	}
 	path := filepath.Join(ctx.ProjectDir, ".env")
+	if len(ctx.EnvFile) > 0 && strings.TrimSpace(ctx.EnvFile[0]) != "" {
+		envPath := strings.TrimSpace(ctx.EnvFile[0])
+		if filepath.IsAbs(envPath) {
+			path = envPath
+		} else {
+			path = filepath.Join(ctx.ProjectDir, envPath)
+		}
+	}
 	data, err := ctx.ReadSmallFile(path)
 	if err != nil {
 		return map[string]string{}

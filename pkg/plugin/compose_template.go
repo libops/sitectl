@@ -341,6 +341,15 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 				fmt.Fprintln(stderr, message)
 			}
 		}
+		persistMessages, err := ctx.PersistComposeUpPortEnv(envValues)
+		if err != nil {
+			return err
+		}
+		for _, message := range persistMessages {
+			if stderr != nil {
+				fmt.Fprintln(stderr, message)
+			}
+		}
 		localCmd.Env = config.AppendEnvOverrides(localCmd.Env, envValues)
 	}
 	return localCmd.Run()

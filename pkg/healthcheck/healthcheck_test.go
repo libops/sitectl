@@ -1,8 +1,12 @@
 package healthcheck
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/libops/sitectl/pkg/config"
 )
 
 func TestSolrCoreStatusDetailLoaded(t *testing.T) {
@@ -52,5 +56,17 @@ func TestTrimOutputCollapsesWhitespace(t *testing.T) {
 	got := trimOutput("{\n  \"status\":\"OK\"\n}")
 	if got != `{ "status":"OK" }` {
 		t.Fatalf("trimOutput() = %q", got)
+	}
+}
+
+func TestPublicURLFromEnvPrefersSiteURL(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte("DOMAIN=example.test\nHOST_INSECURE_PORT=8080\nSITE_URL=http://example.test:8080/\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(.env) error = %v", err)
+	}
+
+	got := PublicURLFromEnv(&config.Context{ProjectDir: projectDir, DockerHostType: config.ContextLocal}, "http", "localhost")
+	if got != "http://example.test:8080/" {
+		t.Fatalf("PublicURLFromEnv() = %q", got)
 	}
 }

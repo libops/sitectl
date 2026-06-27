@@ -186,6 +186,13 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 		for _, message := range messages {
 			fmt.Fprintln(cmd.ErrOrStderr(), message)
 		}
+		persistMessages, err := ctx.PersistComposeUpPortEnv(envValues)
+		if err != nil {
+			return err
+		}
+		for _, message := range persistMessages {
+			fmt.Fprintln(cmd.ErrOrStderr(), message)
+		}
 		c.Env = config.AppendEnvOverrides(os.Environ(), envValues)
 	}
 	_, err := ctx.RunCommandContext(cmd.Context(), c)
