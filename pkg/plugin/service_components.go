@@ -199,7 +199,7 @@ func (r serviceComponentRegistry) setCommand() *cobra.Command {
 	var setState string
 	var setDisposition string
 	var yolo bool
-	setFollowUps := map[string]*string{}
+	setFollowUps := map[string]*serviceFollowUpFlagValue{}
 	set := &cobra.Command{
 		Use:   "set <name> [disposition]",
 		Short: "Internal component set hook",
@@ -209,7 +209,8 @@ func (r serviceComponentRegistry) setCommand() *cobra.Command {
 			if len(args) > 1 {
 				value = args[1]
 			}
-			return r.set(cmd, args[0], value, setState, setDisposition, projectPath, yolo, collectServiceFollowUps(setFollowUps))
+			followUps := collectServiceFollowUps(setFollowUps)
+			return r.set(cmd, args[0], value, setState, setDisposition, projectPath, yolo, followUps)
 		},
 	}
 	// These flags and positionals intentionally mirror ComponentSetParams.
@@ -385,6 +386,10 @@ func (r serviceComponentRegistry) set(cmd *cobra.Command, name, argDisposition, 
 		return fmt.Errorf("component changes are local-only; context %q is %q", ctx.Name, ctx.DockerHostType)
 	}
 
+	if err := promptRequiredServiceFollowUps(cmd, def, disposition, yolo, followUps); err != nil {
+		return err
+	}
+
 	manager := corecomponent.NewManager(ctx)
 	spec := component.SpecForWithOptions(state, followUps)
 	switch state {
@@ -493,7 +498,14 @@ func normalizeComponentReportFormat(format string) string {
 	return format
 }
 
-func bindServiceFollowUpFlags(cmd *cobra.Command, defs []corecomponent.Definition, values map[string]*string) {
+type serviceFollowUpFlagValue struct {
+	name   string
+	multi  bool
+	single string
+	values []string
+}
+
+func bindServiceFollowUpFlags(cmd *cobra.Command, defs []corecomponent.Definition, values map[string]*serviceFollowUpFlagValue) {
 	if cmd == nil || values == nil {
 		return
 	}
@@ -511,24 +523,73 @@ func bindServiceFollowUpFlags(cmd *cobra.Command, defs []corecomponent.Definitio
 				continue
 			}
 			seen[flagName] = true
-			defaultValue := strings.TrimSpace(followUp.DefaultValue)
-			values[flagName] = &defaultValue
+			holder := &serviceFollowUpFlagValue{name: followUp.Name, multi: followUp.MultiValue}
+			if followUp.MultiValue {
+				holder.values = corecomponent.SplitFollowUpValues(followUp.DefaultValue)
+			} else {
+				holder.single = strings.TrimSpace(followUp.DefaultValue)
+			}
+			values[flagName] = holder
 			usage := strings.TrimSpace(followUp.FlagUsage)
 			if usage == "" {
 				usage = fmt.Sprintf("%s option", followUp.Name)
 			}
-			cmd.Flags().StringVar(values[flagName], flagName, defaultValue, usage)
+			if followUp.MultiValue {
+				cmd.Flags().StringArrayVar(&holder.values, flagName, append([]string{}, holder.values...), usage)
+			} else {
+				cmd.Flags().StringVar(&holder.single, flagName, holder.single, usage)
+			}
 		}
 	}
 }
 
-func collectServiceFollowUps(values map[string]*string) map[string]string {
+func collectServiceFollowUps(values map[string]*serviceFollowUpFlagValue) map[string]string {
 	out := map[string]string{}
-	for name, value := range values {
+	for fallbackName, value := range values {
 		if value == nil {
 			continue
 		}
-		out[name] = strings.TrimSpace(*value)
+		name := strings.TrimSpace(value.name)
+		if name == "" {
+			name = fallbackName
+		}
+		if value.multi {
+			out[name] = corecomponent.JoinFollowUpValues(value.values)
+			continue
+		}
+		out[name] = strings.TrimSpace(value.single)
 	}
 	return out
+}
+
+func promptRequiredServiceFollowUps(cmd *cobra.Command, def corecomponent.Definition, disposition corecomponent.Disposition, yolo bool, values map[string]string) error {
+	for _, spec := range def.FollowUpsForDisposition(disposition) {
+		if !spec.Required || corecomponent.FollowUpValuePresent(values[spec.Name]) {
+			continue
+		}
+		flagName := strings.TrimSpace(spec.FlagName)
+		if flagName == "" {
+			flagName = strings.TrimSpace(spec.Name)
+		}
+		if yolo {
+			if flagName != "" {
+				return fmt.Errorf("--%s is required when enabling component %q", flagName, def.Name)
+			}
+			return fmt.Errorf("%s is required when enabling component %q", spec.Name, def.Name)
+		}
+		value, err := corecomponent.PromptFollowUp(def.Name, spec, strings.TrimSpace(spec.DefaultValue), config.GetInput, nil)
+		if err != nil {
+			return err
+		}
+		if spec.MultiValue {
+			value = corecomponent.NormalizeFollowUpValue(value)
+		} else {
+			value = strings.TrimSpace(value)
+		}
+		if !corecomponent.FollowUpValuePresent(value) {
+			return fmt.Errorf("%s is required when enabling component %q", spec.Name, def.Name)
+		}
+		values[spec.Name] = value
+	}
+	return nil
 }

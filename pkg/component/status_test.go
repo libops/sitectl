@@ -115,6 +115,40 @@ func TestDetectComponentStatusWildcardAndReplaceRules(t *testing.T) {
 	}
 }
 
+func TestDetectComponentStatusContainsRules(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	compose := `services:
+  traefik:
+    command:
+      - --entrypoints.web.address=:80
+      - --entryPoints.web.forwardedHeaders.trustedIPs=10.0.0.0/8
+`
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatalf("WriteFile(compose) error = %v", err)
+	}
+
+	status := detectStatus(t, projectDir, Definition{
+		Name: "reverse-proxy",
+		On: DomainSpec{Compose: YAMLStateSpec{Rules: []YAMLRule{{
+			Files: []string{"docker-compose.yml"},
+			Op:    OpContains,
+			Path:  ".services.traefik.command",
+			Value: "forwardedHeaders.trustedIPs=",
+		}}}},
+		Off: DomainSpec{Compose: YAMLStateSpec{Rules: []YAMLRule{{
+			Files: []string{"docker-compose.yml"},
+			Op:    OpNotContains,
+			Path:  ".services.traefik.command",
+			Value: "forwardedHeaders.trustedIPs=",
+		}}}},
+	})
+	if status.State != DetectedState(StateOn) {
+		t.Fatalf("expected state on, got %q", status.State)
+	}
+}
+
 func TestDetectComponentStatusesSortsByName(t *testing.T) {
 	t.Parallel()
 

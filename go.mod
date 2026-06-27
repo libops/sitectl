@@ -29,10 +29,10 @@ require (
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
-	github.com/dlclark/regexp2/v2 v2.1.2 // indirect
+	github.com/dlclark/regexp2/v2 v2.2.2 // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/felixge/httpsnoop v1.0.4 // indirect
+	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
@@ -53,14 +53,14 @@ require (
 )
 
 require (
-	github.com/alecthomas/chroma/v2 v2.26.1 // indirect
+	github.com/alecthomas/chroma/v2 v2.27.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
-	github.com/charmbracelet/ultraviolet v0.0.0-20260601155805-6cf7526a1b3f // indirect
+	github.com/charmbracelet/ultraviolet v0.0.0-20260622092850-f39628c8a989 // indirect
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect
-	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260602025833-85a30b5e440a // indirect
-	github.com/charmbracelet/x/exp/slice v0.0.0-20260602025833-85a30b5e440a // indirect
+	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260622092256-25656177ba8e // indirect
+	github.com/charmbracelet/x/exp/slice v0.0.0-20260622092256-25656177ba8e // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
@@ -81,11 +81,11 @@ require (
 	github.com/muesli/roff v0.1.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/sahilm/fuzzy v0.1.2 // indirect
+	github.com/sahilm/fuzzy v0.1.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
-	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )

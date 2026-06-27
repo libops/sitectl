@@ -28,15 +28,11 @@ var imageSetCmd = &cobra.Command{
 		if strings.TrimSpace(ctx.ProjectDir) == "" {
 			return fmt.Errorf("context %q does not define a project directory", ctx.Name)
 		}
-		buildkitTag, err := cmd.Flags().GetString("buildkit-tag")
+		imageTags, err := cmd.Flags().GetStringArray("tag")
 		if err != nil {
 			return err
 		}
-		buildkitRepository, err := cmd.Flags().GetString("buildkit-repository")
-		if err != nil {
-			return err
-		}
-		imageRefs, err := cmd.Flags().GetStringArray("image-ref")
+		images, err := cmd.Flags().GetStringArray("image")
 		if err != nil {
 			return err
 		}
@@ -44,7 +40,7 @@ var imageSetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		overrides, err := plugin.ResolveComposeImageOverrides(ctx.Plugin, buildkitRepository, buildkitTag, imageRefs, buildArgs)
+		overrides, err := plugin.ResolveComposeImageOverrides(ctx.Plugin, imageTags, images, buildArgs)
 		if err != nil {
 			return err
 		}
@@ -60,9 +56,8 @@ var imageSetCmd = &cobra.Command{
 }
 
 func init() {
-	imageSetCmd.Flags().String("buildkit-tag", "", "Buildkit runtime tag to use as the template base image, such as nginx-1.30.2-php84.")
-	imageSetCmd.Flags().String("buildkit-repository", "libops", "Container repository for --buildkit-tag image refs.")
-	imageSetCmd.Flags().StringArray("image-ref", []string{}, "Override a Compose service image as SERVICE=IMAGE; may be passed more than once.")
+	imageSetCmd.Flags().StringArray("tag", []string{}, "Set a LibOps image tag for a known Compose service as SERVICE=TAG; may be passed more than once.")
+	imageSetCmd.Flags().StringArray("image", []string{}, "Override a Compose service image as SERVICE=IMAGE; may be passed more than once.")
 	imageSetCmd.Flags().StringArray("build-arg", []string{}, "Override a Compose service build arg as SERVICE.ARG=VALUE; may be passed more than once.")
 	imageCmd.AddCommand(imageSetCmd)
 	imageCmd.GroupID = "workflow"

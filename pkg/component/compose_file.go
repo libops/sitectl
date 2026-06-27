@@ -198,6 +198,25 @@ func (c *ComposeFile) RemoveServiceString(service, key, value string) error {
 	if value == "" {
 		return nil
 	}
+	return c.removeServiceStrings(service, key, func(candidate string) bool {
+		return strings.TrimSpace(candidate) == value
+	})
+}
+
+func (c *ComposeFile) RemoveServiceStringsByPrefix(service, key, prefix string) error {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return nil
+	}
+	return c.removeServiceStrings(service, key, func(candidate string) bool {
+		return strings.HasPrefix(strings.TrimSpace(candidate), prefix)
+	})
+}
+
+func (c *ComposeFile) removeServiceStrings(service, key string, remove func(string) bool) error {
+	if remove == nil {
+		return nil
+	}
 	serviceIdx, ok := c.findService(service)
 	if !ok {
 		return nil
@@ -213,7 +232,7 @@ func (c *ComposeFile) RemoveServiceString(service, key, value string) error {
 		filtered := make([]string, 0, end-keyIdx)
 		filtered = append(filtered, c.lines[keyIdx])
 		for _, line := range c.lines[keyIdx+1 : end] {
-			if strings.TrimSpace(line) == value {
+			if remove(strings.TrimSpace(line)) {
 				continue
 			}
 			filtered = append(filtered, line)
@@ -231,7 +250,7 @@ func (c *ComposeFile) RemoveServiceString(service, key, value string) error {
 		filtered = append(filtered, c.lines[keyIdx])
 		for _, line := range c.lines[keyIdx+1 : end] {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "- ") && strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")) == value {
+			if strings.HasPrefix(trimmed, "- ") && remove(strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))) {
 				continue
 			}
 			filtered = append(filtered, line)
@@ -245,7 +264,7 @@ func (c *ComposeFile) RemoveServiceString(service, key, value string) error {
 	}
 
 	prefix := key + ":"
-	if strings.HasPrefix(keyLine, prefix) && strings.TrimSpace(strings.TrimPrefix(keyLine, prefix)) == value {
+	if strings.HasPrefix(keyLine, prefix) && remove(strings.TrimSpace(strings.TrimPrefix(keyLine, prefix))) {
 		end := findBlockEnd(c.lines, keyIdx, 4)
 		c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
 	}

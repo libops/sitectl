@@ -74,7 +74,11 @@ func AddCreateFlags(cmd *cobra.Command, options ...CreateOption) {
 				continue
 			}
 			seenFollowUpFlags[flagName] = true
-			cmd.Flags().String(flagName, strings.TrimSpace(followUp.DefaultValue), createFollowUpUsage(option.Name, followUp))
+			if followUp.MultiValue {
+				cmd.Flags().StringArray(flagName, SplitFollowUpValues(followUp.DefaultValue), createFollowUpUsage(option.Name, followUp))
+			} else {
+				cmd.Flags().String(flagName, strings.TrimSpace(followUp.DefaultValue), createFollowUpUsage(option.Name, followUp))
+			}
 		}
 	}
 }
@@ -163,16 +167,28 @@ func PromptCreateFollowUps(cmd *cobra.Command, option CreateOption, decision *Re
 	for _, followUp := range followUpsForDisposition(option.FollowUps, decision.Disposition, decision.State) {
 		flagName := followUpFlagName(option.Name, followUp)
 		if flagName != "" && cmd != nil && cmd.Flags().Lookup(flagName) != nil && cmd.Flags().Changed(flagName) {
-			value, err := cmd.Flags().GetString(flagName)
-			if err != nil {
-				return fmt.Errorf("get %s flag: %w", flagName, err)
+			if followUp.MultiValue {
+				values, err := cmd.Flags().GetStringArray(flagName)
+				if err != nil {
+					return fmt.Errorf("get %s flag: %w", flagName, err)
+				}
+				decision.Options[followUp.Name] = JoinFollowUpValues(values)
+			} else {
+				value, err := cmd.Flags().GetString(flagName)
+				if err != nil {
+					return fmt.Errorf("get %s flag: %w", flagName, err)
+				}
+				decision.Options[followUp.Name] = strings.TrimSpace(value)
 			}
-			decision.Options[followUp.Name] = strings.TrimSpace(value)
 			continue
 		}
 		if !followUp.PromptOnCreate {
 			if defaultValue := strings.TrimSpace(followUp.DefaultValue); defaultValue != "" {
-				decision.Options[followUp.Name] = defaultValue
+				if followUp.MultiValue {
+					decision.Options[followUp.Name] = NormalizeFollowUpValue(defaultValue)
+				} else {
+					decision.Options[followUp.Name] = defaultValue
+				}
 			}
 			continue
 		}
@@ -181,7 +197,14 @@ func PromptCreateFollowUps(cmd *cobra.Command, option CreateOption, decision *Re
 		if err != nil {
 			return err
 		}
-		decision.Options[followUp.Name] = strings.TrimSpace(value)
+		if followUp.MultiValue {
+			decision.Options[followUp.Name] = NormalizeFollowUpValue(value)
+		} else {
+			decision.Options[followUp.Name] = strings.TrimSpace(value)
+		}
+		if followUp.Required && !FollowUpValuePresent(decision.Options[followUp.Name]) {
+			return fmt.Errorf("%s is required when enabling component %q", followUp.Name, option.Name)
+		}
 	}
 	return nil
 }

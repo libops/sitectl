@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
 
@@ -123,6 +124,16 @@ Examples:
 		cmdArgs = append(cmdArgs, filteredArgs...)
 		c := exec.Command("docker", cmdArgs...)
 		c.Dir = context.ProjectDir
+		if isComposeUpCommand(filteredArgs) {
+			envValues, messages, err := context.ComposeUpPortEnv()
+			if err != nil {
+				return err
+			}
+			for _, message := range messages {
+				fmt.Fprintln(cmd.ErrOrStderr(), message)
+			}
+			c.Env = config.AppendEnvOverrides(os.Environ(), envValues)
+		}
 		_, err = context.RunCommandContext(cmd.Context(), c)
 		if err != nil {
 			return err
@@ -130,6 +141,13 @@ Examples:
 
 		return nil
 	},
+}
+
+func isComposeUpCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	return args[0] == "up"
 }
 
 func init() {

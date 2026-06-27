@@ -167,3 +167,39 @@ func TestResolveCreateDecisionsPromptsForFollowUps(t *testing.T) {
 		t.Fatalf("expected public filesystem uri, got %q", decisions["fcrepo"].Options["isle-file-system-uri"])
 	}
 }
+
+func TestResolveCreateDecisionsUsesRepeatedMultiValueFollowUpFlags(t *testing.T) {
+	t.Parallel()
+
+	option := CreateOption{
+		Name:           "reverse-proxy",
+		Default:        StateOff,
+		PromptOnCreate: false,
+		FollowUps: []FollowUpSpec{{
+			Name:           "trusted-ip",
+			FlagName:       "trusted-ip",
+			MultiValue:     true,
+			PromptOnCreate: true,
+			AppliesTo:      StateOn,
+		}},
+	}
+	cmd := &cobra.Command{Use: "create"}
+	AddCreateFlags(cmd, option)
+	_ = cmd.Flags().Set("reverse-proxy", "enabled")
+	_ = cmd.Flags().Set("trusted-ip", "10.0.0.0/8")
+	_ = cmd.Flags().Set("trusted-ip", "203.0.113.4,2001:db8::/32")
+
+	decisions, err := ResolveCreateDecisions(cmd, func(question ...string) (string, error) {
+		t.Fatal("did not expect prompt")
+		return "", nil
+	}, option)
+	if err != nil {
+		t.Fatalf("ResolveCreateDecisions() error = %v", err)
+	}
+
+	got := decisions["reverse-proxy"].Options["trusted-ip"]
+	want := "10.0.0.0/8,203.0.113.4,2001:db8::/32"
+	if got != want {
+		t.Fatalf("trusted-ip option = %q, want %q", got, want)
+	}
+}

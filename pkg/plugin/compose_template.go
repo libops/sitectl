@@ -331,7 +331,40 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 	localCmd.Stdout = stdout
 	localCmd.Stderr = stderr
 	localCmd.Env = os.Environ()
+	if isComposeProjectUpCommand(command) {
+		envValues, messages, err := ctx.ComposeUpPortEnv()
+		if err != nil {
+			return err
+		}
+		for _, message := range messages {
+			if stderr != nil {
+				fmt.Fprintln(stderr, message)
+			}
+		}
+		localCmd.Env = config.AppendEnvOverrides(localCmd.Env, envValues)
+	}
 	return localCmd.Run()
+}
+
+func isComposeProjectUpCommand(command string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return false
+	}
+	if fields[0] == "make" {
+		for _, field := range fields[1:] {
+			if field == "up" {
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] == "docker" && fields[i+1] == "compose" && fields[i+2] == "up" {
+			return true
+		}
+	}
+	return false
 }
 
 func runRemoteShellCommandContext(runCtx context.Context, ctx *config.Context, stdout, stderr io.Writer, command string) (string, error) {

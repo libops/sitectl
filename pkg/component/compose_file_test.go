@@ -191,6 +191,46 @@ func TestComposeFileAppendRemoveServiceStringPreservesFoldedScalar(t *testing.T)
 	}
 }
 
+func TestComposeFileRemoveServiceStringsByPrefix(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "docker-compose.yml")
+	input := `services:
+  traefik:
+    command: >-
+      --entrypoints.web.address=:80
+      --entryPoints.web.forwardedHeaders.trustedIPs=10.0.0.0/8
+      --entryPoints.websecure.forwardedHeaders.trustedIPs=10.0.0.0/8
+`
+	if err := os.WriteFile(path, []byte(input), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	compose, err := LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile() error = %v", err)
+	}
+	if err := compose.RemoveServiceStringsByPrefix("traefik", "command", "--entryPoints.web.forwardedHeaders.trustedIPs="); err != nil {
+		t.Fatalf("RemoveServiceStringsByPrefix() error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	rendered := string(out)
+	if strings.Contains(rendered, "--entryPoints.web.forwardedHeaders.trustedIPs=") {
+		t.Fatalf("expected web trusted IP flag removed, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "--entryPoints.websecure.forwardedHeaders.trustedIPs=10.0.0.0/8") {
+		t.Fatalf("expected websecure trusted IP flag preserved, got:\n%s", rendered)
+	}
+}
+
 func TestComposeFileAppendRemoveServiceStringPreservesSequence(t *testing.T) {
 	t.Parallel()
 
