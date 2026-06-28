@@ -27,18 +27,18 @@ var deployCmd = &cobra.Command{
 The deploy sequence runs:
   1. Plugin pre-down hooks (if the context plugin registers a deploy runner)
   2. docker compose down
-  3. git fetch and git checkout <branch> (unless --skip-git is set)
+  3. git pull --ff-only for the current upstream branch (unless --skip-git is set)
   4. docker compose pull (unless --no-pull is set)
   5. docker compose up -d --remove-orphans
   6. Plugin post-up hooks (if the context plugin registers a deploy runner)
 
-The --branch flag overrides which branch is checked out during the git step.
-If omitted, the repository's current branch is updated via fetch without switching.
+The --branch flag checks out a branch before the git pull step.
+If omitted, sitectl updates the current branch when it has a git upstream.
 
 Examples:
-  sitectl deploy                         # Deploy current branch on active context
+  sitectl deploy                         # Deploy the current upstream branch
   sitectl deploy --branch main           # Switch to main and deploy
- sitectl deploy --skip-git              # Restart services without pulling git changes
+  sitectl deploy --skip-git              # Restart services without pulling git changes
   sitectl deploy --context prod          # Deploy on a specific context`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName, err := resolveContextName(cmd)
@@ -72,7 +72,7 @@ Examples:
 
 		// 3. Git update
 		if !deploySkipGit {
-			slog.Debug("running git update", "context", contextName, "branch", deployBranch)
+			slog.Debug("running git update", "context", contextName, "branch", strings.TrimSpace(deployBranch))
 			if err := runGitUpdate(cmd, ctx, deployBranch); err != nil {
 				return fmt.Errorf("git update failed: %w", err)
 			}
@@ -105,7 +105,7 @@ Examples:
 }
 
 func init() {
-	deployCmd.Flags().StringVar(&deployBranch, "branch", "", "Git branch to check out during the deploy (default: update current branch)")
+	deployCmd.Flags().StringVar(&deployBranch, "branch", "", "Git branch to check out during the deploy (default: current branch)")
 	deployCmd.Flags().BoolVar(&deployNoPull, "no-pull", false, "Skip docker compose pull before bringing services up")
 	deployCmd.Flags().BoolVar(&deploySkipGit, "skip-git", false, "Skip the git fetch/checkout step")
 	deployCmd.GroupID = "workflow"
@@ -192,34 +192,11 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 	return err
 }
 
-// runGitUpdate runs git fetch and optionally git checkout <branch> in the project dir.
+// runGitUpdate fast-forwards the checkout from its configured upstream branch.
 func runGitUpdate(cmd *cobra.Command, ctx config.Context, branch string) error {
-	fetchCmd := exec.Command("git", "fetch")
-	fetchCmd.Dir = ctx.ProjectDir
-	if _, err := ctx.RunCommandContext(cmd.Context(), fetchCmd); err != nil {
-		return fmt.Errorf("git fetch: %w", err)
-	}
-
-	if strings.TrimSpace(branch) == "" {
-		// No branch specified: pull the current branch.
-		pullCmd := exec.Command("git", "pull")
-		pullCmd.Dir = ctx.ProjectDir
-		if _, err := ctx.RunCommandContext(cmd.Context(), pullCmd); err != nil {
-			return fmt.Errorf("git pull: %w", err)
-		}
-		return nil
-	}
-
-	checkoutCmd := exec.Command("git", "checkout", strings.TrimSpace(branch)) // #nosec G204 -- branch is passed as a git argument without a shell.
-	checkoutCmd.Dir = ctx.ProjectDir
-	if _, err := ctx.RunCommandContext(cmd.Context(), checkoutCmd); err != nil {
-		return fmt.Errorf("git checkout %s: %w", branch, err)
-	}
-
-	pullCmd := exec.Command("git", "pull")
-	pullCmd.Dir = ctx.ProjectDir
-	if _, err := ctx.RunCommandContext(cmd.Context(), pullCmd); err != nil {
-		return fmt.Errorf("git pull: %w", err)
-	}
-	return nil
+	command := ctx.GitSyncShellCommand(branch)
+	syncCmd := exec.Command("bash", "-lc", command) // #nosec G204 -- command text is assembled from context values using shell quoting.
+	syncCmd.Dir = ctx.ProjectDir
+	_, err := ctx.RunCommandContext(cmd.Context(), syncCmd)
+	return err
 }

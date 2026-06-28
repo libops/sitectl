@@ -465,7 +465,11 @@ func AddStandardComposeCommands(s *SDK, opts StandardComposeCommandOptions) {
 	}
 	rolloutCommands := opts.RolloutCommands
 	if len(rolloutCommands) == 0 {
-		rolloutCommands = []string{helpers.FirstNonEmpty(strings.TrimSpace(opts.RolloutCommand), "make rollout")}
+		if command := strings.TrimSpace(opts.RolloutCommand); command != "" {
+			rolloutCommands = []string{command}
+		} else {
+			rolloutCommands = DefaultComposeRolloutCommands()
+		}
 	}
 
 	if len(opts.BuildCommands) > 0 {
@@ -526,9 +530,9 @@ func AddStandardComposeCommands(s *SDK, opts StandardComposeCommandOptions) {
 	})
 	s.AddCommand(&cobra.Command{
 		Use:   "rollout",
-		Short: fmt.Sprintf("Run the template rollout script for the active %s stack", displayName),
+		Short: fmt.Sprintf("Roll out the active %s stack", displayName),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return s.RunActiveComposeProjectCommandList(cmd, rolloutCommands)
+			return s.RunActiveComposeProjectRollout(cmd, rolloutCommands)
 		},
 	})
 }
@@ -548,6 +552,31 @@ func (s *SDK) RunActiveComposeProjectCommandList(cmd *cobra.Command, commands []
 	}
 	if strings.TrimSpace(ctx.ProjectDir) == "" {
 		return fmt.Errorf("active context does not define a project directory")
+	}
+	return s.RunComposeProjectCommandList(cmd, ctx, commands)
+}
+
+// DefaultComposeRolloutCommands returns the generic Compose rollout sequence.
+func DefaultComposeRolloutCommands() []string {
+	return []string{
+		"docker compose pull --ignore-buildable --quiet || docker compose pull --ignore-buildable || true",
+		"docker compose build --pull",
+		"docker compose up --remove-orphans --wait --pull missing --quiet-pull -d",
+	}
+}
+
+// RunActiveComposeProjectRollout syncs the active project from the checkout's
+// upstream branch before running rollout commands.
+func (s *SDK) RunActiveComposeProjectRollout(cmd *cobra.Command, commands []string) error {
+	ctx, err := s.ContextFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(ctx.ProjectDir) == "" {
+		return fmt.Errorf("active context does not define a project directory")
+	}
+	if syncCommand := ctx.GitSyncShellCommand(""); strings.TrimSpace(syncCommand) != "" {
+		commands = append([]string{syncCommand}, commands...)
 	}
 	return s.RunComposeProjectCommandList(cmd, ctx, commands)
 }
