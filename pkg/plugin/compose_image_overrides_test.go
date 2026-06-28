@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -117,5 +119,43 @@ func TestResolveComposeImageOverridesTagRequiresKnownService(t *testing.T) {
 	want := "--image SERVICE=IMAGE"
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %q, want guidance containing %q", err.Error(), want)
+	}
+}
+
+func TestClearComposeImageOverridesPreservesUnrelatedOverrides(t *testing.T) {
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, ComposeImageOverrideFile)
+	if err := os.WriteFile(path, []byte(`services:
+  wp:
+    image: ghcr.io/example/wp:test
+    build:
+      args:
+        BASE_IMAGE: libops/wp:test
+    volumes:
+      - ./web:/var/www/html
+  traefik:
+    ports:
+      - "8080:80"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if err := ClearComposeImageOverrides(projectDir, []string{"wp"}); err != nil {
+		t.Fatalf("ClearComposeImageOverrides() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	got := string(data)
+	for _, unexpected := range []string{"image:", "BASE_IMAGE", "args:"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("expected %q removed, got:\n%s", unexpected, got)
+		}
+	}
+	for _, expected := range []string{"./web:/var/www/html", "8080:80"} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("expected %q preserved, got:\n%s", expected, got)
+		}
 	}
 }

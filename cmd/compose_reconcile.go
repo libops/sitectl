@@ -19,7 +19,10 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
-const composeReconcileCacheVersion = 2
+const (
+	composeReconcileCacheVersion = 2
+	composeReconcileCacheTTL     = 7 * 24 * time.Hour
+)
 
 type composeReconcileCache struct {
 	Version int                                   `json:"version"`
@@ -43,6 +46,11 @@ type composeReconcileDecision struct {
 	Reason   string
 	Status   composeReconcileStatus
 	Spec     plugin.CreateSpec
+}
+
+type composeReconcileOptions struct {
+	Force     bool
+	ResetInit bool
 }
 
 type composeReconcileStatus struct {
@@ -112,11 +120,47 @@ var (
 	composeReconcileRun           = runComposeReconcileCommands
 	composeReconcileHit           = composeReconcileChecked
 	composeReconcileMark          = markComposeReconcileChecked
+	composeReconcileClear         = clearComposeReconcileCacheEntry
+	composeReconcileReset         = resetComposeReconcileInitState
 	composeReconcileImageMissing  = dockerImageMissing
 	composeReconcileVolumeMissing = dockerVolumeMissing
+	composeReconcileVolumeRemove  = dockerVolumeRemove
+	composeReconcileRemoveFile    = os.Remove
 	composeReconcileReadConfig    = readComposeConfigDocument
 	composeReconcileUserID        = currentComposeReconcileUserID
 )
+
+var composeReconcileCmd = &cobra.Command{
+	Use:   "reconcile",
+	Short: "Run plugin Docker Compose init/build/up reconciliation",
+	Long: `Run plugin Docker Compose init/build/up reconciliation.
+
+This is the same lifecycle repair path sitectl runs automatically before
+'sitectl compose up' for plugin-managed local Compose projects. Use --force to
+rerun build/up even when the project is cached as current. Use --reset-init to
+remove plugin-declared init artifacts and init volumes before reconciling.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		force, err := cmd.Flags().GetBool("force")
+		if err != nil {
+			return err
+		}
+		resetInit, err := cmd.Flags().GetBool("reset-init")
+		if err != nil {
+			return err
+		}
+		return runComposeReconcileCommand(cmd, composeReconcileOptions{
+			Force:     force,
+			ResetInit: resetInit,
+		})
+	},
+}
+
+func init() {
+	composeReconcileCmd.Flags().Bool("force", false, "Ignore the reconcile cache and rerun build/up.")
+	composeReconcileCmd.Flags().Bool("reset-init", false, "Remove plugin-declared init artifacts and init volumes before reconciling.")
+	composeCmd.AddCommand(composeReconcileCmd)
+}
 
 func (s composeReconcileStatus) needsInit() bool {
 	return s.conditionFalse(conditionInitialized)
@@ -181,25 +225,108 @@ func maybeRunComposeReconcile(cmd *cobra.Command, ctx *config.Context) (bool, er
 	return true, nil
 }
 
+func runComposeReconcileCommand(cmd *cobra.Command, opts composeReconcileOptions) error {
+	ctx, err := resolveCurrentContext(cmd)
+	if err != nil {
+		return err
+	}
+	if ctx.DockerHostType != config.ContextLocal {
+		return fmt.Errorf("compose reconcile currently requires a local context")
+	}
+	if strings.TrimSpace(ctx.Plugin) == "" || strings.TrimSpace(ctx.Plugin) == "core" {
+		return fmt.Errorf("context %q is not managed by a plugin", ctx.Name)
+	}
+	if strings.TrimSpace(ctx.ProjectDir) == "" {
+		return fmt.Errorf("context %q does not define a project directory", ctx.Name)
+	}
+
+	spec, ok, err := composeReconcileSpec(strings.TrimSpace(ctx.Plugin))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("plugin %q does not define a create lifecycle", ctx.Plugin)
+	}
+
+	if opts.ResetInit {
+		removed, err := composeReconcileReset(ctx, spec)
+		if err != nil {
+			return err
+		}
+		for _, name := range removed {
+			fmt.Fprintf(cmd.OutOrStdout(), "Removed %s\n", name)
+		}
+		opts.Force = true
+	}
+	if opts.Force {
+		if err := composeReconcileClear(ctx, spec); err != nil {
+			return err
+		}
+	}
+
+	decision, err := composeReconcileDecisionForContextWithOptions(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if !decision.Needed {
+		fmt.Fprintln(cmd.OutOrStdout(), "Compose reconcile is current")
+		return nil
+	}
+
+	fmt.Fprintf(cmd.ErrOrStderr(), "sitectl: running reconcile for %s (%s)\n", ctx.Plugin, decision.Reason)
+	if err := composeReconcileRun(cmd, ctx, decision); err != nil {
+		return err
+	}
+	if err := composeReconcileMark(ctx, decision.Status, decision.Spec); err != nil {
+		return err
+	}
+	return nil
+}
+
 func composeReconcileDecisionForContext(ctx *config.Context) (composeReconcileDecision, error) {
+	return composeReconcileDecisionForContextWithOptions(ctx, composeReconcileOptions{})
+}
+
+func composeReconcileDecisionForContextWithOptions(ctx *config.Context, opts composeReconcileOptions) (composeReconcileDecision, error) {
 	spec, ok, err := composeReconcileSpec(strings.TrimSpace(ctx.Plugin))
 	if err != nil || !ok {
 		return composeReconcileDecision{}, err
 	}
 
-	cached, err := composeReconcileHit(ctx, spec)
-	if err != nil {
-		return composeReconcileDecision{}, err
-	}
-	if cached {
-		return composeReconcileDecision{Spec: spec}, nil
+	if !opts.Force {
+		cached, err := composeReconcileHit(ctx, spec)
+		if err != nil {
+			return composeReconcileDecision{}, err
+		}
+		if cached {
+			return composeReconcileDecision{Spec: spec}, nil
+		}
 	}
 
 	status, err := composeReconcileNeed(ctx, spec)
 	if err != nil {
 		return composeReconcileDecision{}, err
 	}
-	if !status.needsInit() && !status.needsBuild() {
+	runInit := status.needsInit()
+	runBuild := status.needsBuild() || (runInit && len(spec.DockerComposeBuild) > 0)
+	if opts.Force {
+		runBuild = runBuild || len(spec.DockerComposeBuild) > 0
+		if runInit || runBuild || len(spec.DockerComposeUp) > 0 {
+			reason := status.summary()
+			if reason == "conditions satisfied" {
+				reason = "forced"
+			}
+			return composeReconcileDecision{
+				Needed:   true,
+				RunInit:  runInit,
+				RunBuild: runBuild,
+				Reason:   reason,
+				Status:   status,
+				Spec:     spec,
+			}, nil
+		}
+	}
+	if !runInit && !runBuild {
 		if err := composeReconcileMark(ctx, status, spec); err != nil {
 			return composeReconcileDecision{}, err
 		}
@@ -207,8 +334,8 @@ func composeReconcileDecisionForContext(ctx *config.Context) (composeReconcileDe
 	}
 	return composeReconcileDecision{
 		Needed:   true,
-		RunInit:  status.needsInit(),
-		RunBuild: status.needsBuild(),
+		RunInit:  runInit,
+		RunBuild: runBuild,
 		Reason:   status.summary(),
 		Status:   status,
 		Spec:     spec,
@@ -402,12 +529,7 @@ func inspectComposeConfigReconcileNeed(ctx *config.Context, spec plugin.CreateSp
 
 func readComposeConfigDocument(ctx *config.Context) (composeConfigDocument, error) {
 	args := []string{"compose"}
-	for _, file := range ctx.ComposeFile {
-		args = append(args, "-f", file)
-	}
-	for _, env := range ctx.EnvFile {
-		args = append(args, "--env-file", env)
-	}
+	args = append(args, ctx.DockerComposeGlobalArgs()...)
 	args = append(args, "config", "--format", "json")
 
 	command := exec.Command("docker", args...) // #nosec G204 -- fixed docker compose command with context-owned compose/env file arguments.
@@ -492,6 +614,69 @@ func dockerVolumeMissing(volume string) bool {
 	return command.Run() != nil
 }
 
+func dockerVolumeRemove(volume string) error {
+	volume = strings.TrimSpace(volume)
+	if volume == "" || composeReconcileVolumeMissing(volume) {
+		return nil
+	}
+	command := exec.Command("docker", "volume", "rm", volume) // #nosec G204 -- volume name comes from docker compose config.
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("remove volume %s: %w: %s", volume, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+func resetComposeReconcileInitState(ctx *config.Context, spec plugin.CreateSpec) ([]string, error) {
+	removed := []string{}
+	for _, artifact := range spec.InitArtifacts {
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			continue
+		}
+		fullPath := composeProjectPath(ctx, path)
+		info, err := os.Lstat(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return removed, fmt.Errorf("inspect %s: %w", path, err)
+		}
+		if info.IsDir() {
+			return removed, fmt.Errorf("refusing to remove init artifact directory %s", path)
+		}
+		if err := composeReconcileRemoveFile(fullPath); err != nil && !os.IsNotExist(err) {
+			return removed, fmt.Errorf("remove %s: %w", path, err)
+		}
+		removed = append(removed, "file "+path)
+	}
+
+	if len(spec.InitVolumes) == 0 {
+		return removed, nil
+	}
+	composeConfig, err := composeReconcileReadConfig(ctx)
+	if err != nil {
+		return removed, fmt.Errorf("inspect compose volumes: %w", err)
+	}
+	configuredVolumes := composeConfiguredVolumeNames(ctx, composeConfig)
+	for _, volume := range spec.InitVolumes {
+		name := strings.TrimSpace(volume.Name)
+		if name == "" {
+			continue
+		}
+		dockerVolume := configuredVolumes[name]
+		if strings.TrimSpace(dockerVolume) == "" {
+			dockerVolume = name
+		}
+		if err := composeReconcileVolumeRemove(dockerVolume); err != nil {
+			return removed, err
+		}
+		removed = append(removed, "volume "+dockerVolume)
+	}
+	return removed, nil
+}
+
 func hostUIDArtifactNeedsInit(ctx *config.Context, artifact plugin.InitArtifact) (bool, string) {
 	userID := strings.TrimSpace(composeReconcileUserID())
 	if userID == "" || userID == "unknown" {
@@ -570,6 +755,7 @@ func runComposeReconcileCommands(cmd *cobra.Command, ctx *config.Context, decisi
 		if commandText == "" {
 			continue
 		}
+		commandText = ctx.DockerComposeShellCommand(commandText)
 		fmt.Fprintf(cmd.OutOrStdout(), "Running %s\n", commandText)
 		command := exec.CommandContext(cmd.Context(), "bash", "-lc", commandText) // #nosec G204 -- commands come from trusted plugin create metadata.
 		command.Dir = ctx.ProjectDir
@@ -593,8 +779,16 @@ func composeReconcileChecked(ctx *config.Context, spec plugin.CreateSpec) (bool,
 	if err != nil {
 		return false, err
 	}
-	_, ok := cache.Entries[key]
-	return ok, nil
+	entry, ok := cache.Entries[key]
+	if !ok {
+		return false, nil
+	}
+	if entry.CheckedAt.IsZero() || composeReconcileNow().Sub(entry.CheckedAt) > composeReconcileCacheTTL {
+		delete(cache.Entries, key)
+		_ = saveComposeReconcileCache(cache)
+		return false, nil
+	}
+	return true, nil
 }
 
 func markComposeReconcileChecked(ctx *config.Context, status composeReconcileStatus, spec plugin.CreateSpec) error {
@@ -616,6 +810,22 @@ func markComposeReconcileChecked(ctx *config.Context, status composeReconcileSta
 		Conditions:         append([]composeReconcileCondition{}, status.Conditions...),
 		CheckedAt:          composeReconcileNow().UTC(),
 	}
+	return saveComposeReconcileCache(cache)
+}
+
+func clearComposeReconcileCacheEntry(ctx *config.Context, spec plugin.CreateSpec) error {
+	cache, err := loadComposeReconcileCache()
+	if err != nil {
+		return err
+	}
+	key, err := composeReconcileCacheKey(ctx, spec)
+	if err != nil {
+		return err
+	}
+	if _, ok := cache.Entries[key]; !ok {
+		return nil
+	}
+	delete(cache.Entries, key)
 	return saveComposeReconcileCache(cache)
 }
 

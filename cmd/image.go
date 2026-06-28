@@ -55,11 +55,34 @@ var imageSetCmd = &cobra.Command{
 	},
 }
 
+var imageClearCmd = &cobra.Command{
+	Use:   "clear [SERVICE...]",
+	Short: "Remove Compose image and build-arg overrides",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, err := resolveCurrentContext(cmd)
+		if err != nil {
+			return err
+		}
+		if ctx.DockerHostType != config.ContextLocal {
+			return fmt.Errorf("image override updates currently require a local context")
+		}
+		if strings.TrimSpace(ctx.ProjectDir) == "" {
+			return fmt.Errorf("context %q does not define a project directory", ctx.Name)
+		}
+		if err := plugin.ClearComposeImageOverrides(ctx.ProjectDir, args); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Updated %s\n", plugin.ComposeImageOverrideFile)
+		return nil
+	},
+}
+
 func init() {
 	imageSetCmd.Flags().StringArray("tag", []string{}, "Set a LibOps image tag for a known Compose service as SERVICE=TAG; may be passed more than once.")
 	imageSetCmd.Flags().StringArray("image", []string{}, "Override a Compose service image as SERVICE=IMAGE; may be passed more than once.")
 	imageSetCmd.Flags().StringArray("build-arg", []string{}, "Override a Compose service build arg as SERVICE.ARG=VALUE; may be passed more than once.")
 	imageCmd.AddCommand(imageSetCmd)
+	imageCmd.AddCommand(imageClearCmd)
 	imageCmd.GroupID = "workflow"
 	RootCmd.AddCommand(imageCmd)
 }

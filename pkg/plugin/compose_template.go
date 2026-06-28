@@ -329,6 +329,7 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 		_, err := runRemoteShellCommandContext(runCtx, ctx, stdout, stderr, remoteCommand)
 		return err
 	}
+	command = ctx.DockerComposeShellCommand(command)
 	localCmd := exec.CommandContext(runCtx, "bash", "-lc", command) // #nosec G204 -- command text is assembled from template-owned command lists and shell-quoted inputs.
 	localCmd.Dir = projectDir
 	localCmd.Stdout = stdout
