@@ -335,20 +335,11 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 	localCmd.Stderr = stderr
 	localCmd.Env = os.Environ()
 	if isComposeProjectUpCommand(command) {
-		envValues, messages, err := ctx.ComposeUpPortEnv()
+		envValues, messages, err := ctx.PrepareComposeUpPortOverride()
 		if err != nil {
 			return err
 		}
 		for _, message := range messages {
-			if stderr != nil {
-				fmt.Fprintln(stderr, message)
-			}
-		}
-		persistMessages, err := ctx.PersistComposeUpPortEnv(envValues)
-		if err != nil {
-			return err
-		}
-		for _, message := range persistMessages {
 			if stderr != nil {
 				fmt.Fprintln(stderr, message)
 			}

@@ -62,7 +62,7 @@ func traefikIngressStatusCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			scheme := firstNonEmptyString(env["URI_SCHEME"], ternaryString(env["TRAEFIK_TLS_ENABLED"] == "true", "https", "http"))
+			scheme := firstNonEmptyString(env["URI_SCHEME"], ctx.ComposePublicScheme("http"))
 			provider := firstNonEmptyString(env["TLS_PROVIDER"], "self-managed")
 			bot := firstNonEmptyString(env["BOT_MITIGATION"], env["TRAEFIK_BOT_MITIGATION"], "off")
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "scheme=%s tls_provider=%s bot_mitigation=%s env=%s\n", scheme, provider, bot, envPath)
@@ -175,9 +175,8 @@ func applyTraefikTLSMode(cmd *cobra.Command, ctx *config.Context, mode string, o
 		provider = traefikTLSLetsEncrypt
 	}
 	values := map[string]string{
-		"URI_SCHEME":          ternaryString(enableTLS, "https", "http"),
-		"TLS_PROVIDER":        provider,
-		"TRAEFIK_TLS_ENABLED": ternaryString(enableTLS, "true", "false"),
+		"URI_SCHEME":   ternaryString(enableTLS, "https", "http"),
+		"TLS_PROVIDER": provider,
 	}
 	if mode == traefikTLSLetsEncrypt {
 		if strings.TrimSpace(opts.email) != "" {

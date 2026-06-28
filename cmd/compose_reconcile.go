@@ -460,18 +460,11 @@ func runComposeReconcileCommands(cmd *cobra.Command, ctx *config.Context, decisi
 		return nil
 	}
 
-	envValues, messages, err := ctx.ComposeUpPortEnv()
+	envValues, messages, err := ctx.PrepareComposeUpPortOverride()
 	if err != nil {
 		return err
 	}
 	for _, message := range messages {
-		fmt.Fprintln(cmd.ErrOrStderr(), message)
-	}
-	persistMessages, err := ctx.PersistComposeUpPortEnv(envValues)
-	if err != nil {
-		return err
-	}
-	for _, message := range persistMessages {
 		fmt.Fprintln(cmd.ErrOrStderr(), message)
 	}
 	env := config.AppendEnvOverrides(os.Environ(), envValues)

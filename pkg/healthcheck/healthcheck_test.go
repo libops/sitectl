@@ -61,7 +61,7 @@ func TestTrimOutputCollapsesWhitespace(t *testing.T) {
 
 func TestPublicURLFromEnvPrefersSiteURL(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte("DOMAIN=example.test\nHOST_INSECURE_PORT=8080\nSITE_URL=http://example.test:8080/\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte("DOMAIN=example.test\nSITE_URL=http://example.test:8080/\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(.env) error = %v", err)
 	}
 
