@@ -6,11 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/libops/sitectl/pkg/config"
 	"github.com/spf13/cobra"
 	yaml "gopkg.in/yaml.v3"
 )
 
-const ComposeImageOverrideFile = "docker-compose.override.yaml"
+const ComposeImageOverrideFile = config.LocalDevComposeOverrideName
 
 type ComposeImageOverrides struct {
 	Images    map[string]string

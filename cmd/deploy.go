@@ -179,7 +179,7 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 	c := exec.Command("docker", cmdArgs...)
 	c.Dir = ctx.ProjectDir
 	if len(args) > 0 && args[0] == "up" {
-		envValues, messages, err := ctx.ComposeUpPortEnv()
+		envValues, messages, err := ctx.PrepareComposeUpPortOverride()
 		if err != nil {
 			return err
 		}

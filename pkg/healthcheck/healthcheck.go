@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -180,22 +181,28 @@ func CheckHTTP(ctx context.Context, name, targetURL string) sitevalidate.Result 
 	return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK, Detail: resp.Status}
 }
 
-// PublicURLFromEnv builds a public app URL from .env values in the context
-// project directory. It understands DOMAIN, URI_SCHEME, HOST_INSECURE_PORT,
-// HOST_SECURE_PORT, and the common TRAEFIK_TLS_ENABLED flag.
+// PublicURLFromEnv builds a public app URL from .env values and the context's
+// Compose port bindings. SITE_URL wins when explicitly configured. Otherwise
+// target port 443 implies https and target port 80 implies http.
 func PublicURLFromEnv(ctx *config.Context, defaultScheme, defaultDomain string) string {
 	env := ProjectEnv(ctx)
-	scheme := firstNonEmpty(env["URI_SCHEME"], defaultScheme, "http")
-	if strings.EqualFold(env["TRAEFIK_TLS_ENABLED"], "true") && strings.TrimSpace(env["URI_SCHEME"]) == "" {
-		scheme = "https"
+	if siteURL := strings.TrimSpace(env["SITE_URL"]); siteURL != "" {
+		return siteURL
+	}
+	scheme := firstNonEmpty(defaultScheme, "http")
+	if ctx != nil {
+		scheme = ctx.ComposePublicScheme(scheme)
 	}
 	domain := firstNonEmpty(env["DOMAIN"], defaultDomain, "localhost")
 	port := ""
-	switch scheme {
-	case "https":
-		port = env["HOST_SECURE_PORT"]
-	default:
-		port = env["HOST_INSECURE_PORT"]
+	if ctx != nil {
+		target := 80
+		if scheme == "https" {
+			target = 443
+		}
+		if hostPort, ok := ctx.ComposePublishedHostPort(target); ok && !isDefaultPort(scheme, strconv.Itoa(hostPort)) {
+			port = strconv.Itoa(hostPort)
+		}
 	}
 	host := domain
 	if port != "" && !isDefaultPort(scheme, port) && !strings.Contains(domain, ":") {
@@ -211,6 +218,14 @@ func ProjectEnv(ctx *config.Context) map[string]string {
 		return map[string]string{}
 	}
 	path := filepath.Join(ctx.ProjectDir, ".env")
+	if len(ctx.EnvFile) > 0 && strings.TrimSpace(ctx.EnvFile[0]) != "" {
+		envPath := strings.TrimSpace(ctx.EnvFile[0])
+		if filepath.IsAbs(envPath) {
+			path = envPath
+		} else {
+			path = filepath.Join(ctx.ProjectDir, envPath)
+		}
+	}
 	data, err := ctx.ReadSmallFile(path)
 	if err != nil {
 		return map[string]string{}

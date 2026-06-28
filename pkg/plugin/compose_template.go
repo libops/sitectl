@@ -204,6 +204,9 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 		}
 	}
 	if !req.SetupOnly {
+		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeBuild); err != nil {
+			return err
+		}
 		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeUp); err != nil {
 			return err
 		}
@@ -332,7 +335,7 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 	localCmd.Stderr = stderr
 	localCmd.Env = os.Environ()
 	if isComposeProjectUpCommand(command) {
-		envValues, messages, err := ctx.ComposeUpPortEnv()
+		envValues, messages, err := ctx.PrepareComposeUpPortOverride()
 		if err != nil {
 			return err
 		}

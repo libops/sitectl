@@ -376,6 +376,9 @@ func cloneCreateSpecs(values []CreateSpec) []CreateSpec {
 		out[i] = value
 		out[i].DockerComposeBuild = append([]string{}, value.DockerComposeBuild...)
 		out[i].DockerComposeInit = append([]string{}, value.DockerComposeInit...)
+		out[i].InitArtifacts = append([]InitArtifact{}, value.InitArtifacts...)
+		out[i].InitVolumes = append([]InitVolume{}, value.InitVolumes...)
+		out[i].Images = append([]ComposeImageSpec{}, value.Images...)
 		out[i].DockerComposeUp = append([]string{}, value.DockerComposeUp...)
 		out[i].DockerComposeDown = append([]string{}, value.DockerComposeDown...)
 		out[i].DockerComposeRollout = append([]string{}, value.DockerComposeRollout...)

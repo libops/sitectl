@@ -24,20 +24,59 @@ const (
 )
 
 type CreateSpec struct {
-	Name                 string   `json:"name" yaml:"name"`
-	Plugin               string   `json:"plugin,omitempty" yaml:"plugin,omitempty"`
-	Description          string   `json:"description,omitempty" yaml:"description,omitempty"`
-	Default              bool     `json:"default,omitempty" yaml:"default,omitempty"`
-	MinCPUCores          float64  `json:"min_cpu_cores,omitempty" yaml:"min_cpu_cores,omitempty"`
-	MinMemory            string   `json:"min_memory,omitempty" yaml:"min_memory,omitempty"`
-	MinDiskSpace         string   `json:"min_disk_space,omitempty" yaml:"min_disk_space,omitempty"`
-	DockerComposeRepo    string   `json:"docker_compose_repo,omitempty" yaml:"docker_compose_repo,omitempty"`
-	DockerComposeBranch  string   `json:"docker_compose_branch,omitempty" yaml:"docker_compose_branch,omitempty"`
-	DockerComposeBuild   []string `json:"docker_compose_build,omitempty" yaml:"docker_compose_build,omitempty"`
-	DockerComposeInit    []string `json:"docker_compose_init,omitempty" yaml:"docker_compose_init,omitempty"`
-	DockerComposeUp      []string `json:"docker_compose_up,omitempty" yaml:"docker_compose_up,omitempty"`
-	DockerComposeDown    []string `json:"docker_compose_down,omitempty" yaml:"docker_compose_down,omitempty"`
-	DockerComposeRollout []string `json:"docker_compose_rollout,omitempty" yaml:"docker_compose_rollout,omitempty"`
+	Name                 string             `json:"name" yaml:"name"`
+	Plugin               string             `json:"plugin,omitempty" yaml:"plugin,omitempty"`
+	Description          string             `json:"description,omitempty" yaml:"description,omitempty"`
+	Default              bool               `json:"default,omitempty" yaml:"default,omitempty"`
+	MinCPUCores          float64            `json:"min_cpu_cores,omitempty" yaml:"min_cpu_cores,omitempty"`
+	MinMemory            string             `json:"min_memory,omitempty" yaml:"min_memory,omitempty"`
+	MinDiskSpace         string             `json:"min_disk_space,omitempty" yaml:"min_disk_space,omitempty"`
+	DockerComposeRepo    string             `json:"docker_compose_repo,omitempty" yaml:"docker_compose_repo,omitempty"`
+	DockerComposeBranch  string             `json:"docker_compose_branch,omitempty" yaml:"docker_compose_branch,omitempty"`
+	DockerComposeBuild   []string           `json:"docker_compose_build,omitempty" yaml:"docker_compose_build,omitempty"`
+	DockerComposeInit    []string           `json:"docker_compose_init,omitempty" yaml:"docker_compose_init,omitempty"`
+	InitArtifacts        []InitArtifact     `json:"init_artifacts,omitempty" yaml:"init_artifacts,omitempty"`
+	InitVolumes          []InitVolume       `json:"init_volumes,omitempty" yaml:"init_volumes,omitempty"`
+	Images               []ComposeImageSpec `json:"images,omitempty" yaml:"images,omitempty"`
+	DockerComposeUp      []string           `json:"docker_compose_up,omitempty" yaml:"docker_compose_up,omitempty"`
+	DockerComposeDown    []string           `json:"docker_compose_down,omitempty" yaml:"docker_compose_down,omitempty"`
+	DockerComposeRollout []string           `json:"docker_compose_rollout,omitempty" yaml:"docker_compose_rollout,omitempty"`
+}
+
+type InitArtifact struct {
+	Name      string `json:"name,omitempty" yaml:"name,omitempty"`
+	Path      string `json:"path" yaml:"path"`
+	ValueFrom string `json:"value_from,omitempty" yaml:"value_from,omitempty"`
+}
+
+type InitVolume struct {
+	Name string `json:"name" yaml:"name"`
+}
+
+const InitArtifactValueFromHostUID = "HostUID"
+
+type ImagePullPolicy string
+
+const (
+	ImagePullPolicyAlways       ImagePullPolicy = "Always"
+	ImagePullPolicyNever        ImagePullPolicy = "Never"
+	ImagePullPolicyIfNotPresent ImagePullPolicy = "IfNotPresent"
+)
+
+type BuildPolicy string
+
+const (
+	BuildPolicyAlways       BuildPolicy = "Always"
+	BuildPolicyNever        BuildPolicy = "Never"
+	BuildPolicyIfNotPresent BuildPolicy = "IfNotPresent"
+)
+
+type ComposeImageSpec struct {
+	Name            string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Service         string          `json:"service" yaml:"service"`
+	Image           string          `json:"image" yaml:"image"`
+	ImagePullPolicy ImagePullPolicy `json:"image_pull_policy,omitempty" yaml:"image_pull_policy,omitempty"`
+	BuildPolicy     BuildPolicy     `json:"build_policy,omitempty" yaml:"build_policy,omitempty"`
 }
 
 type RegisteredCreate struct {
@@ -494,6 +533,9 @@ func normalizeCreateSpec(spec CreateSpec) CreateSpec {
 	spec.MinDiskSpace = strings.TrimSpace(spec.MinDiskSpace)
 	spec.DockerComposeRepo = strings.TrimSpace(spec.DockerComposeRepo)
 	spec.DockerComposeBranch = strings.TrimSpace(spec.DockerComposeBranch)
+	spec.InitArtifacts = normalizeInitArtifacts(spec.InitArtifacts)
+	spec.InitVolumes = normalizeInitVolumes(spec.InitVolumes)
+	spec.Images = normalizeComposeImageSpecs(spec.Images)
 	if spec.DockerComposeBranch == "" && spec.DockerComposeRepo != "" {
 		spec.DockerComposeBranch = "main"
 	}
@@ -504,6 +546,58 @@ func normalizeCreateSpec(spec CreateSpec) CreateSpec {
 		spec.DockerComposeDown = []string{"docker compose down"}
 	}
 	return spec
+}
+
+func normalizeInitArtifacts(values []InitArtifact) []InitArtifact {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]InitArtifact, 0, len(values))
+	for _, value := range values {
+		value.Name = strings.TrimSpace(value.Name)
+		value.Path = strings.TrimSpace(value.Path)
+		value.ValueFrom = strings.TrimSpace(value.ValueFrom)
+		if value.Path != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func normalizeInitVolumes(values []InitVolume) []InitVolume {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]InitVolume, 0, len(values))
+	for _, value := range values {
+		value.Name = strings.TrimSpace(value.Name)
+		if value.Name != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func normalizeComposeImageSpecs(values []ComposeImageSpec) []ComposeImageSpec {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]ComposeImageSpec, 0, len(values))
+	for _, value := range values {
+		value.Name = strings.TrimSpace(value.Name)
+		value.Service = strings.TrimSpace(value.Service)
+		value.Image = strings.TrimSpace(value.Image)
+		if value.ImagePullPolicy == "" {
+			value.ImagePullPolicy = ImagePullPolicyIfNotPresent
+		}
+		if value.BuildPolicy == "" {
+			value.BuildPolicy = BuildPolicyIfNotPresent
+		}
+		if value.Service != "" && value.Image != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 type ComposeRemoteContextOptions struct {
