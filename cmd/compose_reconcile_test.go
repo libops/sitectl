@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -84,8 +85,8 @@ func TestMaybeRunComposeReconcileRunsWhenProjectNeedsInstall(t *testing.T) {
 	}
 	composeReconcileRun = func(_ *cobra.Command, _ *config.Context, decision composeReconcileDecision) error {
 		ran = true
-		if !decision.RunInit || decision.RunBuild {
-			t.Fatalf("expected init-only reconcile, got init=%t build=%t", decision.RunInit, decision.RunBuild)
+		if !decision.RunInit || !decision.RunBuild {
+			t.Fatalf("expected init/build reconcile, got init=%t build=%t", decision.RunInit, decision.RunBuild)
 		}
 		return nil
 	}
@@ -112,6 +113,35 @@ func TestMaybeRunComposeReconcileRunsWhenProjectNeedsInstall(t *testing.T) {
 	}
 	if !bytes.Contains(stderr.Bytes(), []byte("reconcile")) {
 		t.Fatalf("expected reconcile message, got %q", stderr.String())
+	}
+}
+
+func TestComposeReconcileDecisionForceBypassesCache(t *testing.T) {
+	restore := stubComposeReconcile(t)
+	defer restore()
+
+	var inspected bool
+	composeReconcileHit = func(*config.Context, plugin.CreateSpec) (bool, error) {
+		t.Fatal("force should bypass cache lookup")
+		return true, nil
+	}
+	composeReconcileNeed = func(*config.Context, plugin.CreateSpec) (composeReconcileStatus, error) {
+		inspected = true
+		return statusWithTrue(conditionReconciled, "Observed"), nil
+	}
+
+	decision, err := composeReconcileDecisionForContextWithOptions(testComposeReconcileContext(), composeReconcileOptions{Force: true})
+	if err != nil {
+		t.Fatalf("composeReconcileDecisionForContextWithOptions() error = %v", err)
+	}
+	if !inspected {
+		t.Fatal("expected force to inspect current state")
+	}
+	if !decision.Needed || decision.RunInit || !decision.RunBuild {
+		t.Fatalf("expected forced build/up decision, got %+v", decision)
+	}
+	if decision.Reason != "forced" {
+		t.Fatalf("reason = %q, want forced", decision.Reason)
 	}
 }
 
@@ -211,6 +241,81 @@ func TestInspectComposeReconcileNeedChecksHostUIDFileValue(t *testing.T) {
 	}
 }
 
+func TestResetComposeReconcileInitStateRemovesDeclaredFilesAndVolumes(t *testing.T) {
+	restore := stubComposeReconcile(t)
+	defer restore()
+
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "secrets"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "secrets", "DB_ROOT_PASSWORD"), []byte("secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	composeReconcileReadConfig = func(*config.Context) (composeConfigDocument, error) {
+		return composeConfigDocument{
+			Name: "wp",
+			Volumes: map[string]composeConfigVolume{
+				"mariadb-data": {Name: "wp_mariadb-data"},
+			},
+		}, nil
+	}
+	var removedVolume string
+	composeReconcileVolumeRemove = func(volume string) error {
+		removedVolume = volume
+		return nil
+	}
+
+	removed, err := resetComposeReconcileInitState(&config.Context{ProjectDir: tmpDir}, plugin.CreateSpec{
+		InitArtifacts: []plugin.InitArtifact{{Path: "secrets/DB_ROOT_PASSWORD"}},
+		InitVolumes:   []plugin.InitVolume{{Name: "mariadb-data"}},
+	})
+	if err != nil {
+		t.Fatalf("resetComposeReconcileInitState() error = %v", err)
+	}
+	if fileExists(filepath.Join(tmpDir, "secrets", "DB_ROOT_PASSWORD")) {
+		t.Fatal("expected declared init file to be removed")
+	}
+	if removedVolume != "wp_mariadb-data" {
+		t.Fatalf("removed volume = %q", removedVolume)
+	}
+	if strings.Join(removed, ",") != "file secrets/DB_ROOT_PASSWORD,volume wp_mariadb-data" {
+		t.Fatalf("removed = %#v", removed)
+	}
+}
+
+func TestComposeReconcileCacheExpiresAfterTTL(t *testing.T) {
+	oldHost := composeReconcileHost
+	oldNow := composeReconcileNow
+	oldUserID := composeReconcileUserID
+	t.Cleanup(func() {
+		composeReconcileHost = oldHost
+		composeReconcileNow = oldNow
+		composeReconcileUserID = oldUserID
+	})
+
+	t.Setenv("HOME", t.TempDir())
+	tmpDir := t.TempDir()
+	ctx := &config.Context{ProjectDir: tmpDir, Plugin: "wp"}
+	spec := plugin.CreateSpec{Name: "default"}
+	composeReconcileHost = func() (string, error) { return "test-host", nil }
+	composeReconcileUserID = func() string { return "1000" }
+	base := composeReconcileNow()
+	composeReconcileNow = func() time.Time { return base.Add(-composeReconcileCacheTTL - time.Minute) }
+	if err := markComposeReconcileChecked(ctx, statusWithTrue(conditionReconciled, "Observed"), spec); err != nil {
+		t.Fatalf("markComposeReconcileChecked() error = %v", err)
+	}
+
+	composeReconcileNow = func() time.Time { return base }
+	checked, err := composeReconcileChecked(ctx, spec)
+	if err != nil {
+		t.Fatalf("composeReconcileChecked() error = %v", err)
+	}
+	if checked {
+		t.Fatal("expected expired cache entry to miss")
+	}
+}
+
 func TestInspectComposeReconcileNeedBuildsWhenBuildArgsOverrideExists(t *testing.T) {
 	oldImageMissing := composeReconcileImageMissing
 	t.Cleanup(func() {
@@ -279,12 +384,16 @@ func stubComposeReconcile(t *testing.T) func() {
 	oldRun := composeReconcileRun
 	oldHit := composeReconcileHit
 	oldMark := composeReconcileMark
+	oldClear := composeReconcileClear
+	oldReset := composeReconcileReset
 	oldImageMissing := composeReconcileImageMissing
 	oldVolumeMissing := composeReconcileVolumeMissing
+	oldVolumeRemove := composeReconcileVolumeRemove
+	oldRemoveFile := composeReconcileRemoveFile
 	oldReadConfig := composeReconcileReadConfig
 	oldUserID := composeReconcileUserID
 	composeReconcileSpec = func(string) (plugin.CreateSpec, bool, error) {
-		return plugin.CreateSpec{Name: "default", Default: true, DockerComposeInit: []string{"init"}, DockerComposeUp: []string{"up"}}, true, nil
+		return plugin.CreateSpec{Name: "default", Default: true, DockerComposeInit: []string{"init"}, DockerComposeBuild: []string{"build"}, DockerComposeUp: []string{"up"}}, true, nil
 	}
 	composeReconcileNeed = func(*config.Context, plugin.CreateSpec) (composeReconcileStatus, error) {
 		return statusWithTrue(conditionReconciled, "Observed"), nil
@@ -292,8 +401,12 @@ func stubComposeReconcile(t *testing.T) func() {
 	composeReconcileRun = func(*cobra.Command, *config.Context, composeReconcileDecision) error { return nil }
 	composeReconcileHit = func(*config.Context, plugin.CreateSpec) (bool, error) { return false, nil }
 	composeReconcileMark = func(*config.Context, composeReconcileStatus, plugin.CreateSpec) error { return nil }
+	composeReconcileClear = func(*config.Context, plugin.CreateSpec) error { return nil }
+	composeReconcileReset = resetComposeReconcileInitState
 	composeReconcileImageMissing = func(string) bool { return false }
 	composeReconcileVolumeMissing = func(string) bool { return false }
+	composeReconcileVolumeRemove = func(string) error { return nil }
+	composeReconcileRemoveFile = os.Remove
 	composeReconcileReadConfig = func(*config.Context) (composeConfigDocument, error) {
 		return composeConfigDocument{}, nil
 	}
@@ -304,8 +417,12 @@ func stubComposeReconcile(t *testing.T) func() {
 		composeReconcileRun = oldRun
 		composeReconcileHit = oldHit
 		composeReconcileMark = oldMark
+		composeReconcileClear = oldClear
+		composeReconcileReset = oldReset
 		composeReconcileImageMissing = oldImageMissing
 		composeReconcileVolumeMissing = oldVolumeMissing
+		composeReconcileVolumeRemove = oldVolumeRemove
+		composeReconcileRemoveFile = oldRemoveFile
 		composeReconcileReadConfig = oldReadConfig
 		composeReconcileUserID = oldUserID
 	}

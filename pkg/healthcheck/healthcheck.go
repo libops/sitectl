@@ -1,11 +1,14 @@
 package healthcheck
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -24,11 +27,27 @@ const (
 	defaultHTTPTimeout = 10 * time.Second
 )
 
+var lookupIP = net.LookupIP
+
 // DockerChecker runs health checks against the Docker Compose project attached
 // to a sitectl context.
 type DockerChecker struct {
 	Context *config.Context
 	Client  *sitectldocker.DockerClient
+}
+
+type OptionalHTTPServiceCheck struct {
+	Service string
+	Name    string
+	URL     string
+}
+
+type composeDependencyConfigDocument struct {
+	Services map[string]composeDependencyConfigService `json:"services"`
+}
+
+type composeDependencyConfigService struct {
+	DependsOn json.RawMessage `json:"depends_on"`
 }
 
 // NewDockerChecker creates a Docker-backed checker for the given context.
@@ -153,8 +172,142 @@ func (c *DockerChecker) CheckSolrCore(ctx context.Context, service, core string)
 
 // CheckHTTPFromContainer verifies that url is reachable from inside service.
 func (c *DockerChecker) CheckHTTPFromContainer(ctx context.Context, name, service, targetURL string) sitevalidate.Result {
-	command := fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 10 %q >/dev/null; else wget -q --timeout=10 --spider %q; fi`, targetURL, targetURL)
+	return c.CheckHTTPFromContainerWithHostHeader(ctx, name, service, targetURL, "")
+}
+
+// CheckHTTPFromContainerWithHostHeader verifies that url is reachable from
+// inside service while sending a specific HTTP Host header.
+func (c *DockerChecker) CheckHTTPFromContainerWithHostHeader(ctx context.Context, name, service, targetURL, hostHeader string) sitevalidate.Result {
+	targetURL = strings.TrimSpace(targetURL)
+	if targetURL == "" {
+		return failed(name, "URL is empty")
+	}
+	hostHeader = strings.TrimSpace(hostHeader)
+	if hostHeader == "" {
+		command := fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 10 %q >/dev/null; else wget -q --timeout=10 --spider %q; fi`, targetURL, targetURL)
+		return c.checkExec(ctx, name, service, []string{"sh", "-lc", command})
+	}
+	header := "Host: " + hostHeader
+	command := fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 10 -H %q %q >/dev/null; else wget -q --timeout=10 --header %q --spider %q; fi`, header, targetURL, header, targetURL)
 	return c.checkExec(ctx, name, service, []string{"sh", "-lc", command})
+}
+
+// CheckHTTPRoute verifies an application route. Localhost-style URLs are tried
+// from the host first; failures and non-local domains fall back to a
+// container-side request with the public URL host sent as the HTTP Host header.
+func (c *DockerChecker) CheckHTTPRoute(ctx context.Context, name, service, publicURL string) sitevalidate.Result {
+	publicURL = strings.TrimSpace(publicURL)
+	if publicURL == "" {
+		return failed(name, "URL is empty")
+	}
+	parsed, err := url.Parse(publicURL)
+	if err != nil {
+		return failed(name, err.Error())
+	}
+	if isLocalHost(parsed.Hostname()) {
+		if result := CheckHTTP(ctx, name, publicURL); result.Status == sitevalidate.StatusOK {
+			return result
+		}
+	}
+	containerURL := containerHTTPRouteURL(parsed)
+	hostHeader := parsed.Host
+	if hostHeader == "" {
+		hostHeader = parsed.Hostname()
+	}
+	result := c.CheckHTTPFromContainerWithHostHeader(ctx, name, service, containerURL, hostHeader)
+	if result.Status == sitevalidate.StatusOK {
+		result.Detail = strings.TrimSpace(result.Detail + " via " + service)
+	}
+	return result
+}
+
+// CheckOptionalHTTPServices runs container-side HTTP checks for optional
+// services only when the service exists and its compose container is healthy.
+func (c *DockerChecker) CheckOptionalHTTPServices(ctx context.Context, checks ...OptionalHTTPServiceCheck) ([]sitevalidate.Result, error) {
+	results := []sitevalidate.Result{}
+	for _, check := range checks {
+		service := strings.TrimSpace(check.Service)
+		if service == "" {
+			continue
+		}
+		ready, err := c.optionalHTTPServiceReady(ctx, service)
+		if err != nil {
+			return nil, err
+		}
+		if !ready {
+			continue
+		}
+		name := firstNonEmpty(check.Name, "http:"+service)
+		results = append(results, c.CheckHTTPFromContainer(ctx, name, service, check.URL))
+	}
+	return results, nil
+}
+
+func (c *DockerChecker) optionalHTTPServiceReady(ctx context.Context, service string) (bool, error) {
+	exists, err := c.ServiceExists(ctx, service)
+	if err != nil || !exists {
+		return false, err
+	}
+	results, err := c.CheckComposeServices(ctx, service)
+	if err != nil {
+		return false, err
+	}
+	for _, result := range results {
+		if result.Status != sitevalidate.StatusOK {
+			return false, nil
+		}
+	}
+	return len(results) > 0, nil
+}
+
+// CheckComposeServiceDependsOnHealthy verifies that a Compose service depends
+// on another service with condition: service_healthy.
+func (c *DockerChecker) CheckComposeServiceDependsOnHealthy(ctx context.Context, service, dependency string) sitevalidate.Result {
+	service = strings.TrimSpace(service)
+	dependency = strings.TrimSpace(dependency)
+	name := fmt.Sprintf("compose-dependency:%s->%s", service, dependency)
+	if c == nil || c.Context == nil {
+		return failed(name, "docker checker is not initialized")
+	}
+	if service == "" || dependency == "" {
+		return failed(name, "service and dependency are required")
+	}
+	configDoc, err := c.readComposeDependencyConfig(ctx)
+	if err != nil {
+		return failed(name, err.Error())
+	}
+	serviceDoc, ok := configDoc.Services[service]
+	if !ok {
+		return failed(name, "service "+service+" is not defined")
+	}
+	condition, ok := composeDependencyCondition(serviceDoc.DependsOn, dependency)
+	if !ok {
+		return failed(name, fmt.Sprintf("%s does not depend on %s", service, dependency))
+	}
+	if condition != "service_healthy" {
+		return failed(name, fmt.Sprintf("%s depends on %s with condition %q", service, dependency, condition))
+	}
+	return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK, Detail: fmt.Sprintf("%s waits for %s service_healthy", service, dependency)}
+}
+
+func (c *DockerChecker) readComposeDependencyConfig(ctx context.Context) (composeDependencyConfigDocument, error) {
+	args := []string{"compose"}
+	args = append(args, c.Context.DockerComposeGlobalArgs()...)
+	args = append(args, "config", "--format", "json")
+	command := exec.CommandContext(ctx, "docker", args...) // #nosec G204 -- fixed docker compose command with context-owned compose/env file arguments.
+	command.Dir = c.Context.ProjectDir
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return composeDependencyConfigDocument{}, fmt.Errorf("docker compose config: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var document composeDependencyConfigDocument
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		return composeDependencyConfigDocument{}, fmt.Errorf("parse docker compose config json: %w", err)
+	}
+	return document, nil
 }
 
 // CheckHTTP verifies that url returns a 2xx or 3xx response from the host
@@ -166,19 +319,122 @@ func CheckHTTP(ctx context.Context, name, targetURL string) sitevalidate.Result 
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, defaultHTTPTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
+	if result, err := checkHTTPURL(reqCtx, name, targetURL, ""); err == nil {
+		return result
+	}
+	if fallbackURL, hostHeader, ok := dockerHostFallbackURL(targetURL); ok && dockerHostFallbackReachable() {
+		if result, err := checkHTTPURL(reqCtx, name, fallbackURL, hostHeader); err == nil {
+			result.Detail += " via host.docker.internal"
+			return result
+		}
+	}
+	result, _ := checkHTTPURL(reqCtx, name, targetURL, "")
+	return result
+}
+
+func checkHTTPURL(ctx context.Context, name, targetURL, hostHeader string) (sitevalidate.Result, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		return failed(name, err.Error())
+		result := failed(name, err.Error())
+		return result, err
+	}
+	if strings.TrimSpace(hostHeader) != "" {
+		req.Host = hostHeader
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return failed(name, err.Error())
+		result := failed(name, err.Error())
+		return result, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return failed(name, "received "+resp.Status)
+		err := fmt.Errorf("received %s", resp.Status)
+		result := failed(name, err.Error())
+		return result, err
 	}
-	return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK, Detail: resp.Status}
+	return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK, Detail: resp.Status}, nil
+}
+
+func dockerHostFallbackURL(targetURL string) (string, string, bool) {
+	parsed, err := url.Parse(targetURL)
+	if err != nil || !isLocalHost(parsed.Hostname()) {
+		return "", "", false
+	}
+	fallback := *parsed
+	fallback.Host = "host.docker.internal"
+	if port := parsed.Port(); port != "" {
+		fallback.Host += ":" + port
+	}
+	return fallback.String(), parsed.Host, true
+}
+
+func dockerHostFallbackReachable() bool {
+	_, err := net.LookupHost("host.docker.internal")
+	return err == nil
+}
+
+func containerHTTPRouteURL(parsed *url.URL) string {
+	if parsed == nil {
+		return "http://127.0.0.1/"
+	}
+	route := *parsed
+	route.Scheme = "http"
+	route.Host = "127.0.0.1"
+	if route.Path == "" {
+		route.Path = "/"
+	}
+	return route.String()
+}
+
+func composeDependencyCondition(raw json.RawMessage, dependency string) (string, bool) {
+	dependency = strings.TrimSpace(dependency)
+	if len(bytes.TrimSpace(raw)) == 0 || dependency == "" {
+		return "", false
+	}
+	var longForm map[string]struct {
+		Condition string `json:"condition"`
+	}
+	if err := json.Unmarshal(raw, &longForm); err == nil && longForm != nil {
+		if dep, ok := longForm[dependency]; ok {
+			return firstNonEmpty(dep.Condition, "service_started"), true
+		}
+		return "", false
+	}
+	var shortForm []string
+	if err := json.Unmarshal(raw, &shortForm); err == nil {
+		for _, name := range shortForm {
+			if strings.TrimSpace(name) == dependency {
+				return "service_started", true
+			}
+		}
+	}
+	return "", false
+}
+
+func isLocalHost(host string) bool {
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return resolvesToLoopback(host)
+	}
+}
+
+func resolvesToLoopback(host string) bool {
+	if strings.TrimSpace(host) == "" {
+		return false
+	}
+	ips, err := lookupIP(host)
+	if err != nil {
+		return false
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() {
+			return true
+		}
+	}
+	return false
 }
 
 // PublicURLFromEnv builds a public app URL from .env values and the context's

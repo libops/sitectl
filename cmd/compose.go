@@ -22,7 +22,6 @@ based on the current context. All docker compose commands and flags are supporte
 
 Automatic behaviors:
   - 'compose up' automatically adds '-d --remove-orphans' if not already specified
-  - 'compose build' automatically adds '--pull' if not already specified
   - Compose file paths (-f flags) are injected from context.ComposeFile setting
   - Env file paths (--env-file flags) are injected from context.EnvFile setting
   - Working directory is set to context.ProjectDir
@@ -108,9 +107,7 @@ Examples:
 		if filteredArgs[0] == "up" && !slices.Contains(filteredArgs, "-d") && !slices.Contains(filteredArgs, "--detach") {
 			filteredArgs = append(filteredArgs, "-d", "--remove-orphans")
 		}
-		if filteredArgs[0] == "build" && !slices.Contains(filteredArgs, "--pull") {
-			filteredArgs = append(filteredArgs, "--pull")
-		}
+		filteredArgs = context.DockerComposeSubcommandArgs(filteredArgs)
 		if isComposeUpCommand(filteredArgs) {
 			handled, err := maybeRunComposeReconcile(cmd, &context)
 			if err != nil {
@@ -122,16 +119,7 @@ Examples:
 		}
 
 		cmdArgs := []string{"compose"}
-
-		// Add compose file paths if specified
-		for _, file := range context.ComposeFile {
-			cmdArgs = append(cmdArgs, "-f", file)
-		}
-
-		// Add env file paths if specified
-		for _, env := range context.EnvFile {
-			cmdArgs = append(cmdArgs, "--env-file", env)
-		}
+		cmdArgs = append(cmdArgs, context.DockerComposeGlobalArgsForCommand(filteredArgs[0])...)
 
 		cmdArgs = append(cmdArgs, filteredArgs...)
 		c := exec.Command("docker", cmdArgs...)

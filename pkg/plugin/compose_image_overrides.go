@@ -154,6 +154,80 @@ func ApplyComposeImageOverrides(projectDir string, overrides ComposeImageOverrid
 	return nil
 }
 
+func ClearComposeImageOverrides(projectDir string, services []string) error {
+	if strings.TrimSpace(projectDir) == "" {
+		return fmt.Errorf("project directory cannot be empty")
+	}
+	path := filepath.Join(projectDir, ComposeImageOverrideFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil
+	}
+	doc := map[string]any{}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	servicesMap, ok := doc["services"].(map[string]any)
+	if !ok || len(servicesMap) == 0 {
+		return nil
+	}
+	targets := map[string]bool{}
+	for _, service := range services {
+		service = strings.TrimSpace(service)
+		if service != "" {
+			targets[service] = true
+		}
+	}
+	for service, raw := range servicesMap {
+		if len(targets) > 0 && !targets[service] {
+			continue
+		}
+		serviceMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		clearComposeImageOverrideService(serviceMap)
+		if len(serviceMap) == 0 {
+			delete(servicesMap, service)
+		}
+	}
+	if len(servicesMap) == 0 {
+		delete(doc, "services")
+	}
+	if len(doc) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+		return nil
+	}
+	data, err = yaml.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func clearComposeImageOverrideService(serviceMap map[string]any) {
+	delete(serviceMap, "image")
+	buildMap, ok := serviceMap["build"].(map[string]any)
+	if !ok {
+		return
+	}
+	delete(buildMap, "args")
+	if len(buildMap) == 0 {
+		delete(serviceMap, "build")
+	}
+}
+
 func resolveCreateImageOverrides(cmd *cobra.Command, req ComposeCreateRequest, pluginName string) (ComposeImageOverrides, error) {
 	imageTags, err := cmd.Flags().GetStringArray("tag")
 	if err != nil {

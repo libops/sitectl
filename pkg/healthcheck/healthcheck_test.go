@@ -1,6 +1,9 @@
 package healthcheck
 
 import (
+	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,5 +71,69 @@ func TestPublicURLFromEnvPrefersSiteURL(t *testing.T) {
 	got := PublicURLFromEnv(&config.Context{ProjectDir: projectDir, DockerHostType: config.ContextLocal}, "http", "localhost")
 	if got != "http://example.test:8080/" {
 		t.Fatalf("PublicURLFromEnv() = %q", got)
+	}
+}
+
+func TestDockerHostFallbackURLPreservesHostHeader(t *testing.T) {
+	gotURL, gotHost, ok := dockerHostFallbackURL("http://localhost:8080/")
+	if !ok {
+		t.Fatal("expected localhost URL to have Docker host fallback")
+	}
+	if gotURL != "http://host.docker.internal:8080/" {
+		t.Fatalf("fallback URL = %q", gotURL)
+	}
+	if gotHost != "localhost:8080" {
+		t.Fatalf("host header = %q", gotHost)
+	}
+}
+
+func TestDockerHostFallbackURLUsesLoopbackResolvedDomain(t *testing.T) {
+	originalLookupIP := lookupIP
+	t.Cleanup(func() { lookupIP = originalLookupIP })
+	lookupIP = func(host string) ([]net.IP, error) {
+		if host != "example.test" {
+			return nil, fmt.Errorf("unexpected host %q", host)
+		}
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil
+	}
+
+	gotURL, gotHost, ok := dockerHostFallbackURL("http://example.test/")
+	if !ok {
+		t.Fatal("expected loopback-resolved URL to have Docker host fallback")
+	}
+	if gotURL != "http://host.docker.internal/" {
+		t.Fatalf("fallback URL = %q", gotURL)
+	}
+	if gotHost != "example.test" {
+		t.Fatalf("host header = %q", gotHost)
+	}
+}
+
+func TestComposeDependencyConditionRequiresHealthy(t *testing.T) {
+	condition, ok := composeDependencyCondition([]byte(`{"mariadb":{"condition":"service_healthy","required":true}}`), "mariadb")
+	if !ok {
+		t.Fatal("expected mariadb dependency")
+	}
+	if condition != "service_healthy" {
+		t.Fatalf("condition = %q", condition)
+	}
+
+	condition, ok = composeDependencyCondition([]byte(`["mariadb"]`), "mariadb")
+	if !ok {
+		t.Fatal("expected short-form mariadb dependency")
+	}
+	if condition != "service_started" {
+		t.Fatalf("short-form condition = %q", condition)
+	}
+}
+
+func TestContainerHTTPRouteURLPreservesPathAndQuery(t *testing.T) {
+	parsed, err := url.Parse("https://example.test/admin?check=1")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	got := containerHTTPRouteURL(parsed)
+	if got != "http://127.0.0.1/admin?check=1" {
+		t.Fatalf("containerHTTPRouteURL() = %q", got)
 	}
 }
