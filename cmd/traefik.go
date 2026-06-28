@@ -62,8 +62,8 @@ func traefikIngressStatusCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			scheme := firstNonEmptyString(env["URI_SCHEME"], ctx.ComposePublicScheme("http"))
-			provider := firstNonEmptyString(env["TLS_PROVIDER"], "self-managed")
+			scheme := ctx.ComposePublicScheme("http")
+			provider := ctx.ComposeTLSProvider("self-managed")
 			bot := firstNonEmptyString(env["BOT_MITIGATION"], env["TRAEFIK_BOT_MITIGATION"], "off")
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "scheme=%s tls_provider=%s bot_mitigation=%s env=%s\n", scheme, provider, bot, envPath)
 			return nil
@@ -164,38 +164,19 @@ func applyTraefikTLSMode(cmd *cobra.Command, ctx *config.Context, mode string, o
 		return err
 	}
 	envPath := traefikEnvPath(ctx, opts.envFile)
-	env, raw, err := readContextDotEnv(ctx, envPath)
+	env, _, err := readContextDotEnv(ctx, envPath)
 	if err != nil {
 		return err
 	}
 
 	enableTLS := mode != traefikTLSHTTP
-	provider := traefikTLSSelfManaged
-	if mode == traefikTLSLetsEncrypt {
-		provider = traefikTLSLetsEncrypt
-	}
-	values := map[string]string{
-		"URI_SCHEME":   ternaryString(enableTLS, "https", "http"),
-		"TLS_PROVIDER": provider,
-	}
-	if mode == traefikTLSLetsEncrypt {
-		if strings.TrimSpace(opts.email) != "" {
-			values["ACME_EMAIL"] = strings.TrimSpace(opts.email)
-		}
-		if strings.TrimSpace(opts.acmeURL) != "" {
-			values["ACME_URL"] = strings.TrimSpace(opts.acmeURL)
-		}
-	}
-	if err := writeContextText(ctx, envPath, updateDotEnvText(raw, env, values)); err != nil {
-		return err
-	}
 
 	tlsComposePath := contextPath(ctx, firstNonEmptyString(opts.tlsComposeFile, "docker-compose.tls.yml"))
 	if err := persistTraefikTLSComposeSelection(ctx, firstNonEmptyString(opts.tlsComposeFile, "docker-compose.tls.yml"), tlsComposePath, enableTLS); err != nil {
 		return err
 	}
 	for _, composePath := range []string{contextPath(ctx, "docker-compose.yml"), tlsComposePath} {
-		if err := setTraefikLetsEncryptCommands(ctx, composePath, mode == traefikTLSLetsEncrypt); err != nil {
+		if err := setTraefikTLSMode(ctx, composePath, mode, opts); err != nil {
 			return err
 		}
 	}
@@ -217,7 +198,7 @@ func applyTraefikTLSMode(cmd *cobra.Command, ctx *config.Context, mode string, o
 		}
 	}
 
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Traefik TLS mode set to %s in %s\n", mode, envPath)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Traefik TLS mode set to %s\n", mode)
 	return nil
 }
 
@@ -317,7 +298,7 @@ func uploadTraefikCertificatePair(ctx *config.Context, certFile, keyFile string)
 	return nil
 }
 
-func setTraefikLetsEncryptCommands(ctx *config.Context, composePath string, enabled bool) error {
+func setTraefikTLSMode(ctx *config.Context, composePath string, mode string, opts traefikTLSOptions) error {
 	if !contextFileExists(ctx, composePath) {
 		return nil
 	}
@@ -325,7 +306,7 @@ func setTraefikLetsEncryptCommands(ctx *config.Context, composePath string, enab
 	if err != nil {
 		return err
 	}
-	updated, err := setTraefikLetsEncryptCommandText(raw, enabled)
+	updated, err := setTraefikTLSModeText(raw, mode, opts)
 	if err != nil {
 		return err
 	}
@@ -336,6 +317,14 @@ func setTraefikLetsEncryptCommands(ctx *config.Context, composePath string, enab
 }
 
 func setTraefikLetsEncryptCommandText(raw string, enabled bool) (string, error) {
+	mode := traefikTLSHTTP
+	if enabled {
+		mode = traefikTLSLetsEncrypt
+	}
+	return setTraefikTLSModeText(raw, mode, traefikTLSOptions{})
+}
+
+func setTraefikTLSModeText(raw string, mode string, opts traefikTLSOptions) (string, error) {
 	doc, err := corecomponent.LoadYAMLDocument([]byte(raw))
 	if err != nil {
 		return "", fmt.Errorf("load compose yaml: %w", err)
@@ -349,24 +338,38 @@ func setTraefikLetsEncryptCommandText(raw string, enabled bool) (string, error) 
 	}
 
 	commandPath := ".services.traefik.command"
-	changed, err := doc.RemoveMatchingString(commandPath, isTraefikLetsEncryptLine)
+	_, err = doc.RemoveMatchingString(commandPath, isTraefikManagedTLSLine)
 	if err != nil {
-		return "", fmt.Errorf("remove Traefik Let's Encrypt commands: %w", err)
-	}
-	if !enabled {
-		if !changed {
-			return raw, nil
-		}
-		out, err := doc.Bytes()
-		if err != nil {
-			return "", fmt.Errorf("marshal compose yaml: %w", err)
-		}
-		return string(out), nil
+		return "", fmt.Errorf("remove Traefik TLS commands: %w", err)
 	}
 
-	for _, line := range traefikLetsEncryptCommandLinesFor(raw) {
-		if err := doc.AppendUniqueString(commandPath, line); err != nil {
-			return "", fmt.Errorf("add Traefik Let's Encrypt command: %w", err)
+	scheme := "http"
+	provider := traefikTLSSelfManaged
+	if mode != traefikTLSHTTP {
+		scheme = "https"
+	}
+	if mode == traefikTLSLetsEncrypt {
+		provider = traefikTLSLetsEncrypt
+	}
+	if err := doc.SetString(".services.traefik.environment.URI_SCHEME", scheme); err != nil {
+		return "", fmt.Errorf("set Traefik URI_SCHEME: %w", err)
+	}
+	if err := doc.SetString(".services.traefik.environment.TLS_PROVIDER", provider); err != nil {
+		return "", fmt.Errorf("set Traefik TLS_PROVIDER: %w", err)
+	}
+
+	if mode != traefikTLSHTTP {
+		for _, line := range traefikHTTPSCommandLinesFor(raw) {
+			if err := doc.AppendUniqueString(commandPath, line); err != nil {
+				return "", fmt.Errorf("add Traefik HTTPS command: %w", err)
+			}
+		}
+		if mode == traefikTLSLetsEncrypt {
+			for _, line := range traefikLetsEncryptCommandLinesFor(raw, opts) {
+				if err := doc.AppendUniqueString(commandPath, line); err != nil {
+					return "", fmt.Errorf("add Traefik Let's Encrypt command: %w", err)
+				}
+			}
 		}
 	}
 	out, err := doc.Bytes()
@@ -376,7 +379,28 @@ func setTraefikLetsEncryptCommandText(raw string, enabled bool) (string, error) 
 	return string(out), nil
 }
 
-func traefikLetsEncryptCommandLinesFor(raw string) []string {
+func traefikHTTPSCommandLinesFor(raw string) []string {
+	source, target := traefikEntrypointPairFor(raw)
+	lines := []string{fmt.Sprintf("--entryPoints.%s.address=:443", target)}
+	if source == "web" {
+		lines[0] = "--entrypoints.websecure.address=:443"
+	}
+	for _, suffix := range []string{
+		"forwardedHeaders.trustedIPs",
+		"transport.respondingTimeouts.readTimeout",
+	} {
+		if value, ok := traefikEntrypointCommandValue(raw, source, suffix); ok {
+			prefix := "--entryPoints."
+			if source == "web" {
+				prefix = "--entrypoints."
+			}
+			lines = append(lines, fmt.Sprintf("%s%s.%s=%s", prefix, target, suffix, value))
+		}
+	}
+	return lines
+}
+
+func traefikLetsEncryptCommandLinesFor(raw string, opts traefikTLSOptions) []string {
 	entrypoint := "web"
 	storage := "/letsencrypt/acme.json"
 	lower := strings.ToLower(raw)
@@ -386,13 +410,20 @@ func traefikLetsEncryptCommandLinesFor(raw string) []string {
 	if strings.Contains(raw, "/acme/") || strings.Contains(raw, "/acme:") {
 		storage = "/acme/acme.json"
 	}
+	email := strings.TrimSpace(opts.email)
+	if email == "" {
+		email = "${ACME_EMAIL:?set ACME_EMAIL}"
+	}
 	lines := []string{
-		"--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?set ACME_EMAIL}",
+		"--certificatesresolvers.letsencrypt.acme.email=" + email,
 		"--certificatesresolvers.letsencrypt.acme.storage=" + storage,
 		"--certificatesresolvers.letsencrypt.acme.httpchallenge=true",
 		"--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=" + entrypoint,
 	}
-	if strings.Contains(raw, "ACME_URL") {
+	acmeURL := strings.TrimSpace(opts.acmeURL)
+	if acmeURL != "" {
+		lines = append(lines, "--certificatesresolvers.letsencrypt.acme.caserver="+acmeURL)
+	} else if strings.Contains(raw, "ACME_URL") {
 		lines = append(lines, "--certificatesresolvers.letsencrypt.acme.caserver=${ACME_URL}")
 	}
 	return lines
@@ -401,6 +432,46 @@ func traefikLetsEncryptCommandLinesFor(raw string) []string {
 func isTraefikLetsEncryptLine(line string) bool {
 	normalized := strings.ToLower(line)
 	return strings.Contains(normalized, "certificatesresolvers.letsencrypt.acme")
+}
+
+func isTraefikManagedTLSLine(line string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(line))
+	if isTraefikLetsEncryptLine(normalized) {
+		return true
+	}
+	if !strings.HasPrefix(normalized, "--entrypoints.") {
+		return false
+	}
+	if !strings.Contains(normalized, ".https.") && !strings.Contains(normalized, ".websecure.") {
+		return false
+	}
+	return strings.Contains(normalized, ".address=:443") ||
+		strings.Contains(normalized, ".forwardedheaders.") ||
+		strings.Contains(normalized, ".transport.") ||
+		strings.Contains(normalized, ".http.tls")
+}
+
+func traefikEntrypointPairFor(raw string) (string, string) {
+	lower := strings.ToLower(raw)
+	if strings.Contains(lower, "entrypoints.http.address") || strings.Contains(lower, "entrypoints.https.address") {
+		return "http", "https"
+	}
+	return "web", "websecure"
+}
+
+func traefikEntrypointCommandValue(raw, entrypoint, suffix string) (string, bool) {
+	needle := "--entrypoints." + strings.ToLower(entrypoint) + "." + strings.ToLower(suffix) + "="
+	for _, field := range strings.Fields(raw) {
+		normalized := strings.ToLower(field)
+		if !strings.HasPrefix(normalized, needle) {
+			continue
+		}
+		_, value, ok := strings.Cut(field, "=")
+		if ok && strings.TrimSpace(value) != "" {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 func traefikEnvPath(ctx *config.Context, requested string) string {
@@ -516,13 +587,6 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func ternaryString(condition bool, whenTrue, whenFalse string) string {
-	if condition {
-		return whenTrue
-	}
-	return whenFalse
 }
 
 func stringSlicesEqual(a, b []string) bool {

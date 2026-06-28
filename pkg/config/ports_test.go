@@ -102,6 +102,71 @@ func TestComposeDataPublishesSecurePort(t *testing.T) {
 	}
 }
 
+func TestComposePublicSchemePrefersTraefikEntrypoint(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	ctx := Context{
+		DockerHostType: ContextLocal,
+		ProjectDir:     projectDir,
+	}
+	writePortCompose(t, projectDir, `services:
+  app:
+    ports:
+      - "443:443"
+  traefik:
+    command:
+      - --entryPoints.http.address=:80
+`)
+
+	if got := ctx.ComposePublicScheme("https"); got != "http" {
+		t.Fatalf("ComposePublicScheme() = %q, want http", got)
+	}
+}
+
+func TestComposeTLSProviderInfersLetsEncryptFromTraefikCommand(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	ctx := Context{
+		DockerHostType: ContextLocal,
+		ProjectDir:     projectDir,
+	}
+	writePortCompose(t, projectDir, `services:
+  traefik:
+    command:
+      - --entryPoints.http.address=:80
+      - --entryPoints.https.address=:443
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+`)
+
+	if got := ctx.ComposeTLSProvider("self-managed"); got != "letsencrypt" {
+		t.Fatalf("ComposeTLSProvider() = %q, want letsencrypt", got)
+	}
+}
+
+func TestComposeTLSProviderIgnoresNonTraefikACMECommands(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	ctx := Context{
+		DockerHostType: ContextLocal,
+		ProjectDir:     projectDir,
+	}
+	writePortCompose(t, projectDir, `services:
+  app:
+    command:
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+  traefik:
+    command:
+      - --entryPoints.http.address=:80
+`)
+
+	if got := ctx.ComposeTLSProvider("self-managed"); got != "self-managed" {
+		t.Fatalf("ComposeTLSProvider() = %q, want self-managed", got)
+	}
+}
+
 func TestComposePublishedHostPortReadsLocalDevOverride(t *testing.T) {
 	projectDir := t.TempDir()
 	ctx := Context{

@@ -402,7 +402,16 @@ func (d *YAMLDocument) RemoveMatchingString(path string, match func(string) bool
 			deleteMappingValue(parent, key)
 			return true, nil
 		}
-		return false, nil
+		updated, changed := removeScalarStringsMatching(target.Value, match)
+		if !changed {
+			return false, nil
+		}
+		if strings.TrimSpace(updated) == "" {
+			deleteMappingValue(parent, key)
+			return true, nil
+		}
+		target.Value = updated
+		return true, nil
 	}
 	if target.Kind != yaml.SequenceNode {
 		return false, nil
@@ -425,6 +434,35 @@ func (d *YAMLDocument) RemoveMatchingString(path string, match func(string) bool
 	}
 	target.Content = filtered
 	return true, nil
+}
+
+func removeScalarStringsMatching(existing string, match func(string) bool) (string, bool) {
+	if strings.TrimSpace(existing) == "" {
+		return existing, false
+	}
+	separator := " "
+	parts := strings.Fields(existing)
+	if strings.Contains(existing, "\n") || strings.Contains(existing, "\r") {
+		separator = "\n"
+		parts = strings.Split(strings.ReplaceAll(existing, "\r\n", "\n"), "\n")
+	}
+	filtered := make([]string, 0, len(parts))
+	changed := false
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		if match(trimmed) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, trimmed)
+	}
+	if !changed {
+		return existing, false
+	}
+	return strings.Join(filtered, separator), true
 }
 
 func yamlNodeForValue(value any) (*yaml.Node, error) {
