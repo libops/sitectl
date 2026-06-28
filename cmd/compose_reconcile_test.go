@@ -117,9 +117,13 @@ func TestMaybeRunComposeReconcileRunsWhenProjectNeedsInstall(t *testing.T) {
 
 func TestInspectComposeReconcileNeedUsesExplicitFilesAndImages(t *testing.T) {
 	oldImageMissing := composeReconcileImageMissing
+	oldVolumeMissing := composeReconcileVolumeMissing
+	oldReadConfig := composeReconcileReadConfig
 	oldUserID := composeReconcileUserID
 	t.Cleanup(func() {
 		composeReconcileImageMissing = oldImageMissing
+		composeReconcileVolumeMissing = oldVolumeMissing
+		composeReconcileReadConfig = oldReadConfig
 		composeReconcileUserID = oldUserID
 	})
 
@@ -130,6 +134,17 @@ func TestInspectComposeReconcileNeedUsesExplicitFilesAndImages(t *testing.T) {
 	composeReconcileImageMissing = func(image string) bool {
 		return image == "libops/wp:missing"
 	}
+	composeReconcileVolumeMissing = func(volume string) bool {
+		return volume == "wp_wordpress-uploads"
+	}
+	composeReconcileReadConfig = func(*config.Context) (composeConfigDocument, error) {
+		return composeConfigDocument{
+			Name: "wp",
+			Volumes: map[string]composeConfigVolume{
+				"wordpress-uploads": {Name: "wp_wordpress-uploads"},
+			},
+		}, nil
+	}
 	composeReconcileUserID = func() string { return "1000" }
 
 	probe, err := inspectComposeReconcileNeed(&config.Context{ProjectDir: tmpDir}, plugin.CreateSpec{
@@ -139,6 +154,9 @@ func TestInspectComposeReconcileNeedUsesExplicitFilesAndImages(t *testing.T) {
 			{Path: "secrets-present"},
 			{Path: "secrets-missing"},
 			{Path: "certs/UID", ValueFrom: plugin.InitArtifactValueFromHostUID},
+		},
+		InitVolumes: []plugin.InitVolume{
+			{Name: "wordpress-uploads"},
 		},
 		Images: []plugin.ComposeImageSpec{{
 			Service:     "wp",
@@ -155,6 +173,7 @@ func TestInspectComposeReconcileNeedUsesExplicitFilesAndImages(t *testing.T) {
 	summary := probe.summary()
 	if !strings.Contains(summary, "secrets-missing is missing") ||
 		!strings.Contains(summary, "certs/UID is missing") ||
+		!strings.Contains(summary, "volume wp_wordpress-uploads is missing") ||
 		!strings.Contains(summary, "image libops/wp:missing is missing") {
 		t.Fatalf("unexpected probe summary %q", summary)
 	}
@@ -261,6 +280,8 @@ func stubComposeReconcile(t *testing.T) func() {
 	oldHit := composeReconcileHit
 	oldMark := composeReconcileMark
 	oldImageMissing := composeReconcileImageMissing
+	oldVolumeMissing := composeReconcileVolumeMissing
+	oldReadConfig := composeReconcileReadConfig
 	oldUserID := composeReconcileUserID
 	composeReconcileSpec = func(string) (plugin.CreateSpec, bool, error) {
 		return plugin.CreateSpec{Name: "default", Default: true, DockerComposeInit: []string{"init"}, DockerComposeUp: []string{"up"}}, true, nil
@@ -272,6 +293,10 @@ func stubComposeReconcile(t *testing.T) func() {
 	composeReconcileHit = func(*config.Context, plugin.CreateSpec) (bool, error) { return false, nil }
 	composeReconcileMark = func(*config.Context, composeReconcileStatus, plugin.CreateSpec) error { return nil }
 	composeReconcileImageMissing = func(string) bool { return false }
+	composeReconcileVolumeMissing = func(string) bool { return false }
+	composeReconcileReadConfig = func(*config.Context) (composeConfigDocument, error) {
+		return composeConfigDocument{}, nil
+	}
 	composeReconcileUserID = func() string { return "1000" }
 	return func() {
 		composeReconcileSpec = oldSpec
@@ -280,6 +305,8 @@ func stubComposeReconcile(t *testing.T) func() {
 		composeReconcileHit = oldHit
 		composeReconcileMark = oldMark
 		composeReconcileImageMissing = oldImageMissing
+		composeReconcileVolumeMissing = oldVolumeMissing
+		composeReconcileReadConfig = oldReadConfig
 		composeReconcileUserID = oldUserID
 	}
 }

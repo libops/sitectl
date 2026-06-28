@@ -68,15 +68,27 @@ const (
 type composeConfigDocument struct {
 	Services map[string]composeConfigService `json:"services"`
 	Secrets  map[string]composeConfigSecret  `json:"secrets"`
+	Volumes  map[string]composeConfigVolume  `json:"volumes"`
+	Name     string                          `json:"name"`
 }
 
 type composeConfigService struct {
-	Image string          `json:"image"`
-	Build json.RawMessage `json:"build"`
+	Image   string                       `json:"image"`
+	Build   json.RawMessage              `json:"build"`
+	Volumes []composeConfigServiceVolume `json:"volumes"`
 }
 
 type composeConfigSecret struct {
 	File string `json:"file"`
+}
+
+type composeConfigVolume struct {
+	Name string `json:"name"`
+}
+
+type composeConfigServiceVolume struct {
+	Type   string `json:"type"`
+	Source string `json:"source"`
 }
 
 type composeImageOverrideDocument struct {
@@ -93,15 +105,17 @@ type composeImageOverrideBuild struct {
 }
 
 var (
-	composeReconcileHost         = os.Hostname
-	composeReconcileNow          = time.Now
-	composeReconcileSpec         = composeReconcileCreateSpec
-	composeReconcileNeed         = inspectComposeReconcileNeed
-	composeReconcileRun          = runComposeReconcileCommands
-	composeReconcileHit          = composeReconcileChecked
-	composeReconcileMark         = markComposeReconcileChecked
-	composeReconcileImageMissing = dockerImageMissing
-	composeReconcileUserID       = currentComposeReconcileUserID
+	composeReconcileHost          = os.Hostname
+	composeReconcileNow           = time.Now
+	composeReconcileSpec          = composeReconcileCreateSpec
+	composeReconcileNeed          = inspectComposeReconcileNeed
+	composeReconcileRun           = runComposeReconcileCommands
+	composeReconcileHit           = composeReconcileChecked
+	composeReconcileMark          = markComposeReconcileChecked
+	composeReconcileImageMissing  = dockerImageMissing
+	composeReconcileVolumeMissing = dockerVolumeMissing
+	composeReconcileReadConfig    = readComposeConfigDocument
+	composeReconcileUserID        = currentComposeReconcileUserID
 )
 
 func (s composeReconcileStatus) needsInit() bool {
@@ -224,7 +238,7 @@ func inspectComposeReconcileNeed(ctx *config.Context, spec plugin.CreateSpec) (c
 		}}}, nil
 	}
 
-	if len(spec.InitArtifacts) > 0 || len(spec.Images) > 0 {
+	if len(spec.InitArtifacts) > 0 || len(spec.InitVolumes) > 0 || len(spec.Images) > 0 {
 		return inspectExplicitComposeReconcileNeed(ctx, spec), nil
 	}
 
@@ -249,6 +263,24 @@ func inspectExplicitComposeReconcileNeed(ctx *config.Context, spec plugin.Create
 			initMessages = append(initMessages, fmt.Sprintf("%s is missing", artifact.Path))
 		}
 	}
+	if len(spec.InitVolumes) > 0 {
+		composeConfig, err := composeReconcileReadConfig(ctx)
+		if err != nil {
+			initMessages = append(initMessages, "docker compose config could not be inspected")
+		} else {
+			configuredVolumes := composeConfiguredVolumeNames(ctx, composeConfig)
+			for _, volume := range spec.InitVolumes {
+				dockerVolume, ok := configuredVolumes[volume.Name]
+				if !ok {
+					initMessages = append(initMessages, fmt.Sprintf("volume %s is not defined", volume.Name))
+					continue
+				}
+				if composeReconcileVolumeMissing(dockerVolume) {
+					initMessages = append(initMessages, fmt.Sprintf("volume %s is missing", dockerVolume))
+				}
+			}
+		}
+	}
 	for _, imageSpec := range spec.Images {
 		if imageSpec.BuildPolicy == plugin.BuildPolicyNever {
 			continue
@@ -270,8 +302,8 @@ func inspectExplicitComposeReconcileNeed(ctx *config.Context, spec plugin.Create
 	}
 
 	status := composeReconcileStatus{}
-	if len(spec.InitArtifacts) > 0 {
-		status.Conditions = append(status.Conditions, conditionFromMessages(conditionInitialized, "InitArtifactsPresent", "InitArtifactMissing", initMessages))
+	if len(spec.InitArtifacts) > 0 || len(spec.InitVolumes) > 0 {
+		status.Conditions = append(status.Conditions, conditionFromMessages(conditionInitialized, "InitStatePresent", "InitStateMissing", initMessages))
 	}
 	if len(spec.Images) > 0 {
 		status.Conditions = append(status.Conditions, conditionFromMessages(conditionImagesAvailable, "ImagesAvailable", "ImageBuildRequired", imageMessages))
@@ -309,7 +341,7 @@ func inspectComposeConfigReconcileNeed(ctx *config.Context, spec plugin.CreateSp
 		}}}, nil
 	}
 
-	composeConfig, err := readComposeConfigDocument(ctx)
+	composeConfig, err := composeReconcileReadConfig(ctx)
 	if err != nil {
 		conditions := []composeReconcileCondition{}
 		if len(spec.DockerComposeInit) > 0 {
@@ -334,6 +366,16 @@ func inspectComposeConfigReconcileNeed(ctx *config.Context, spec plugin.CreateSp
 				Status:  conditionStatusFalse,
 				Reason:  "InitArtifactMissing",
 				Message: fmt.Sprintf("secret %s is missing", name),
+			}}}, nil
+		}
+	}
+	for source, dockerVolume := range composeServiceVolumeNames(ctx, composeConfig) {
+		if composeReconcileVolumeMissing(dockerVolume) {
+			return composeReconcileStatus{Conditions: []composeReconcileCondition{{
+				Type:    conditionInitialized,
+				Status:  conditionStatusFalse,
+				Reason:  "InitVolumeMissing",
+				Message: fmt.Sprintf("volume %s is missing", source),
 			}}}, nil
 		}
 	}
@@ -384,6 +426,53 @@ func readComposeConfigDocument(ctx *config.Context) (composeConfigDocument, erro
 	return document, nil
 }
 
+func composeConfiguredVolumeNames(ctx *config.Context, document composeConfigDocument) map[string]string {
+	out := map[string]string{}
+	projectName := strings.TrimSpace(document.Name)
+	if projectName == "" && ctx != nil {
+		projectName = strings.TrimSpace(ctx.EffectiveComposeProjectName())
+	}
+	if projectName == "" && ctx != nil {
+		projectName = strings.TrimSpace(filepath.Base(ctx.ProjectDir))
+	}
+	for source, volume := range document.Volumes {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			continue
+		}
+		name := strings.TrimSpace(volume.Name)
+		if name == "" && projectName != "" {
+			name = projectName + "_" + source
+		}
+		if name != "" {
+			out[source] = name
+		}
+	}
+	return out
+}
+
+func composeServiceVolumeNames(ctx *config.Context, document composeConfigDocument) map[string]string {
+	configured := composeConfiguredVolumeNames(ctx, document)
+	out := map[string]string{}
+	for _, service := range document.Services {
+		for _, volume := range service.Volumes {
+			if strings.TrimSpace(volume.Type) != "volume" {
+				continue
+			}
+			source := strings.TrimSpace(volume.Source)
+			if source == "" {
+				continue
+			}
+			dockerVolume := configured[source]
+			if dockerVolume == "" {
+				dockerVolume = source
+			}
+			out[source] = dockerVolume
+		}
+	}
+	return out
+}
+
 func serviceHasBuild(service composeConfigService) bool {
 	build := bytes.TrimSpace(service.Build)
 	return len(build) > 0 && !bytes.Equal(build, []byte("null"))
@@ -391,6 +480,13 @@ func serviceHasBuild(service composeConfigService) bool {
 
 func dockerImageMissing(image string) bool {
 	command := exec.Command("docker", "image", "inspect", image) // #nosec G204 -- image reference comes from docker compose config.
+	command.Stdout = nil
+	command.Stderr = nil
+	return command.Run() != nil
+}
+
+func dockerVolumeMissing(volume string) bool {
+	command := exec.Command("docker", "volume", "inspect", volume) // #nosec G204 -- volume name comes from docker compose config.
 	command.Stdout = nil
 	command.Stderr = nil
 	return command.Run() != nil
@@ -612,6 +708,7 @@ func composeReconcileSpecFingerprint(spec plugin.CreateSpec) string {
 		DockerComposeInit  []string                  `json:"docker_compose_init,omitempty"`
 		DockerComposeUp    []string                  `json:"docker_compose_up,omitempty"`
 		InitArtifacts      []plugin.InitArtifact     `json:"init_artifacts,omitempty"`
+		InitVolumes        []plugin.InitVolume       `json:"init_volumes,omitempty"`
 		Images             []plugin.ComposeImageSpec `json:"images,omitempty"`
 	}{
 		Name:               spec.Name,
@@ -620,6 +717,7 @@ func composeReconcileSpecFingerprint(spec plugin.CreateSpec) string {
 		DockerComposeInit:  append([]string{}, spec.DockerComposeInit...),
 		DockerComposeUp:    append([]string{}, spec.DockerComposeUp...),
 		InitArtifacts:      append([]plugin.InitArtifact{}, spec.InitArtifacts...),
+		InitVolumes:        append([]plugin.InitVolume{}, spec.InitVolumes...),
 		Images:             append([]plugin.ComposeImageSpec{}, spec.Images...),
 	}
 	data, err := json.Marshal(desired)

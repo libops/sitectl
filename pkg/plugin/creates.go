@@ -36,6 +36,7 @@ type CreateSpec struct {
 	DockerComposeBuild   []string           `json:"docker_compose_build,omitempty" yaml:"docker_compose_build,omitempty"`
 	DockerComposeInit    []string           `json:"docker_compose_init,omitempty" yaml:"docker_compose_init,omitempty"`
 	InitArtifacts        []InitArtifact     `json:"init_artifacts,omitempty" yaml:"init_artifacts,omitempty"`
+	InitVolumes          []InitVolume       `json:"init_volumes,omitempty" yaml:"init_volumes,omitempty"`
 	Images               []ComposeImageSpec `json:"images,omitempty" yaml:"images,omitempty"`
 	DockerComposeUp      []string           `json:"docker_compose_up,omitempty" yaml:"docker_compose_up,omitempty"`
 	DockerComposeDown    []string           `json:"docker_compose_down,omitempty" yaml:"docker_compose_down,omitempty"`
@@ -46,6 +47,10 @@ type InitArtifact struct {
 	Name      string `json:"name,omitempty" yaml:"name,omitempty"`
 	Path      string `json:"path" yaml:"path"`
 	ValueFrom string `json:"value_from,omitempty" yaml:"value_from,omitempty"`
+}
+
+type InitVolume struct {
+	Name string `json:"name" yaml:"name"`
 }
 
 const InitArtifactValueFromHostUID = "HostUID"
@@ -529,6 +534,7 @@ func normalizeCreateSpec(spec CreateSpec) CreateSpec {
 	spec.DockerComposeRepo = strings.TrimSpace(spec.DockerComposeRepo)
 	spec.DockerComposeBranch = strings.TrimSpace(spec.DockerComposeBranch)
 	spec.InitArtifacts = normalizeInitArtifacts(spec.InitArtifacts)
+	spec.InitVolumes = normalizeInitVolumes(spec.InitVolumes)
 	spec.Images = normalizeComposeImageSpecs(spec.Images)
 	if spec.DockerComposeBranch == "" && spec.DockerComposeRepo != "" {
 		spec.DockerComposeBranch = "main"
@@ -552,6 +558,20 @@ func normalizeInitArtifacts(values []InitArtifact) []InitArtifact {
 		value.Path = strings.TrimSpace(value.Path)
 		value.ValueFrom = strings.TrimSpace(value.ValueFrom)
 		if value.Path != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func normalizeInitVolumes(values []InitVolume) []InitVolume {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]InitVolume, 0, len(values))
+	for _, value := range values {
+		value.Name = strings.TrimSpace(value.Name)
+		if value.Name != "" {
 			out = append(out, value)
 		}
 	}
