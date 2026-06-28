@@ -31,7 +31,8 @@ const (
 )
 
 type composePortPlan struct {
-	Services map[string]map[int]struct{}
+	Services    map[string]map[int]struct{}
+	LetsEncrypt bool
 }
 
 func (p composePortPlan) empty() bool {
@@ -45,6 +46,30 @@ func (p composePortPlan) usesHTTPS() bool {
 		}
 	}
 	return false
+}
+
+func (p composePortPlan) usesPublicHTTPS() bool {
+	for service, targets := range p.Services {
+		if !strings.EqualFold(service, "traefik") {
+			continue
+		}
+		if _, ok := targets[defaultHTTPSPort]; ok {
+			return true
+		}
+		return false
+	}
+	return p.usesHTTPS()
+}
+
+func (p composePortPlan) tlsProvider(defaultProvider string) string {
+	if p.LetsEncrypt {
+		return "letsencrypt"
+	}
+	defaultProvider = strings.TrimSpace(defaultProvider)
+	if defaultProvider != "" {
+		return defaultProvider
+	}
+	return "self-managed"
 }
 
 func (p composePortPlan) targets() []int {
@@ -111,7 +136,7 @@ func (c Context) PrepareComposeUpPortOverride() (map[string]string, []string, er
 
 	projectEnv := c.composeProjectEnv()
 	scheme := "http"
-	if plan.usesHTTPS() {
+	if plan.usesPublicHTTPS() {
 		scheme = "https"
 	}
 	envValues := map[string]string{
@@ -124,7 +149,7 @@ func (c Context) PrepareComposeUpPortOverride() (map[string]string, []string, er
 func (c Context) ComposePublicScheme(defaultScheme string) string {
 	plan, err := c.inspectComposePortPlan()
 	if err == nil && !plan.empty() {
-		if plan.usesHTTPS() {
+		if plan.usesPublicHTTPS() {
 			return "https"
 		}
 		return "http"
@@ -134,6 +159,18 @@ func (c Context) ComposePublicScheme(defaultScheme string) string {
 		return defaultScheme
 	}
 	return "http"
+}
+
+func (c Context) ComposeTLSProvider(defaultProvider string) string {
+	plan, err := c.inspectComposePortPlan()
+	if err == nil && !plan.empty() {
+		return plan.tlsProvider(defaultProvider)
+	}
+	defaultProvider = strings.TrimSpace(defaultProvider)
+	if defaultProvider != "" {
+		return defaultProvider
+	}
+	return "self-managed"
 }
 
 func (c Context) ComposePublishedHostPort(target int) (int, bool) {
@@ -246,9 +283,13 @@ func mergeComposePortPlan(plan *composePortPlan, data []byte) {
 		if serviceName == "" || service.Kind != yaml.MappingNode {
 			continue
 		}
+		command := mappingValue(service, "command")
 		targets := serviceTargetPorts(mappingValue(service, "ports"))
-		for _, target := range serviceCommandTargetPorts(mappingValue(service, "command")) {
+		for _, target := range serviceCommandTargetPorts(command) {
 			targets[target] = struct{}{}
+		}
+		if strings.EqualFold(serviceName, "traefik") && serviceCommandUsesLetsEncrypt(command) {
+			plan.LetsEncrypt = true
 		}
 		for target := range targets {
 			if _, ok := localDevFallbackPort(target); !ok {
@@ -316,22 +357,8 @@ func portMapTarget(node *yaml.Node) int {
 }
 
 func serviceCommandTargetPorts(node *yaml.Node) []int {
-	if node == nil {
-		return nil
-	}
-	values := []string{}
-	switch node.Kind {
-	case yaml.ScalarNode:
-		values = strings.Fields(node.Value)
-	case yaml.SequenceNode:
-		for _, item := range node.Content {
-			if item.Kind == yaml.ScalarNode {
-				values = append(values, item.Value)
-			}
-		}
-	}
 	targets := map[int]struct{}{}
-	for _, value := range values {
+	for _, value := range serviceCommandValues(node) {
 		lower := strings.ToLower(strings.TrimSpace(value))
 		if !strings.Contains(lower, "entrypoints.") || !strings.Contains(lower, "address=:") {
 			continue
@@ -349,6 +376,35 @@ func serviceCommandTargetPorts(node *yaml.Node) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+func serviceCommandUsesLetsEncrypt(node *yaml.Node) bool {
+	for _, value := range serviceCommandValues(node) {
+		if strings.Contains(strings.ToLower(value), "certificatesresolvers.letsencrypt.acme") {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceCommandValues(node *yaml.Node) []string {
+	if node == nil {
+		return nil
+	}
+	switch node.Kind {
+	case yaml.ScalarNode:
+		return strings.Fields(node.Value)
+	case yaml.SequenceNode:
+		values := []string{}
+		for _, item := range node.Content {
+			if item.Kind == yaml.ScalarNode {
+				values = append(values, item.Value)
+			}
+		}
+		return values
+	default:
+		return nil
+	}
 }
 
 func (c Context) writeComposePortOverride(plan composePortPlan, hostPorts map[int]int) ([]string, error) {
