@@ -92,7 +92,6 @@ func Ingress(opts IngressOptions) (corecomponent.ComposeServiceComponent, error)
 			DisabledHelp: "Ingress is required for this stack.",
 			Question:     "Configure the public ingress for this application.",
 		},
-		PromptOnCreate: true,
 		FollowUps: []corecomponent.FollowUpSpec{
 			{
 				Name:                 ingressModeName,
@@ -101,7 +100,6 @@ func Ingress(opts IngressOptions) (corecomponent.ComposeServiceComponent, error)
 				FlagUsage:            "Ingress mode: http, https-default, or https-letsencrypt.",
 				Question:             "Choose how Traefik should expose this application.",
 				DefaultValue:         IngressModeHTTP,
-				PromptOnCreate:       true,
 				AppliesToDisposition: corecomponent.DispositionEnabled,
 				Choices: []corecomponent.Choice{
 					{Value: IngressModeHTTP, Label: IngressModeHTTP, Help: "Serve plain HTTP.", Aliases: []string{"1"}},
@@ -116,7 +114,6 @@ func Ingress(opts IngressOptions) (corecomponent.ComposeServiceComponent, error)
 				FlagUsage:            "Public domain for Traefik host rules and app URLs.",
 				Question:             "Enter the public domain.",
 				DefaultValue:         DefaultIngressDomain,
-				PromptOnCreate:       true,
 				AppliesToDisposition: corecomponent.DispositionEnabled,
 			},
 			{
