@@ -112,6 +112,48 @@ func (c *DockerChecker) ServiceExists(ctx context.Context, service string) (bool
 	return false, nil
 }
 
+// ServiceEnvironment returns the configured environment for a Compose service
+// container. If a service has multiple containers, the first one returned by
+// Docker is used, matching service exec behavior.
+func (c *DockerChecker) ServiceEnvironment(ctx context.Context, service string) (map[string]string, error) {
+	if c == nil || c.Client == nil || c.Context == nil {
+		return nil, fmt.Errorf("docker checker is not initialized")
+	}
+	containerName, err := c.Client.GetContainerNameContext(ctx, c.Context, service)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(containerName) == "" {
+		return nil, fmt.Errorf("service %s is not running", service)
+	}
+	inspect, err := c.Client.CLI.ContainerInspect(ctx, containerName)
+	if err != nil {
+		return nil, fmt.Errorf("inspect service %s: %w", service, err)
+	}
+	env := map[string]string{}
+	if inspect.Config == nil {
+		return env, nil
+	}
+	for _, item := range inspect.Config.Env {
+		key, value, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		env[key] = value
+	}
+	return env, nil
+}
+
+// ServiceEnv returns one configured environment variable for a Compose service.
+func (c *DockerChecker) ServiceEnv(ctx context.Context, service, key string) (string, bool, error) {
+	env, err := c.ServiceEnvironment(ctx, service)
+	if err != nil {
+		return "", false, err
+	}
+	value, ok := env[key]
+	return value, ok, nil
+}
+
 // CheckMariaDB verifies that a MariaDB/MySQL service is accepting local
 // connections from inside its own container.
 func (c *DockerChecker) CheckMariaDB(ctx context.Context, service string) sitevalidate.Result {

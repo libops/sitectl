@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -9,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/libops/sitectl/pkg/config"
+	sitectldocker "github.com/libops/sitectl/pkg/docker"
 )
 
 func TestSolrCoreStatusDetailLoaded(t *testing.T) {
@@ -71,6 +74,36 @@ func TestPublicURLFromEnvPrefersSiteURL(t *testing.T) {
 	got := PublicURLFromEnv(&config.Context{ProjectDir: projectDir, DockerHostType: config.ContextLocal}, "http", "localhost")
 	if got != "http://example.test:8080/" {
 		t.Fatalf("PublicURLFromEnv() = %q", got)
+	}
+}
+
+func TestServiceEnvReadsConfiguredContainerEnv(t *testing.T) {
+	checker := &DockerChecker{
+		Context: &config.Context{Name: "test", ProjectName: "project"},
+		Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{
+			containers: []dockercontainer.Summary{{
+				ID:     "abc123",
+				Names:  []string{"/project-drupal-1"},
+				Labels: map[string]string{"com.docker.compose.service": "drupal"},
+			}},
+			inspect: map[string]dockercontainer.InspectResponse{
+				"/project-drupal-1": {Config: &dockercontainer.Config{Env: []string{
+					"DRUPAL_DEFAULT_SITE_URL=http://localhost:8081/",
+					"EMPTY=",
+				}}},
+			},
+		}},
+	}
+
+	got, ok, err := checker.ServiceEnv(context.Background(), "drupal", "DRUPAL_DEFAULT_SITE_URL")
+	if err != nil {
+		t.Fatalf("ServiceEnv() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected DRUPAL_DEFAULT_SITE_URL to be present")
+	}
+	if got != "http://localhost:8081/" {
+		t.Fatalf("ServiceEnv() = %q", got)
 	}
 }
 
@@ -136,4 +169,20 @@ func TestContainerHTTPRouteURLPreservesPathAndQuery(t *testing.T) {
 	if got != "http://127.0.0.1/admin?check=1" {
 		t.Fatalf("containerHTTPRouteURL() = %q", got)
 	}
+}
+
+type fakeDockerAPI struct {
+	containers []dockercontainer.Summary
+	inspect    map[string]dockercontainer.InspectResponse
+}
+
+func (f fakeDockerAPI) ContainerList(ctx context.Context, options dockercontainer.ListOptions) ([]dockercontainer.Summary, error) {
+	return f.containers, nil
+}
+
+func (f fakeDockerAPI) ContainerInspect(ctx context.Context, container string) (dockercontainer.InspectResponse, error) {
+	if inspect, ok := f.inspect[container]; ok {
+		return inspect, nil
+	}
+	return dockercontainer.InspectResponse{}, fmt.Errorf("container %s not found", container)
 }

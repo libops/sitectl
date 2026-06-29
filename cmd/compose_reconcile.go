@@ -729,6 +729,12 @@ func composeImageOverrideServices(ctx *config.Context) (map[string]string, map[s
 
 func runComposeReconcileCommands(cmd *cobra.Command, ctx *config.Context, decision composeReconcileDecision) error {
 	spec := decision.Spec
+	if decision.RunInit {
+		if err := ensureComposeReconcileInitArtifactDirs(ctx, spec); err != nil {
+			return err
+		}
+	}
+
 	var commands []string
 	if decision.RunInit {
 		commands = append(commands, spec.DockerComposeInit...)
@@ -765,6 +771,23 @@ func runComposeReconcileCommands(cmd *cobra.Command, ctx *config.Context, decisi
 		command.Stderr = cmd.ErrOrStderr()
 		if err := command.Run(); err != nil {
 			return fmt.Errorf("run %s: %w", commandText, err)
+		}
+	}
+	return nil
+}
+
+func ensureComposeReconcileInitArtifactDirs(ctx *config.Context, spec plugin.CreateSpec) error {
+	for _, artifact := range spec.InitArtifacts {
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			continue
+		}
+		parent := filepath.Dir(composeProjectPath(ctx, path))
+		if parent == "." || parent == string(filepath.Separator) {
+			continue
+		}
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return fmt.Errorf("create init artifact directory %s: %w", filepath.Dir(path), err)
 		}
 	}
 	return nil
