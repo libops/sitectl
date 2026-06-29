@@ -66,9 +66,6 @@ func AddCreateFlags(cmd *cobra.Command, options ...CreateOption) {
 			cmd.Flags().String(option.Name, string(defaultDisposition), usage)
 		}
 		for _, followUp := range option.FollowUps {
-			if !followUp.PromptOnCreate {
-				continue
-			}
 			flagName := followUpFlagName(option.Name, followUp)
 			if flagName == "" || seenFollowUpFlags[flagName] || cmd.Flags().Lookup(flagName) != nil {
 				continue

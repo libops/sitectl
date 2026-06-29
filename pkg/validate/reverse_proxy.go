@@ -11,14 +11,14 @@ import (
 	coretraefik "github.com/libops/sitectl/pkg/services/traefik"
 )
 
-func reverseProxyValidator(ctx *config.Context) ([]Result, error) {
+func ingressValidator(ctx *config.Context) ([]Result, error) {
 	if ctx == nil {
 		return nil, nil
 	}
-	inspection, err := coretraefik.InspectReverseProxy(ctx)
+	inspection, err := coretraefik.InspectIngress(ctx)
 	if err != nil {
 		return []Result{{
-			Name:   "reverse-proxy",
+			Name:   "ingress",
 			Status: StatusWarning,
 			Detail: err.Error(),
 		}}, nil
@@ -27,16 +27,16 @@ func reverseProxyValidator(ctx *config.Context) ([]Result, error) {
 	traefikValues, details, err := normalizedTraefikTrustedIPs(inspection.Traefik)
 	if err != nil {
 		return []Result{{
-			Name:    "reverse-proxy",
+			Name:    "ingress",
 			Status:  StatusFailed,
 			Detail:  err.Error(),
-			FixHint: "set reverse-proxy through sitectl component set or remove manual forwardedHeaders.trustedIPs flags",
+			FixHint: "set ingress through sitectl component set or remove manual forwardedHeaders.trustedIPs flags",
 		}}, nil
 	}
 
 	if len(traefikValues) == 0 && len(inspection.NginxServices) == 0 {
 		return []Result{{
-			Name:   "reverse-proxy",
+			Name:   "ingress",
 			Status: StatusOK,
 			Detail: "disabled",
 		}}, nil
@@ -45,16 +45,16 @@ func reverseProxyValidator(ctx *config.Context) ([]Result, error) {
 	if len(traefikValues) == 0 {
 		services := sortedNginxServiceNames(inspection.NginxServices)
 		return []Result{{
-			Name:    "reverse-proxy",
+			Name:    "ingress",
 			Status:  StatusFailed,
 			Detail:  fmt.Sprintf("nginx real-IP settings are present on %s but Traefik has no forwardedHeaders.trustedIPs flags", strings.Join(services, ", ")),
-			FixHint: "set reverse-proxy through sitectl component set or remove the nginx real-IP overrides",
+			FixHint: "set ingress through sitectl component set or remove the nginx real-IP overrides",
 		}}, nil
 	}
 
 	if len(inspection.NginxServices) == 0 {
 		return []Result{{
-			Name:   "reverse-proxy",
+			Name:   "ingress",
 			Status: StatusWarning,
 			Detail: fmt.Sprintf("Traefik trusts %s; no nginx real-IP settings were present to compare", strings.Join(details, "; ")),
 		}}, nil
@@ -65,32 +65,32 @@ func reverseProxyValidator(ctx *config.Context) ([]Result, error) {
 		nginxValues := corecomponent.JoinFollowUpValues(cfg.TrustedIP)
 		if err := validateTrustedIPs(cfg.TrustedIP); err != nil {
 			return []Result{{
-				Name:    "reverse-proxy",
+				Name:    "ingress",
 				Status:  StatusFailed,
 				Detail:  fmt.Sprintf("%s has invalid nginx real-IP settings: %v", service, err),
-				FixHint: "set reverse-proxy through sitectl component set with valid IP or CIDR values",
+				FixHint: "set ingress through sitectl component set with valid IP or CIDR values",
 			}}, nil
 		}
 		if !strings.EqualFold(strings.TrimSpace(cfg.Recursive), "on") {
 			return []Result{{
-				Name:    "reverse-proxy",
+				Name:    "ingress",
 				Status:  StatusFailed,
 				Detail:  fmt.Sprintf("%s has NGINX_REAL_IP_RECURSIVE=%q; expected \"on\"", service, cfg.Recursive),
-				FixHint: "set reverse-proxy through sitectl component set so nginx and Traefik trust the same upstream proxies",
+				FixHint: "set ingress through sitectl component set so nginx and Traefik trust the same upstream proxies",
 			}}, nil
 		}
 		if nginxValues != traefikValues {
 			return []Result{{
-				Name:    "reverse-proxy",
+				Name:    "ingress",
 				Status:  StatusFailed,
 				Detail:  fmt.Sprintf("%s trusts %s but Traefik trusts %s", service, nginxValues, traefikValues),
-				FixHint: "set reverse-proxy through sitectl component set so nginx and Traefik trust the same upstream proxies",
+				FixHint: "set ingress through sitectl component set so nginx and Traefik trust the same upstream proxies",
 			}}, nil
 		}
 	}
 
 	return []Result{{
-		Name:   "reverse-proxy",
+		Name:   "ingress",
 		Status: StatusOK,
 		Detail: fmt.Sprintf("enabled for %s", strings.Join(details, "; ")),
 	}}, nil
