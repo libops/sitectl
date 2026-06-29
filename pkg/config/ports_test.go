@@ -249,6 +249,108 @@ func TestResolveLocalDevPortAllowsDockerPublishedPortOwnedByProject(t *testing.T
 	}
 }
 
+func TestDockerPublishedPortStatusFromInspectChecksHostPort(t *testing.T) {
+	t.Parallel()
+
+	inspect := []byte(`[
+  {
+    "Config": {
+      "Labels": {
+        "com.docker.compose.project": "wp"
+      }
+    },
+    "NetworkSettings": {
+      "Ports": {
+        "80/tcp": [
+          {
+            "HostIp": "0.0.0.0",
+            "HostPort": "8080"
+          }
+        ]
+      }
+    }
+  }
+]`)
+
+	status, err := dockerPublishedPortStatusFromInspect("wp", defaultHTTPPort, inspect)
+	if err != nil {
+		t.Fatalf("dockerPublishedPortStatusFromInspect(80) error = %v", err)
+	}
+	if status.Occupied {
+		t.Fatalf("expected host port 80 to be available for 8080:80 binding, got %#v", status)
+	}
+
+	status, err = dockerPublishedPortStatusFromInspect("wp", defaultHTTPFallback, inspect)
+	if err != nil {
+		t.Fatalf("dockerPublishedPortStatusFromInspect(8080) error = %v", err)
+	}
+	if !status.Occupied || !status.Owned {
+		t.Fatalf("expected host port 8080 to be occupied by project, got %#v", status)
+	}
+}
+
+func TestDockerPublishedPortStatusFromInspectRejectsOtherProject(t *testing.T) {
+	t.Parallel()
+
+	inspect := []byte(`[
+  {
+    "Config": {
+      "Labels": {
+        "com.docker.compose.project": "ojs"
+      }
+    },
+    "NetworkSettings": {
+      "Ports": {
+        "80/tcp": [
+          {
+            "HostPort": "80"
+          }
+        ]
+      }
+    }
+  }
+]`)
+
+	status, err := dockerPublishedPortStatusFromInspect("wp", defaultHTTPPort, inspect)
+	if err != nil {
+		t.Fatalf("dockerPublishedPortStatusFromInspect() error = %v", err)
+	}
+	if !status.Occupied || status.Owned {
+		t.Fatalf("expected host port 80 to be occupied by another project, got %#v", status)
+	}
+}
+
+func TestDockerPublishedPortStatusFromInspectAllowsSameProject(t *testing.T) {
+	t.Parallel()
+
+	inspect := []byte(`[
+  {
+    "Config": {
+      "Labels": {
+        "com.docker.compose.project": "wp"
+      }
+    },
+    "NetworkSettings": {
+      "Ports": {
+        "80/tcp": [
+          {
+            "HostPort": "80"
+          }
+        ]
+      }
+    }
+  }
+]`)
+
+	status, err := dockerPublishedPortStatusFromInspect("wp", defaultHTTPPort, inspect)
+	if err != nil {
+		t.Fatalf("dockerPublishedPortStatusFromInspect() error = %v", err)
+	}
+	if !status.Occupied || !status.Owned {
+		t.Fatalf("expected host port 80 to be owned by project, got %#v", status)
+	}
+}
+
 func writePortCompose(t *testing.T, projectDir, contents string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte(contents), 0o644); err != nil {

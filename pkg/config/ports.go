@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -38,6 +39,23 @@ type composePortPlan struct {
 type dockerPublishedPortStatus struct {
 	Occupied bool
 	Owned    bool
+}
+
+type dockerInspectContainer struct {
+	Config          *dockerInspectConfig          `json:"Config"`
+	NetworkSettings *dockerInspectNetworkSettings `json:"NetworkSettings"`
+}
+
+type dockerInspectConfig struct {
+	Labels map[string]string `json:"Labels"`
+}
+
+type dockerInspectNetworkSettings struct {
+	Ports map[string][]dockerInspectPortBinding `json:"Ports"`
+}
+
+type dockerInspectPortBinding struct {
+	HostPort string `json:"HostPort"`
 }
 
 var (
@@ -849,7 +867,7 @@ func tcpPortInUse(port int) bool {
 
 func dockerPublishedPortUse(project string, port int) (dockerPublishedPortStatus, error) {
 	project = strings.TrimSpace(project)
-	out, err := exec.Command("docker", "ps", "-q", "--filter", fmt.Sprintf("publish=%d", port)).Output()
+	out, err := exec.Command("docker", "ps", "-q").Output()
 	if err != nil {
 		return dockerPublishedPortStatus{}, err
 	}
@@ -857,18 +875,48 @@ func dockerPublishedPortUse(project string, port int) (dockerPublishedPortStatus
 	if len(ids) == 0 {
 		return dockerPublishedPortStatus{}, nil
 	}
-	status := dockerPublishedPortStatus{Occupied: true}
-	for _, id := range ids {
-		labelOut, err := exec.Command("docker", "inspect", id, "--format", "{{ index .Config.Labels \""+composeProjectLabel+"\" }}").Output()
-		if err != nil {
+	args := append([]string{"inspect"}, ids...)
+	inspect, err := exec.Command("docker", args...).Output()
+	if err != nil {
+		return dockerPublishedPortStatus{}, err
+	}
+	return dockerPublishedPortStatusFromInspect(project, port, inspect)
+}
+
+func dockerPublishedPortStatusFromInspect(project string, port int, inspect []byte) (dockerPublishedPortStatus, error) {
+	project = strings.TrimSpace(project)
+	var containers []dockerInspectContainer
+	if err := json.Unmarshal(inspect, &containers); err != nil {
+		return dockerPublishedPortStatus{}, err
+	}
+	status := dockerPublishedPortStatus{}
+	for _, container := range containers {
+		if !containerPublishesHostPort(container.NetworkSettings, port) {
+			continue
+		}
+		status.Occupied = true
+		if project == "" || container.Config == nil || strings.TrimSpace(container.Config.Labels[composeProjectLabel]) != project {
+			status.Owned = false
 			return status, nil
 		}
-		if project == "" || strings.TrimSpace(string(labelOut)) != project {
-			return status, nil
+		status.Owned = true
+	}
+	return status, nil
+}
+
+func containerPublishesHostPort(networkSettings *dockerInspectNetworkSettings, port int) bool {
+	if networkSettings == nil {
+		return false
+	}
+	want := strconv.Itoa(port)
+	for _, bindings := range networkSettings.Ports {
+		for _, binding := range bindings {
+			if strings.TrimSpace(binding.HostPort) == want {
+				return true
+			}
 		}
 	}
-	status.Owned = true
-	return status, nil
+	return false
 }
 
 func AppendEnvOverrides(base []string, values map[string]string) []string {
