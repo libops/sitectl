@@ -130,7 +130,7 @@ func TestDetectComponentStatusContainsRules(t *testing.T) {
 	}
 
 	status := detectStatus(t, projectDir, Definition{
-		Name: "reverse-proxy",
+		Name: "ingress",
 		On: DomainSpec{Compose: YAMLStateSpec{Rules: []YAMLRule{{
 			Files: []string{"docker-compose.yml"},
 			Op:    OpContains,

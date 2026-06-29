@@ -57,7 +57,8 @@ sitectl image set --image app=ghcr.io/example/app:pr-123
 Component changes are written with [`sitectl set`](https://sitectl.libops.io/commands/set) and applied with [`sitectl converge`](https://sitectl.libops.io/commands/converge):
 
 ```bash
-sitectl set upload-limits enabled --max-upload-size 2G --upload-timeout 10m
+sitectl set ingress enabled --mode https-default --domain app.localhost
+sitectl set ingress enabled --trusted-ip 203.0.113.10/32 --max-upload-size 2G --upload-timeout 10m
 sitectl converge
 ```
 

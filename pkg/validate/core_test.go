@@ -89,7 +89,7 @@ func TestOverrideSymlinkValidator(t *testing.T) {
 	}
 }
 
-func TestReverseProxyValidator(t *testing.T) {
+func TestIngressValidator(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -161,12 +161,12 @@ func TestReverseProxyValidator(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte(tt.compose), 0o644); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
-			results, err := reverseProxyValidator(&config.Context{
+			results, err := ingressValidator(&config.Context{
 				DockerHostType: config.ContextLocal,
 				ProjectDir:     projectDir,
 			})
 			if err != nil {
-				t.Fatalf("reverseProxyValidator() error = %v", err)
+				t.Fatalf("ingressValidator() error = %v", err)
 			}
 			if len(results) != 1 {
 				t.Fatalf("expected one result, got %+v", results)

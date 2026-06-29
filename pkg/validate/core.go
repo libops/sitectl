@@ -15,7 +15,7 @@ func CoreValidators(cfg *config.Config) []Validator {
 		projectDirValidator,
 		composeProjectValidator,
 		contextFilesValidator,
-		reverseProxyValidator,
+		ingressValidator,
 		overrideSymlinkValidator,
 		dockerAccessValidator,
 	}

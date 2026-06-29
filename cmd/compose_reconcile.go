@@ -459,15 +459,6 @@ func conditionFromMessages(conditionType, trueReason, falseReason string, messag
 }
 
 func inspectComposeConfigReconcileNeed(ctx *config.Context, spec plugin.CreateSpec) (composeReconcileStatus, error) {
-	if fileMissingOrEmpty(filepath.Join(ctx.ProjectDir, ".env")) && fileExists(filepath.Join(ctx.ProjectDir, "sample.env")) {
-		return composeReconcileStatus{Conditions: []composeReconcileCondition{{
-			Type:    conditionInitialized,
-			Status:  conditionStatusFalse,
-			Reason:  "InitArtifactMissing",
-			Message: ".env is missing",
-		}}}, nil
-	}
-
 	composeConfig, err := composeReconcileReadConfig(ctx)
 	if err != nil {
 		conditions := []composeReconcileCondition{}

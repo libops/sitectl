@@ -172,7 +172,7 @@ func TestResolveCreateDecisionsUsesRepeatedMultiValueFollowUpFlags(t *testing.T)
 	t.Parallel()
 
 	option := CreateOption{
-		Name:           "reverse-proxy",
+		Name:           "ingress",
 		Default:        StateOff,
 		PromptOnCreate: false,
 		FollowUps: []FollowUpSpec{{
@@ -185,7 +185,7 @@ func TestResolveCreateDecisionsUsesRepeatedMultiValueFollowUpFlags(t *testing.T)
 	}
 	cmd := &cobra.Command{Use: "create"}
 	AddCreateFlags(cmd, option)
-	_ = cmd.Flags().Set("reverse-proxy", "enabled")
+	_ = cmd.Flags().Set("ingress", "enabled")
 	_ = cmd.Flags().Set("trusted-ip", "10.0.0.0/8")
 	_ = cmd.Flags().Set("trusted-ip", "203.0.113.4,2001:db8::/32")
 
@@ -197,7 +197,7 @@ func TestResolveCreateDecisionsUsesRepeatedMultiValueFollowUpFlags(t *testing.T)
 		t.Fatalf("ResolveCreateDecisions() error = %v", err)
 	}
 
-	got := decisions["reverse-proxy"].Options["trusted-ip"]
+	got := decisions["ingress"].Options["trusted-ip"]
 	want := "10.0.0.0/8,203.0.113.4,2001:db8::/32"
 	if got != want {
 		t.Fatalf("trusted-ip option = %q, want %q", got, want)
