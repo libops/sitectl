@@ -284,6 +284,30 @@ func TestResetComposeReconcileInitStateRemovesDeclaredFilesAndVolumes(t *testing
 	}
 }
 
+func TestEnsureComposeReconcileInitArtifactDirsCreatesParents(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := &config.Context{ProjectDir: tmpDir}
+	spec := plugin.CreateSpec{
+		InitArtifacts: []plugin.InitArtifact{
+			{Path: "secrets/DB_ROOT_PASSWORD"},
+			{Path: "certs/UID", ValueFrom: plugin.InitArtifactValueFromHostUID},
+			{Path: "ROOT_FILE"},
+		},
+	}
+
+	if err := ensureComposeReconcileInitArtifactDirs(ctx, spec); err != nil {
+		t.Fatalf("ensureComposeReconcileInitArtifactDirs() error = %v", err)
+	}
+	for _, dir := range []string{"secrets", "certs"} {
+		if info, err := os.Stat(filepath.Join(tmpDir, dir)); err != nil || !info.IsDir() {
+			t.Fatalf("expected %s directory to exist, info=%v err=%v", dir, info, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "ROOT_FILE")); !os.IsNotExist(err) {
+		t.Fatalf("expected root artifact file not to be created, err=%v", err)
+	}
+}
+
 func TestComposeReconcileCacheExpiresAfterTTL(t *testing.T) {
 	oldHost := composeReconcileHost
 	oldNow := composeReconcileNow

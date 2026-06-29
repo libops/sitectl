@@ -35,6 +35,16 @@ type composePortPlan struct {
 	LetsEncrypt bool
 }
 
+type dockerPublishedPortStatus struct {
+	Occupied bool
+	Owned    bool
+}
+
+var (
+	localDevTCPPortInUse           = tcpPortInUse
+	localDevDockerPublishedPortUse = dockerPublishedPortUse
+)
+
 func (p composePortPlan) empty() bool {
 	return len(p.Services) == 0
 }
@@ -804,12 +814,17 @@ func (c Context) resolveLocalDevPort(project string, start, fallback int) (int, 
 	port := start
 	messages := []string{}
 	for attempts := 0; attempts < maxPortSearchAttempts; attempts++ {
-		inUse := tcpPortInUse(port)
-		if !inUse {
-			return port, messages, nil
+		inUse := localDevTCPPortInUse(port)
+		dockerUse, err := localDevDockerPublishedPortUse(project, port)
+		if err == nil {
+			if dockerUse.Owned {
+				return port, messages, nil
+			}
+			if dockerUse.Occupied {
+				inUse = true
+			}
 		}
-		owned, err := dockerPublishedPortBelongsToProject(project, port)
-		if err == nil && owned {
+		if !inUse {
 			return port, messages, nil
 		}
 		next := port + 1
@@ -832,26 +847,28 @@ func tcpPortInUse(port int) bool {
 	return false
 }
 
-func dockerPublishedPortBelongsToProject(project string, port int) (bool, error) {
+func dockerPublishedPortUse(project string, port int) (dockerPublishedPortStatus, error) {
 	project = strings.TrimSpace(project)
-	if project == "" {
-		return false, nil
-	}
 	out, err := exec.Command("docker", "ps", "-q", "--filter", fmt.Sprintf("publish=%d", port)).Output()
 	if err != nil {
-		return false, err
+		return dockerPublishedPortStatus{}, err
 	}
 	ids := strings.Fields(string(out))
+	if len(ids) == 0 {
+		return dockerPublishedPortStatus{}, nil
+	}
+	status := dockerPublishedPortStatus{Occupied: true}
 	for _, id := range ids {
 		labelOut, err := exec.Command("docker", "inspect", id, "--format", "{{ index .Config.Labels \""+composeProjectLabel+"\" }}").Output()
 		if err != nil {
-			continue
+			return status, nil
 		}
-		if strings.TrimSpace(string(labelOut)) == project {
-			return true, nil
+		if project == "" || strings.TrimSpace(string(labelOut)) != project {
+			return status, nil
 		}
 	}
-	return false, nil
+	status.Owned = true
+	return status, nil
 }
 
 func AppendEnvOverrides(base []string, values map[string]string) []string {

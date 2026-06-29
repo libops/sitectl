@@ -193,9 +193,77 @@ func TestComposePublishedHostPortReadsLocalDevOverride(t *testing.T) {
 	}
 }
 
+func TestResolveLocalDevPortTreatsDockerPublishedPortAsInUse(t *testing.T) {
+	restore := stubLocalDevPortChecks(
+		t,
+		func(port int) bool {
+			return false
+		},
+		func(project string, port int) (dockerPublishedPortStatus, error) {
+			if port == defaultHTTPPort {
+				return dockerPublishedPortStatus{Occupied: true}, nil
+			}
+			return dockerPublishedPortStatus{}, nil
+		},
+	)
+	defer restore()
+
+	ctx := Context{}
+	port, messages, err := ctx.resolveLocalDevPort("drupal", defaultHTTPPort, defaultHTTPFallback)
+	if err != nil {
+		t.Fatalf("resolveLocalDevPort() error = %v", err)
+	}
+	if port != defaultHTTPFallback {
+		t.Fatalf("port = %d, want %d", port, defaultHTTPFallback)
+	}
+	if len(messages) != 1 || messages[0] != "Port 80 is already in use; trying 8080" {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestResolveLocalDevPortAllowsDockerPublishedPortOwnedByProject(t *testing.T) {
+	restore := stubLocalDevPortChecks(
+		t,
+		func(port int) bool {
+			return false
+		},
+		func(project string, port int) (dockerPublishedPortStatus, error) {
+			if project != "drupal" {
+				t.Fatalf("project = %q, want drupal", project)
+			}
+			return dockerPublishedPortStatus{Occupied: true, Owned: true}, nil
+		},
+	)
+	defer restore()
+
+	ctx := Context{}
+	port, messages, err := ctx.resolveLocalDevPort("drupal", defaultHTTPPort, defaultHTTPFallback)
+	if err != nil {
+		t.Fatalf("resolveLocalDevPort() error = %v", err)
+	}
+	if port != defaultHTTPPort {
+		t.Fatalf("port = %d, want %d", port, defaultHTTPPort)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
 func writePortCompose(t *testing.T, projectDir, contents string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte(contents), 0o644); err != nil {
 		t.Fatalf("WriteFile(compose) error = %v", err)
+	}
+}
+
+func stubLocalDevPortChecks(t *testing.T, tcp func(int) bool, docker func(string, int) (dockerPublishedPortStatus, error)) func() {
+	t.Helper()
+	previousTCP := localDevTCPPortInUse
+	previousDocker := localDevDockerPublishedPortUse
+	localDevTCPPortInUse = tcp
+	localDevDockerPublishedPortUse = docker
+	return func() {
+		localDevTCPPortInUse = previousTCP
+		localDevDockerPublishedPortUse = previousDocker
 	}
 }

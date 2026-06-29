@@ -118,6 +118,18 @@ Examples:
 			}
 		}
 
+		var envValues map[string]string
+		if isComposeUpCommand(filteredArgs) {
+			var messages []string
+			envValues, messages, err = context.PrepareComposeUpPortOverride()
+			if err != nil {
+				return err
+			}
+			for _, message := range messages {
+				fmt.Fprintln(cmd.ErrOrStderr(), message)
+			}
+		}
+
 		cmdArgs := []string{"compose"}
 		cmdArgs = append(cmdArgs, context.DockerComposeGlobalArgsForCommand(filteredArgs[0])...)
 
@@ -125,13 +137,6 @@ Examples:
 		c := exec.Command("docker", cmdArgs...)
 		c.Dir = context.ProjectDir
 		if isComposeUpCommand(filteredArgs) {
-			envValues, messages, err := context.PrepareComposeUpPortOverride()
-			if err != nil {
-				return err
-			}
-			for _, message := range messages {
-				fmt.Fprintln(cmd.ErrOrStderr(), message)
-			}
 			c.Env = config.AppendEnvOverrides(os.Environ(), envValues)
 		}
 		_, err = context.RunCommandContext(cmd.Context(), c)
