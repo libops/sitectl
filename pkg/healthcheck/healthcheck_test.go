@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,28 +156,6 @@ func TestComposeDependencyConditionRequiresHealthy(t *testing.T) {
 	}
 	if condition != "service_started" {
 		t.Fatalf("short-form condition = %q", condition)
-	}
-}
-
-func TestContainerHTTPRouteURLPreservesPathAndQuery(t *testing.T) {
-	parsed, err := url.Parse("https://example.test/admin?check=1")
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	got := containerHTTPRouteURL(parsed)
-	if got != "http://127.0.0.1/admin?check=1" {
-		t.Fatalf("containerHTTPRouteURL() = %q", got)
-	}
-}
-
-func TestTraefikHTTPRouteURLPreservesPathAndQuery(t *testing.T) {
-	parsed, err := url.Parse("https://example.test/admin?check=1")
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	got := traefikHTTPRouteURL(parsed)
-	if got != "http://traefik/admin?check=1" {
-		t.Fatalf("traefikHTTPRouteURL() = %q", got)
 	}
 }
 

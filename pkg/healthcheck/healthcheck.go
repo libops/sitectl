@@ -234,40 +234,13 @@ func (c *DockerChecker) CheckHTTPFromContainerWithHostHeader(ctx context.Context
 	return c.checkExec(ctx, name, service, []string{"sh", "-lc", command})
 }
 
-// CheckHTTPRoute verifies an application route. Localhost-style URLs are tried
-// from the host first; failures and non-local domains fall back to Traefik on
-// the Compose network with the public URL host sent as the HTTP Host header.
+// CheckHTTPRoute verifies an application route at its resolved public URL.
 func (c *DockerChecker) CheckHTTPRoute(ctx context.Context, name, service, publicURL string) sitevalidate.Result {
 	publicURL = strings.TrimSpace(publicURL)
 	if publicURL == "" {
 		return failed(name, "URL is empty")
 	}
-	parsed, err := url.Parse(publicURL)
-	if err != nil {
-		return failed(name, err.Error())
-	}
-	if isLocalHost(parsed.Hostname()) {
-		if result := CheckHTTP(ctx, name, publicURL); result.Status == sitevalidate.StatusOK {
-			return result
-		}
-	}
-	hostHeader := parsed.Host
-	if hostHeader == "" {
-		hostHeader = parsed.Hostname()
-	}
-
-	result := c.CheckHTTPFromContainerWithHostHeader(ctx, name, service, traefikHTTPRouteURL(parsed), hostHeader)
-	if result.Status == sitevalidate.StatusOK {
-		result.Detail = strings.TrimSpace(result.Detail + " via traefik")
-		return result
-	}
-
-	directResult := c.CheckHTTPFromContainerWithHostHeader(ctx, name, service, containerHTTPRouteURL(parsed), hostHeader)
-	if directResult.Status == sitevalidate.StatusOK {
-		directResult.Detail = strings.TrimSpace(directResult.Detail + " via " + service)
-		return directResult
-	}
-	return result
+	return CheckHTTP(ctx, name, publicURL)
 }
 
 // CheckOptionalHTTPServices runs container-side HTTP checks for optional
@@ -420,32 +393,6 @@ func dockerHostFallbackURL(targetURL string) (string, string, bool) {
 func dockerHostFallbackReachable() bool {
 	_, err := net.LookupHost("host.docker.internal")
 	return err == nil
-}
-
-func containerHTTPRouteURL(parsed *url.URL) string {
-	if parsed == nil {
-		return "http://127.0.0.1/"
-	}
-	route := *parsed
-	route.Scheme = "http"
-	route.Host = "127.0.0.1"
-	if route.Path == "" {
-		route.Path = "/"
-	}
-	return route.String()
-}
-
-func traefikHTTPRouteURL(parsed *url.URL) string {
-	if parsed == nil {
-		return "http://traefik/"
-	}
-	route := *parsed
-	route.Scheme = "http"
-	route.Host = "traefik"
-	if route.Path == "" {
-		route.Path = "/"
-	}
-	return route.String()
 }
 
 func composeDependencyCondition(raw json.RawMessage, dependency string) (string, bool) {
