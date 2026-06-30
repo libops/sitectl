@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+	"github.com/libops/sitectl/pkg/yamlnode"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -297,11 +298,11 @@ func mergeComposePortPlan(plan *composePortPlan, data []byte) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return
 	}
-	root := documentMapping(&doc)
+	root := yamlnode.DocumentMapping(&doc)
 	if root == nil {
 		return
 	}
-	services := mappingValue(root, "services")
+	services := yamlnode.MappingValue(root, "services")
 	if services == nil || services.Kind != yaml.MappingNode {
 		return
 	}
@@ -311,8 +312,8 @@ func mergeComposePortPlan(plan *composePortPlan, data []byte) {
 		if serviceName == "" || service.Kind != yaml.MappingNode {
 			continue
 		}
-		command := mappingValue(service, "command")
-		targets := serviceTargetPorts(mappingValue(service, "ports"))
+		command := yamlnode.MappingValue(service, "command")
+		targets := serviceTargetPorts(yamlnode.MappingValue(service, "ports"))
 		for _, target := range serviceCommandTargetPorts(command) {
 			targets[target] = struct{}{}
 		}
@@ -373,7 +374,7 @@ func portStringTarget(value string) int {
 }
 
 func portMapTarget(node *yaml.Node) int {
-	targetNode := mappingValue(node, "target")
+	targetNode := yamlnode.MappingValue(node, "target")
 	if targetNode == nil {
 		return 0
 	}
@@ -386,7 +387,7 @@ func portMapTarget(node *yaml.Node) int {
 
 func serviceCommandTargetPorts(node *yaml.Node) []int {
 	targets := map[int]struct{}{}
-	for _, value := range serviceCommandValues(node) {
+	for _, value := range yamlnode.StringFieldValues(node) {
 		lower := strings.ToLower(strings.TrimSpace(value))
 		if !strings.Contains(lower, "entrypoints.") || !strings.Contains(lower, "address=:") {
 			continue
@@ -407,32 +408,12 @@ func serviceCommandTargetPorts(node *yaml.Node) []int {
 }
 
 func serviceCommandUsesLetsEncrypt(node *yaml.Node) bool {
-	for _, value := range serviceCommandValues(node) {
+	for _, value := range yamlnode.StringFieldValues(node) {
 		if strings.Contains(strings.ToLower(value), "certificatesresolvers.letsencrypt.acme") {
 			return true
 		}
 	}
 	return false
-}
-
-func serviceCommandValues(node *yaml.Node) []string {
-	if node == nil {
-		return nil
-	}
-	switch node.Kind {
-	case yaml.ScalarNode:
-		return strings.Fields(node.Value)
-	case yaml.SequenceNode:
-		values := []string{}
-		for _, item := range node.Content {
-			if item.Kind == yaml.ScalarNode {
-				values = append(values, item.Value)
-			}
-		}
-		return values
-	default:
-		return nil
-	}
 }
 
 func (c Context) writeComposePortOverride(plan composePortPlan, hostPorts map[int]int) ([]string, error) {
@@ -441,32 +422,32 @@ func (c Context) writeComposePortOverride(plan composePortPlan, hostPorts map[in
 	if err != nil {
 		return nil, err
 	}
-	root := ensureDocumentMapping(doc)
+	root := yamlnode.EnsureDocumentMapping(doc)
 	managed := managedPortOverrideServices(root)
 	desired := desiredPortOverrides(plan, hostPorts)
 	if len(desired) == 0 && len(managed) == 0 {
 		return nil, nil
 	}
 
-	services := ensureMappingValue(root, "services")
+	services := yamlnode.EnsureMappingValue(root, "services")
 	for service := range managed {
 		if _, keep := desired[service]; !keep {
-			if serviceNode := mappingValue(services, service); serviceNode != nil && serviceNode.Kind == yaml.MappingNode {
-				deleteMappingKey(serviceNode, "ports")
+			if serviceNode := yamlnode.MappingValue(services, service); serviceNode != nil && serviceNode.Kind == yaml.MappingNode {
+				yamlnode.DeleteMappingKey(serviceNode, "ports")
 				if len(serviceNode.Content) == 0 {
-					deleteMappingKey(services, service)
+					yamlnode.DeleteMappingKey(services, service)
 				}
 			}
 		}
 	}
 	for service, ports := range desired {
-		serviceNode := ensureMappingValue(services, service)
+		serviceNode := yamlnode.EnsureMappingValue(services, service)
 		setPortsOverride(serviceNode, ports)
 	}
 	if len(desired) == 0 {
-		deleteMappingKey(root, sitectlDevPortsExtensionName)
+		yamlnode.DeleteMappingKey(root, sitectlDevPortsExtensionName)
 		if len(services.Content) == 0 {
-			deleteMappingKey(root, "services")
+			yamlnode.DeleteMappingKey(root, "services")
 		}
 	} else {
 		setManagedPortExtension(root, desired)
@@ -537,112 +518,26 @@ func readComposeOverrideDocument(path string) (*yaml.Node, bool, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- local project override path is derived from the context.
 	if err != nil {
 		if os.IsNotExist(err) {
-			return emptyYAMLDocument(), false, nil
+			return yamlnode.EmptyDocument(), false, nil
 		}
 		return nil, false, fmt.Errorf("read %s: %w", path, err)
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
-		return emptyYAMLDocument(), true, nil
+		return yamlnode.EmptyDocument(), true, nil
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, true, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if documentMapping(&doc) == nil {
-		return emptyYAMLDocument(), true, nil
+	if yamlnode.DocumentMapping(&doc) == nil {
+		return yamlnode.EmptyDocument(), true, nil
 	}
 	return &doc, true, nil
 }
 
-func emptyYAMLDocument() *yaml.Node {
-	return &yaml.Node{
-		Kind: yaml.DocumentNode,
-		Content: []*yaml.Node{{
-			Kind: yaml.MappingNode,
-			Tag:  "!!map",
-		}},
-	}
-}
-
-func documentMapping(doc *yaml.Node) *yaml.Node {
-	if doc == nil {
-		return nil
-	}
-	if doc.Kind == yaml.DocumentNode {
-		if len(doc.Content) == 0 {
-			return nil
-		}
-		if doc.Content[0].Kind == yaml.MappingNode {
-			return doc.Content[0]
-		}
-		return nil
-	}
-	if doc.Kind == yaml.MappingNode {
-		return doc
-	}
-	return nil
-}
-
-func ensureDocumentMapping(doc *yaml.Node) *yaml.Node {
-	if doc.Kind != yaml.DocumentNode {
-		doc.Kind = yaml.DocumentNode
-	}
-	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		doc.Content = []*yaml.Node{{
-			Kind: yaml.MappingNode,
-			Tag:  "!!map",
-		}}
-	}
-	return doc.Content[0]
-}
-
-func mappingValue(mapping *yaml.Node, key string) *yaml.Node {
-	if mapping == nil || mapping.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == key {
-			return mapping.Content[i+1]
-		}
-	}
-	return nil
-}
-
-func ensureMappingValue(mapping *yaml.Node, key string) *yaml.Node {
-	if mapping.Kind != yaml.MappingNode {
-		mapping.Kind = yaml.MappingNode
-		mapping.Tag = "!!map"
-		mapping.Content = nil
-	}
-	if value := mappingValue(mapping, key); value != nil {
-		if value.Kind != yaml.MappingNode {
-			value.Kind = yaml.MappingNode
-			value.Tag = "!!map"
-			value.Content = nil
-		}
-		return value
-	}
-	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
-	valueNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	mapping.Content = append(mapping.Content, keyNode, valueNode)
-	return valueNode
-}
-
-func deleteMappingKey(mapping *yaml.Node, key string) {
-	if mapping == nil || mapping.Kind != yaml.MappingNode {
-		return
-	}
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == key {
-			mapping.Content = append(mapping.Content[:i], mapping.Content[i+2:]...)
-			return
-		}
-	}
-}
-
 func managedPortOverrideServices(root *yaml.Node) map[string]struct{} {
 	out := map[string]struct{}{}
-	managed := mappingValue(root, sitectlDevPortsExtensionName)
+	managed := yamlnode.MappingValue(root, sitectlDevPortsExtensionName)
 	if managed == nil || managed.Kind != yaml.MappingNode {
 		return out
 	}
@@ -669,17 +564,7 @@ func setManagedPortExtension(root *yaml.Node, desired map[string][]string) {
 		}
 		managed.Content = append(managed.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: service}, seq)
 	}
-	setMappingValue(root, sitectlDevPortsExtensionName, managed)
-}
-
-func setMappingValue(mapping *yaml.Node, key string, value *yaml.Node) {
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == key {
-			mapping.Content[i+1] = value
-			return
-		}
-	}
-	mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value)
+	yamlnode.SetMappingValue(root, sitectlDevPortsExtensionName, managed)
 }
 
 func setPortsOverride(serviceNode *yaml.Node, ports []string) {
@@ -687,7 +572,7 @@ func setPortsOverride(serviceNode *yaml.Node, ports []string) {
 	for _, port := range ports {
 		seq.Content = append(seq.Content, quotedStringNode(port))
 	}
-	setMappingValue(serviceNode, "ports", seq)
+	yamlnode.SetMappingValue(serviceNode, "ports", seq)
 }
 
 func quotedStringNode(value string) *yaml.Node {
@@ -704,8 +589,8 @@ func (c Context) composeOverrideHostPorts() map[int]int {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil
 	}
-	root := documentMapping(&doc)
-	services := mappingValue(root, "services")
+	root := yamlnode.DocumentMapping(&doc)
+	services := yamlnode.MappingValue(root, "services")
 	if services == nil || services.Kind != yaml.MappingNode {
 		return nil
 	}
@@ -715,7 +600,7 @@ func (c Context) composeOverrideHostPorts() map[int]int {
 		if service.Kind != yaml.MappingNode {
 			continue
 		}
-		for target, host := range hostPortsFromPortsNode(mappingValue(service, "ports")) {
+		for target, host := range hostPortsFromPortsNode(yamlnode.MappingValue(service, "ports")) {
 			out[target] = host
 		}
 	}

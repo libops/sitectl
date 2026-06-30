@@ -20,6 +20,7 @@ type HealthcheckRunner interface {
 
 type StandardComposeWebHealthcheckOptions struct {
 	AppService              string
+	TraefikRouter           string
 	HTTPName                string
 	DefaultScheme           string
 	DefaultDomain           string
@@ -73,12 +74,21 @@ func (r standardComposeWebHealthcheckRunner) Run(cmd *cobra.Command, ctx *config
 
 	appService := firstHealthcheckValue(r.opts.AppService, "app")
 	databaseService := firstHealthcheckValue(r.opts.DatabaseService, "mariadb")
+	targetURL := corehealthcheck.PublicURLFromEnv(ctx, firstHealthcheckValue(r.opts.DefaultScheme, "http"), firstHealthcheckValue(r.opts.DefaultDomain, "localhost"))
+	if traefikURL, ok, err := corehealthcheck.PublicURLFromTraefik(ctx, corehealthcheck.TraefikRouteOptions{
+		AppService:    appService,
+		Router:        r.opts.TraefikRouter,
+		DefaultScheme: firstHealthcheckValue(r.opts.DefaultScheme, "http"),
+		DefaultDomain: firstHealthcheckValue(r.opts.DefaultDomain, "localhost"),
+	}); err == nil && ok {
+		targetURL = traefikURL
+	}
 	results := []sitevalidate.Result{
 		checker.CheckHTTPRoute(
 			cmd.Context(),
 			firstHealthcheckValue(r.opts.HTTPName, "http:"+appService),
 			appService,
-			corehealthcheck.PublicURLFromEnv(ctx, firstHealthcheckValue(r.opts.DefaultScheme, "http"), firstHealthcheckValue(r.opts.DefaultDomain, "localhost")),
+			targetURL,
 		),
 		checker.CheckMariaDB(cmd.Context(), databaseService),
 	}

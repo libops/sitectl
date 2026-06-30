@@ -1,0 +1,8 @@
+http:
+  routers:
+    drupal:
+      rule: Host(`repo.example.org`)
+      entryPoints:
+        - https
+      service: drupal
+      tls: {}

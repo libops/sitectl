@@ -1,0 +1,12 @@
+services:
+  archivesspace:
+    image: archivesspace:latest
+  traefik:
+    image: traefik:v3
+    command:
+      - --entryPoints.web.address=:80
+      - --providers.file.directory=/etc/traefik/dynamic
+    ports:
+      - "80:80"
+    volumes:
+      - ./conf/traefik:/etc/traefik/dynamic:ro

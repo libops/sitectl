@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
+	"github.com/libops/sitectl/pkg/yamlnode"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -142,7 +143,7 @@ func deleteMapEntries(node *yaml.Node, match MapEntryMatch) bool {
 		for i := 0; i < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
 			valueNode := node.Content[i+1]
-			if keyNode.Value == match.Key && scalarValue(valueNode) == match.Value {
+			if keyNode.Value == match.Key && yamlnode.ScalarValue(valueNode) == match.Value {
 				changed = true
 				continue
 			}
@@ -163,11 +164,4 @@ func deleteMapEntries(node *yaml.Node, match MapEntryMatch) bool {
 	}
 
 	return changed
-}
-
-func scalarValue(node *yaml.Node) string {
-	if node.Kind != yaml.ScalarNode {
-		return ""
-	}
-	return node.Value
 }

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/libops/sitectl/pkg/yamlnode"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -418,7 +419,7 @@ func mergeIntoDocumentSection(doc *YAMLDocument, section string, entries map[str
 		if err != nil {
 			continue
 		}
-		setMappingValue(target, name, valueNode)
+		yamlnode.SetMappingValue(target, name, valueNode)
 	}
 }
 
@@ -430,7 +431,7 @@ func setDocumentSectionEntry(doc *YAMLDocument, section, name string, value any)
 	if err != nil {
 		return
 	}
-	setMappingValue(ensureDocumentSection(doc, section), name, valueNode)
+	yamlnode.SetMappingValue(ensureDocumentSection(doc, section), name, valueNode)
 }
 
 func deleteDocumentSectionEntry(doc *YAMLDocument, section, name string) bool {
@@ -441,27 +442,27 @@ func deleteDocumentSectionEntry(doc *YAMLDocument, section, name string) bool {
 	if root == nil {
 		return false
 	}
-	target := mappingValue(root, section)
-	if target == nil || target.Kind != yaml.MappingNode || mappingValue(target, name) == nil {
+	target := yamlnode.MappingValue(root, section)
+	if target == nil || target.Kind != yaml.MappingNode || yamlnode.MappingValue(target, name) == nil {
 		return false
 	}
-	deleteMappingValue(target, name)
+	yamlnode.DeleteMappingKey(target, name)
 	if len(target.Content) == 0 {
-		deleteMappingValue(root, section)
+		yamlnode.DeleteMappingKey(root, section)
 	}
 	return true
 }
 
 func ensureDocumentSection(doc *YAMLDocument, section string) *yaml.Node {
 	root := doc.ensureMappingRoot()
-	target := mappingValue(root, section)
+	target := yamlnode.MappingValue(root, section)
 	if target == nil {
 		target = &yaml.Node{
 			Kind:    yaml.MappingNode,
 			Tag:     "!!map",
 			Content: []*yaml.Node{},
 		}
-		setMappingValue(root, section, target)
+		yamlnode.SetMappingValue(root, section, target)
 	}
 	if target.Kind != yaml.MappingNode {
 		target.Kind = yaml.MappingNode
@@ -490,7 +491,7 @@ func removeDocumentServiceDependencyReferences(doc *YAMLDocument, name string) {
 	if root == nil {
 		return
 	}
-	services := mappingValue(root, "services")
+	services := yamlnode.MappingValue(root, "services")
 	if services == nil || services.Kind != yaml.MappingNode {
 		return
 	}
@@ -499,7 +500,7 @@ func removeDocumentServiceDependencyReferences(doc *YAMLDocument, name string) {
 		if service == nil || service.Kind != yaml.MappingNode {
 			continue
 		}
-		dependsOn := mappingValue(service, "depends_on")
+		dependsOn := yamlnode.MappingValue(service, "depends_on")
 		switch {
 		case dependsOn == nil:
 			continue
@@ -512,14 +513,14 @@ func removeDocumentServiceDependencyReferences(doc *YAMLDocument, name string) {
 				filtered = append(filtered, item)
 			}
 			if len(filtered) == 0 {
-				deleteMappingValue(service, "depends_on")
+				yamlnode.DeleteMappingKey(service, "depends_on")
 			} else {
 				dependsOn.Content = filtered
 			}
 		case dependsOn.Kind == yaml.MappingNode:
-			deleteMappingValue(dependsOn, name)
+			yamlnode.DeleteMappingKey(dependsOn, name)
 			if len(dependsOn.Content) == 0 {
-				deleteMappingValue(service, "depends_on")
+				yamlnode.DeleteMappingKey(service, "depends_on")
 			}
 		}
 	}

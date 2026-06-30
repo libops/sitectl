@@ -1,0 +1,5 @@
+http:
+  routers:
+    drupal:
+      rule: Host(`localhost`)
+      service: drupal
