@@ -345,9 +345,6 @@ func normalizeTraefikFileProvider(compose *corecomponent.ComposeFile, opts Ingre
 	} {
 		removeServiceStringVariants(compose, opts.TraefikService, "volumes", value)
 	}
-	if err := compose.RemoveServiceStringsByPrefix(opts.TraefikService, "volumes", "./conf/traefik/"); err != nil {
-		return err
-	}
 	return compose.AppendUniqueServiceString(opts.TraefikService, "volumes", "./conf/traefik:/etc/traefik/dynamic:ro")
 }
 
