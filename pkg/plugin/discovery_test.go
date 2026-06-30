@@ -172,7 +172,7 @@ func TestDiscoverInstalledFromPathPropagatesAdvertisedCapabilities(t *testing.T)
 		t.Fatalf("expected one plugin, got %d", len(plugins))
 	}
 	got := plugins[0]
-	if !got.CanCreate || !got.CanDeploy || !got.CanDebug || !got.CanConverge || !got.CanSet || !got.CanValidate || !got.CanHealthcheck || !got.CanVerify {
+	if !got.CanCreate || !got.CanDeploy || !got.CanDebug || !got.CanConverge || !got.CanSet || !got.CanValidate || !got.CanHealthcheck || !got.CanIngressRoutes || !got.CanVerify {
 		t.Fatalf("advertised capabilities were not propagated: %+v", got)
 	}
 	if !reflect.DeepEqual(got.Includes, metadata.Includes) {
@@ -188,22 +188,23 @@ func TestDiscoverInstalledFromPathPropagatesAdvertisedCapabilities(t *testing.T)
 
 func fullPluginMetadataForTest() PluginMetadata {
 	return PluginMetadata{
-		ProtocolVersion: RPCProtocolVersion,
-		Name:            "metadata-name",
-		BinaryName:      "sitectl-metadata",
-		Version:         "1.2.3",
-		Description:     "Metadata description",
-		Author:          "LibOps",
-		TemplateRepo:    "https://github.com/example/template",
-		CanCreate:       true,
-		CanDeploy:       true,
-		CanDebug:        true,
-		CanConverge:     true,
-		CanSet:          true,
-		CanValidate:     true,
-		CanHealthcheck:  true,
-		CanVerify:       true,
-		Includes:        []string{"drupal", "libops"},
+		ProtocolVersion:  RPCProtocolVersion,
+		Name:             "metadata-name",
+		BinaryName:       "sitectl-metadata",
+		Version:          "1.2.3",
+		Description:      "Metadata description",
+		Author:           "LibOps",
+		TemplateRepo:     "https://github.com/example/template",
+		CanCreate:        true,
+		CanDeploy:        true,
+		CanDebug:         true,
+		CanConverge:      true,
+		CanSet:           true,
+		CanValidate:      true,
+		CanHealthcheck:   true,
+		CanIngressRoutes: true,
+		CanVerify:        true,
+		Includes:         []string{"drupal", "libops"},
 		CreateDefinitions: []CreateSpec{{
 			Name:                "default",
 			Description:         "Default stack",

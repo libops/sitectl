@@ -334,3 +334,48 @@ services:
 		t.Fatalf("expected no blank line between volume entries, got:\n%s", rendered)
 	}
 }
+
+func TestComposeFileSetServiceScalar(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "docker-compose.yml")
+	input := `services:
+  blazegraph:
+    image:
+      name: libops/blazegraph
+    volumes:
+      - blazegraph-data:/data:rw
+  drupal:
+    environment: {}
+`
+	if err := os.WriteFile(path, []byte(input), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	compose, err := LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile() error = %v", err)
+	}
+	if err := compose.SetServiceScalar("blazegraph", "image", "islandora/blazegraph"); err != nil {
+		t.Fatalf("SetServiceScalar(image) error = %v", err)
+	}
+	if err := compose.SetServiceScalar("drupal", "restart", "unless-stopped"); err != nil {
+		t.Fatalf("SetServiceScalar(restart) error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	rendered := string(out)
+	if !strings.Contains(rendered, "  blazegraph:\n    image: islandora/blazegraph\n    volumes:\n      - blazegraph-data:/data:rw\n") {
+		t.Fatalf("expected image scalar replaced without losing volumes, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "  drupal:\n    environment: {}\n    restart: unless-stopped\n") {
+		t.Fatalf("expected new scalar added to drupal, got:\n%s", rendered)
+	}
+}

@@ -187,6 +187,9 @@ func buildRPCMethodRegistry() map[string]rpcMethodSpec {
 		MethodHealthcheckRun: rpcMethodWithParams[HealthcheckRunParams](func(s *SDK, cmd *cobra.Command, req RPCRequest, params HealthcheckRunParams) (RPCResponse, error) {
 			return s.rpcHealthcheck(cmd, req, params)
 		}),
+		MethodIngressRoutes: rpcMethodWithParams[IngressRoutesParams](func(s *SDK, cmd *cobra.Command, req RPCRequest, params IngressRoutesParams) (RPCResponse, error) {
+			return s.rpcIngressRoutes(cmd, req, params)
+		}),
 		MethodVerifyRun: rpcMethodWithParams[VerifyRunParams](func(s *SDK, cmd *cobra.Command, req RPCRequest, params VerifyRunParams) (RPCResponse, error) {
 			return s.rpcVerify(cmd, req, params)
 		}),
@@ -254,6 +257,7 @@ func (s *SDK) discoveryMetadata() PluginMetadata {
 		CanSet:            s.hasSet,
 		CanValidate:       s.hasValidate,
 		CanHealthcheck:    s.hasHealthcheck,
+		CanIngressRoutes:  s.hasIngressRoutes,
 		CanVerify:         s.hasVerify,
 	}
 	info.CanCreate = len(info.CreateDefinitions) > 0
@@ -344,6 +348,30 @@ func (s *SDK) rpcHealthcheck(rpcCmd *cobra.Command, req RPCRequest, params Healt
 		return RPCResponse{Output: output}, err
 	}
 	return rpcResponse(results, output)
+}
+
+func (s *SDK) rpcIngressRoutes(rpcCmd *cobra.Command, req RPCRequest, params IngressRoutesParams) (RPCResponse, error) {
+	if s.ingressRoutesCmd == nil {
+		return rpcResponse(IngressRoutes{}, "")
+	}
+	var routes IngressRoutes
+	args, err := flagOnlyRPCArgs(s.ingressRoutesCmd, params, req.Args)
+	if err != nil {
+		return RPCResponse{}, fmt.Errorf("build %s argv: %w", req.Method, err)
+	}
+	output, err := executeRPCCommandWithRunE(rpcCommandContext(rpcCmd), req.Method, s.ingressRoutesCmd, args, rpcCommandIOFromCommand(rpcCmd), func(cmd *cobra.Command, args []string) error {
+		if s.ingressRouteProvider == nil {
+			routes = IngressRoutes{}
+			return nil
+		}
+		var runErr error
+		routes, runErr = s.runIngressRouteProvider(cmd, s.ingressRouteProvider, params)
+		return runErr
+	})
+	if err != nil {
+		return RPCResponse{Output: output}, err
+	}
+	return rpcResponse(routes, output)
 }
 
 func (s *SDK) rpcVerify(rpcCmd *cobra.Command, req RPCRequest, params VerifyRunParams) (RPCResponse, error) {

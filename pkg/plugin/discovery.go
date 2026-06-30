@@ -30,6 +30,7 @@ type PluginMetadata struct {
 	CanSet            bool         `json:"can_set,omitempty" yaml:"can_set,omitempty"`
 	CanValidate       bool         `json:"can_validate,omitempty" yaml:"can_validate,omitempty"`
 	CanHealthcheck    bool         `json:"can_healthcheck,omitempty" yaml:"can_healthcheck,omitempty"`
+	CanIngressRoutes  bool         `json:"can_ingress_routes,omitempty" yaml:"can_ingress_routes,omitempty"`
 	CanVerify         bool         `json:"can_verify,omitempty" yaml:"can_verify,omitempty"`
 	Includes          []string     `json:"includes,omitempty" yaml:"includes,omitempty"`
 	CreateDefinitions []CreateSpec `json:"create_definitions,omitempty" yaml:"create_definitions,omitempty"`
@@ -53,6 +54,7 @@ type InstalledPlugin struct {
 	CanSet            bool         `json:"can_set,omitempty" yaml:"can_set,omitempty"`
 	CanValidate       bool         `json:"can_validate,omitempty" yaml:"can_validate,omitempty"`
 	CanHealthcheck    bool         `json:"can_healthcheck,omitempty" yaml:"can_healthcheck,omitempty"`
+	CanIngressRoutes  bool         `json:"can_ingress_routes,omitempty" yaml:"can_ingress_routes,omitempty"`
 	CanVerify         bool         `json:"can_verify,omitempty" yaml:"can_verify,omitempty"`
 	Includes          []string     `json:"includes,omitempty" yaml:"includes,omitempty"`
 	CreateDefinitions []CreateSpec `json:"create_definitions,omitempty" yaml:"create_definitions,omitempty"`
@@ -274,7 +276,7 @@ func inspectInstalledPlugin(pluginName, binaryName, pluginPath string) Installed
 	if !parsed.CanDeploy {
 		parsed.CanDeploy = len(parsed.DeployDefinitions) > 0
 	}
-	slog.Debug("inspected plugin metadata", "plugin", pluginName, "path", pluginPath, "can_create", parsed.CanCreate, "can_deploy", parsed.CanDeploy, "can_debug", parsed.CanDebug, "can_converge", parsed.CanConverge, "can_set", parsed.CanSet, "can_validate", parsed.CanValidate, "can_healthcheck", parsed.CanHealthcheck, "can_verify", parsed.CanVerify, "includes", len(parsed.Includes), "create_definitions", len(parsed.CreateDefinitions), "deploy_definitions", len(parsed.DeployDefinitions), "duration", time.Since(started))
+	slog.Debug("inspected plugin metadata", "plugin", pluginName, "path", pluginPath, "can_create", parsed.CanCreate, "can_deploy", parsed.CanDeploy, "can_debug", parsed.CanDebug, "can_converge", parsed.CanConverge, "can_set", parsed.CanSet, "can_validate", parsed.CanValidate, "can_healthcheck", parsed.CanHealthcheck, "can_ingress_routes", parsed.CanIngressRoutes, "can_verify", parsed.CanVerify, "includes", len(parsed.Includes), "create_definitions", len(parsed.CreateDefinitions), "deploy_definitions", len(parsed.DeployDefinitions), "duration", time.Since(started))
 	return parsed
 }
 
@@ -295,6 +297,7 @@ func installedPluginFromMetadata(metadata PluginMetadata, defaults InstalledPlug
 		CanSet:            metadata.CanSet,
 		CanValidate:       metadata.CanValidate,
 		CanHealthcheck:    metadata.CanHealthcheck,
+		CanIngressRoutes:  metadata.CanIngressRoutes,
 		CanVerify:         metadata.CanVerify,
 		Includes:          append([]string{}, metadata.Includes...),
 		CreateDefinitions: append([]CreateSpec{}, metadata.CreateDefinitions...),

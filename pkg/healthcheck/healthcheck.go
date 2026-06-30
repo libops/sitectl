@@ -235,8 +235,8 @@ func (c *DockerChecker) CheckHTTPFromContainerWithHostHeader(ctx context.Context
 }
 
 // CheckHTTPRoute verifies an application route. Localhost-style URLs are tried
-// from the host first; failures and non-local domains fall back to a
-// container-side request with the public URL host sent as the HTTP Host header.
+// from the host first; failures and non-local domains fall back to Traefik on
+// the Compose network with the public URL host sent as the HTTP Host header.
 func (c *DockerChecker) CheckHTTPRoute(ctx context.Context, name, service, publicURL string) sitevalidate.Result {
 	publicURL = strings.TrimSpace(publicURL)
 	if publicURL == "" {
@@ -251,14 +251,21 @@ func (c *DockerChecker) CheckHTTPRoute(ctx context.Context, name, service, publi
 			return result
 		}
 	}
-	containerURL := containerHTTPRouteURL(parsed)
 	hostHeader := parsed.Host
 	if hostHeader == "" {
 		hostHeader = parsed.Hostname()
 	}
-	result := c.CheckHTTPFromContainerWithHostHeader(ctx, name, service, containerURL, hostHeader)
+
+	result := c.CheckHTTPFromContainerWithHostHeader(ctx, name, service, traefikHTTPRouteURL(parsed), hostHeader)
 	if result.Status == sitevalidate.StatusOK {
-		result.Detail = strings.TrimSpace(result.Detail + " via " + service)
+		result.Detail = strings.TrimSpace(result.Detail + " via traefik")
+		return result
+	}
+
+	directResult := c.CheckHTTPFromContainerWithHostHeader(ctx, name, service, containerHTTPRouteURL(parsed), hostHeader)
+	if directResult.Status == sitevalidate.StatusOK {
+		directResult.Detail = strings.TrimSpace(directResult.Detail + " via " + service)
+		return directResult
 	}
 	return result
 }
@@ -422,6 +429,19 @@ func containerHTTPRouteURL(parsed *url.URL) string {
 	route := *parsed
 	route.Scheme = "http"
 	route.Host = "127.0.0.1"
+	if route.Path == "" {
+		route.Path = "/"
+	}
+	return route.String()
+}
+
+func traefikHTTPRouteURL(parsed *url.URL) string {
+	if parsed == nil {
+		return "http://traefik/"
+	}
+	route := *parsed
+	route.Scheme = "http"
+	route.Host = "traefik"
 	if route.Path == "" {
 		route.Path = "/"
 	}

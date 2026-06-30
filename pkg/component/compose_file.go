@@ -285,6 +285,23 @@ func (c *ComposeFile) DeleteServiceKey(service, key string) error {
 	return nil
 }
 
+func (c *ComposeFile) SetServiceScalar(service, key, value string) error {
+	serviceIdx, ok := c.findService(service)
+	if !ok {
+		return fmt.Errorf("service %q not found in compose file", service)
+	}
+	line := fmt.Sprintf("    %s: %s", key, value)
+	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
+	if !ok {
+		insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, serviceIdx, 2))
+		c.lines = insertLines(c.lines, insertAt, []string{line})
+		return nil
+	}
+	end := findBlockEnd(c.lines, keyIdx, 4)
+	c.lines = append(c.lines[:keyIdx], append([]string{line}, c.lines[end:]...)...)
+	return nil
+}
+
 func (c *ComposeFile) DeleteSectionEntry(section, key string) error {
 	return c.deleteSectionEntry(section, key)
 }

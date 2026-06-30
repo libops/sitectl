@@ -47,6 +47,14 @@ func pluginSupportsHealthcheck(pluginName string) (bool, error) {
 	return installed.CanHealthcheck, nil
 }
 
+func pluginSupportsIngressRoutes(pluginName string) (bool, error) {
+	installed, err := installedPluginWithMetadata(pluginName)
+	if err != nil {
+		return false, err
+	}
+	return installed.CanIngressRoutes, nil
+}
+
 func pluginSupportsVerify(pluginName string) (bool, error) {
 	installed, err := installedPluginWithMetadata(pluginName)
 	if err != nil {

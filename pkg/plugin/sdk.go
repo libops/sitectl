@@ -78,6 +78,8 @@ type SDK struct {
 	validateRunner              ValidateRunner
 	healthcheckCmd              *cobra.Command
 	healthcheckRunner           HealthcheckRunner
+	ingressRoutesCmd            *cobra.Command
+	ingressRouteProvider        IngressRouteProvider
 	verifyCmd                   *cobra.Command
 	verifyRunner                VerifyRunner
 	componentDefs               []component.Definition
@@ -91,6 +93,7 @@ type SDK struct {
 	hasSet                      bool
 	hasValidate                 bool
 	hasHealthcheck              bool
+	hasIngressRoutes            bool
 	hasVerify                   bool
 }
 

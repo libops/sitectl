@@ -230,6 +230,7 @@ func renderCoreDebug(runCtx context.Context, ctx config.Context) string {
 		logDiagnostics, logErr, imageDiagnostics, imageErr = collectCoreDockerDiagnostics(runCtx, &ctx)
 	}
 	coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Host Resources"), "", debugui.FormatRows(hostSummaryRows(hostDiagnostics, ctx.ProjectDir)))
+	coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Ingress"), "", debugui.FormatRows(ingressDebugRows(runCtx, &ctx)))
 	coreBody = append(coreBody, "", debugui.Divider(), "", debugui.Title("Compose Services"), "", debugui.FormatRows(composeSummaryRows(composeDiagnostics)))
 	if logErr == nil {
 		slog.Debug("collected log diagnostics", "context", ctx.Name, "containers", len(logDiagnostics.Containers))
@@ -279,6 +280,61 @@ type imageDiagnostics struct {
 }
 
 type debugProgressReporter func(title, detail string)
+
+func ingressDebugRows(runCtx context.Context, ctx *config.Context) []debugui.Row {
+	contextName := ""
+	if ctx != nil {
+		contextName = ctx.Name
+	}
+	return ingressDebugRowsFromReport(buildIngressStats(runCtx, statsResolvedContext{Context: ctx, ContextName: contextName}))
+}
+
+func ingressDebugRowsFromReport(report statsIngressReport) []debugui.Row {
+	if len(report.Routes) == 0 && len(report.Ports) == 0 {
+		return []debugui.Row{
+			{Label: "Ingress status", Value: debugui.Status("warning")},
+			{Label: "Ingress", Value: "unresolved"},
+		}
+	}
+	status := report.Status
+	if status == "" {
+		status = "ok"
+	}
+	rows := []debugui.Row{{Label: "Ingress status", Value: debugui.Status(status)}}
+	if report.PublicURL != "" {
+		rows = append(rows, debugui.Row{Label: "Public URL", Value: report.PublicURL})
+	}
+	if report.Domain != "" {
+		rows = append(rows, debugui.Row{Label: "Domain", Value: report.Domain})
+	}
+	if report.TrustedProxies != "" {
+		rows = append(rows, debugui.Row{Label: "Trusted proxies", Value: report.TrustedProxies})
+	}
+	if report.TrustedProxiesError != "" {
+		rows = append(rows, debugui.Row{Label: "Trusted proxies error", Value: report.TrustedProxiesError})
+	}
+	if report.RoutesError != "" {
+		rows = append(rows, debugui.Row{Label: "Routes error", Value: report.RoutesError})
+	}
+	for _, port := range report.Ports {
+		value := port.State
+		if port.HostPort != 0 {
+			value = fmt.Sprintf("%d (%s)", port.HostPort, port.State)
+		}
+		rows = append(rows, debugui.Row{Label: port.Name + " host port", Value: value})
+	}
+	for _, route := range report.Routes {
+		value := route.URL
+		if route.Status != "" && route.Status != "resolved" {
+			value = strings.TrimSpace(value + " (" + route.Status + ")")
+		}
+		if route.Error != "" {
+			value = strings.TrimSpace(value + ": " + route.Error)
+		}
+		rows = append(rows, debugui.Row{Label: "Route " + route.Name, Value: value})
+	}
+	return rows
+}
 
 // debugProgressUpdateMsg carries a status update for the spinner TUI.
 type debugProgressUpdateMsg struct{ title, detail string }
