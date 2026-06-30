@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -128,11 +129,9 @@ func TestCheckHTTPRouteUsesRunningTraefikHostPort(t *testing.T) {
 			}},
 			inspect: map[string]dockercontainer.InspectResponse{
 				"/archives-traefik-1": {
-					NetworkSettings: &dockercontainer.NetworkSettings{
-						NetworkSettingsBase: dockercontainer.NetworkSettingsBase{Ports: nat.PortMap{
-							"80/tcp": []nat.PortBinding{{HostPort: "80"}},
-						}},
-					},
+					NetworkSettings: networkSettingsWithPorts(t, nat.PortMap{
+						"80/tcp": []nat.PortBinding{{HostPort: "80"}},
+					}),
 				},
 			},
 		}},
@@ -145,6 +144,21 @@ func TestCheckHTTPRouteUsesRunningTraefikHostPort(t *testing.T) {
 	if checkedURL != "http://localhost/" {
 		t.Fatalf("checked URL = %q, want http://localhost/", checkedURL)
 	}
+}
+
+func networkSettingsWithPorts(t *testing.T, ports nat.PortMap) *dockercontainer.NetworkSettings {
+	t.Helper()
+	payload, err := json.Marshal(struct {
+		Ports nat.PortMap `json:"Ports"`
+	}{Ports: ports})
+	if err != nil {
+		t.Fatalf("Marshal network settings error = %v", err)
+	}
+	var settings dockercontainer.NetworkSettings
+	if err := json.Unmarshal(payload, &settings); err != nil {
+		t.Fatalf("Unmarshal network settings error = %v", err)
+	}
+	return &settings
 }
 
 func TestDockerHostFallbackURLPreservesHostHeader(t *testing.T) {

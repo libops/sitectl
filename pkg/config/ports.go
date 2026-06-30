@@ -744,10 +744,7 @@ func (c Context) resolveLocalDevPort(project string, start, fallback int) (int, 
 func tcpPortInUse(port int) bool {
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		if tcpPortListenPermissionDenied(err) {
-			return false
-		}
-		return true
+		return !tcpPortListenPermissionDenied(err)
 	}
 	_ = listener.Close()
 	return false
