@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/libops/sitectl/pkg/yamlnode"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -113,7 +114,7 @@ func (d *YAMLDocument) HasPath(path string) (bool, error) {
 		return false, nil
 	}
 	for i, segment := range segments {
-		next := mappingValue(current, segment)
+		next := yamlnode.MappingValue(current, segment)
 		if next == nil {
 			return false, nil
 		}
@@ -145,7 +146,7 @@ func (d *YAMLDocument) SetString(path, value string) error {
 	}
 
 	key := segments[len(segments)-1]
-	existing := mappingValue(target, key)
+	existing := yamlnode.MappingValue(target, key)
 	style := yaml.DoubleQuotedStyle
 	if existing != nil {
 		style = existing.Style
@@ -160,7 +161,7 @@ func (d *YAMLDocument) SetString(path, value string) error {
 		Value: value,
 		Style: style,
 	}
-	setMappingValue(target, key, valueNode)
+	yamlnode.SetMappingValue(target, key, valueNode)
 	return nil
 }
 
@@ -184,7 +185,7 @@ func (d *YAMLDocument) SetValue(path string, value any) error {
 	if err != nil {
 		return fmt.Errorf("set path %q: %w", path, err)
 	}
-	setMappingValue(target, segments[len(segments)-1], valueNode)
+	yamlnode.SetMappingValue(target, segments[len(segments)-1], valueNode)
 	return nil
 }
 
@@ -204,14 +205,14 @@ func (d *YAMLDocument) AppendUniqueString(path, value string) error {
 		return err
 	}
 	key := segments[len(segments)-1]
-	target := mappingValue(parent, key)
+	target := yamlnode.MappingValue(parent, key)
 	if target == nil {
 		target = &yaml.Node{
 			Kind:    yaml.SequenceNode,
 			Tag:     "!!seq",
 			Content: []*yaml.Node{},
 		}
-		setMappingValue(parent, key, target)
+		yamlnode.SetMappingValue(parent, key, target)
 	}
 	if target.Kind == yaml.ScalarNode {
 		if target.Value == value {
@@ -231,7 +232,7 @@ func (d *YAMLDocument) AppendUniqueString(path, value string) error {
 				{Kind: yaml.ScalarNode, Tag: "!!str", Value: target.Value},
 			},
 		}
-		setMappingValue(parent, key, target)
+		yamlnode.SetMappingValue(parent, key, target)
 	}
 	if target.Kind != yaml.SequenceNode {
 		return fmt.Errorf("append path %q: target is not a sequence", path)
@@ -265,27 +266,27 @@ func (d *YAMLDocument) RemoveString(path, value string) error {
 	}
 	parent := root
 	for _, segment := range segments[:len(segments)-1] {
-		next := mappingValue(parent, segment)
+		next := yamlnode.MappingValue(parent, segment)
 		if next == nil || next.Kind != yaml.MappingNode {
 			return nil
 		}
 		parent = next
 	}
 	key := segments[len(segments)-1]
-	target := mappingValue(parent, key)
+	target := yamlnode.MappingValue(parent, key)
 	if target == nil {
 		return nil
 	}
 	if target.Kind == yaml.ScalarNode {
 		if target.Value == value {
-			deleteMappingValue(parent, key)
+			yamlnode.DeleteMappingKey(parent, key)
 			return nil
 		}
 		if target.Style == yaml.FoldedStyle || target.Style == yaml.LiteralStyle {
 			updated, changed := removeScalarString(target.Value, value)
 			if changed {
 				if strings.TrimSpace(updated) == "" {
-					deleteMappingValue(parent, key)
+					yamlnode.DeleteMappingKey(parent, key)
 					return nil
 				}
 				target.Value = updated
@@ -304,7 +305,7 @@ func (d *YAMLDocument) RemoveString(path, value string) error {
 		filtered = append(filtered, child)
 	}
 	if len(filtered) == 0 {
-		deleteMappingValue(parent, key)
+		yamlnode.DeleteMappingKey(parent, key)
 		return nil
 	}
 	target.Content = filtered
@@ -386,20 +387,20 @@ func (d *YAMLDocument) RemoveMatchingString(path string, match func(string) bool
 	}
 	parent := root
 	for _, segment := range segments[:len(segments)-1] {
-		next := mappingValue(parent, segment)
+		next := yamlnode.MappingValue(parent, segment)
 		if next == nil || next.Kind != yaml.MappingNode {
 			return false, nil
 		}
 		parent = next
 	}
 	key := segments[len(segments)-1]
-	target := mappingValue(parent, key)
+	target := yamlnode.MappingValue(parent, key)
 	if target == nil {
 		return false, nil
 	}
 	if target.Kind == yaml.ScalarNode {
 		if match(target.Value) {
-			deleteMappingValue(parent, key)
+			yamlnode.DeleteMappingKey(parent, key)
 			return true, nil
 		}
 		updated, changed := removeScalarStringsMatching(target.Value, match)
@@ -407,7 +408,7 @@ func (d *YAMLDocument) RemoveMatchingString(path string, match func(string) bool
 			return false, nil
 		}
 		if strings.TrimSpace(updated) == "" {
-			deleteMappingValue(parent, key)
+			yamlnode.DeleteMappingKey(parent, key)
 			return true, nil
 		}
 		target.Value = updated
@@ -429,7 +430,7 @@ func (d *YAMLDocument) RemoveMatchingString(path string, match func(string) bool
 		return false, nil
 	}
 	if len(filtered) == 0 {
-		deleteMappingValue(parent, key)
+		yamlnode.DeleteMappingKey(parent, key)
 		return true, nil
 	}
 	target.Content = filtered
@@ -539,14 +540,14 @@ func (d *YAMLDocument) ensureMappingRoot() *yaml.Node {
 func ensurePath(root *yaml.Node, segments []string, fullPath string) (*yaml.Node, error) {
 	current := root
 	for _, segment := range segments {
-		next := mappingValue(current, segment)
+		next := yamlnode.MappingValue(current, segment)
 		if next == nil {
 			next = &yaml.Node{
 				Kind:    yaml.MappingNode,
 				Tag:     "!!map",
 				Content: []*yaml.Node{},
 			}
-			setMappingValue(current, segment, next)
+			yamlnode.SetMappingValue(current, segment, next)
 		} else if next.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("set path %q: segment %q is not a mapping", fullPath, segment)
 		}
@@ -558,7 +559,7 @@ func ensurePath(root *yaml.Node, segments []string, fullPath string) (*yaml.Node
 func deletePathFromMapping(root *yaml.Node, segments []string, fullPath string) error {
 	current := root
 	for _, segment := range segments[:len(segments)-1] {
-		next := mappingValue(current, segment)
+		next := yamlnode.MappingValue(current, segment)
 		if next == nil {
 			return nil
 		}
@@ -567,52 +568,8 @@ func deletePathFromMapping(root *yaml.Node, segments []string, fullPath string) 
 		}
 		current = next
 	}
-	deleteMappingValue(current, segments[len(segments)-1])
+	yamlnode.DeleteMappingKey(current, segments[len(segments)-1])
 	return nil
-}
-
-func mappingValue(node *yaml.Node, key string) *yaml.Node {
-	if node == nil || node.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			return node.Content[i+1]
-		}
-	}
-	return nil
-}
-
-func setMappingValue(node *yaml.Node, key string, value *yaml.Node) {
-	if node.Kind != yaml.MappingNode {
-		node.Kind = yaml.MappingNode
-		node.Tag = "!!map"
-		node.Content = []*yaml.Node{}
-	}
-	for i := 0; i < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			node.Content[i+1] = value
-			return
-		}
-	}
-	node.Content = append(node.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
-		value,
-	)
-}
-
-func deleteMappingValue(node *yaml.Node, key string) {
-	if node == nil || node.Kind != yaml.MappingNode {
-		return
-	}
-	filtered := make([]*yaml.Node, 0, len(node.Content))
-	for i := 0; i < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			continue
-		}
-		filtered = append(filtered, node.Content[i], node.Content[i+1])
-	}
-	node.Content = filtered
 }
 
 func stripImplicitMergeTags(node *yaml.Node) {

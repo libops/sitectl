@@ -1,0 +1,4 @@
+services:
+  traefik:
+    ports: !override
+      - "8080:80"

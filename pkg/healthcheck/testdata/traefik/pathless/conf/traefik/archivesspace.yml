@@ -1,0 +1,9 @@
+http:
+  routers:
+    archivesspace-api-web:
+      rule: 'Host(`localhost`) && PathPrefix(`/api`)'
+      service: archivesspace-api
+      priority: 200
+    archivesspace-public-web:
+      rule: 'Host(`localhost`)'
+      service: archivesspace-public

@@ -1,0 +1,14 @@
+services:
+  drupal:
+    image: drupal:latest
+  traefik:
+    image: traefik:v3
+    command:
+      - --entryPoints.http.address=:80
+      - --entryPoints.https.address=:443
+      - --providers.file.directory=/etc/traefik/dynamic
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./conf/traefik:/etc/traefik/dynamic:ro
