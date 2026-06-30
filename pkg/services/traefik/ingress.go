@@ -401,6 +401,8 @@ func applyIngressTraefikCommands(compose *corecomponent.ComposeFile, opts Ingres
 func removeIngressCommandPrefixes(compose *corecomponent.ComposeFile, opts IngressOptions) error {
 	for _, entrypoint := range appendUniqueStrings(opts.Entrypoints, opts.HTTPEntrypoint, opts.HTTPSEntrypoint) {
 		for _, prefix := range []string{
+			fmt.Sprintf("--entryPoints.%s.address=", entrypoint),
+			fmt.Sprintf("--entrypoints.%s.address=", entrypoint),
 			fmt.Sprintf("--entryPoints.%s.transport.respondingTimeouts.readTimeout=", entrypoint),
 			fmt.Sprintf("--entrypoints.%s.transport.respondingTimeouts.readTimeout=", entrypoint),
 			fmt.Sprintf("--entryPoints.%s.forwardedHeaders.trustedIPs=", entrypoint),
@@ -413,8 +415,6 @@ func removeIngressCommandPrefixes(compose *corecomponent.ComposeFile, opts Ingre
 	}
 	for _, entrypoint := range []string{"https", "websecure", opts.HTTPSEntrypoint} {
 		for _, prefix := range []string{
-			fmt.Sprintf("--entryPoints.%s.address=", entrypoint),
-			fmt.Sprintf("--entrypoints.%s.address=", entrypoint),
 			fmt.Sprintf("--entryPoints.%s.http.tls.certResolver=", entrypoint),
 			fmt.Sprintf("--entrypoints.%s.http.tls.certResolver=", entrypoint),
 		} {
