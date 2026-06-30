@@ -744,10 +744,14 @@ func (c Context) resolveLocalDevPort(project string, start, fallback int) (int, 
 func tcpPortInUse(port int) bool {
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return true
+		return !tcpPortListenPermissionDenied(err)
 	}
 	_ = listener.Close()
 	return false
+}
+
+func tcpPortListenPermissionDenied(err error) bool {
+	return errors.Is(err, os.ErrPermission)
 }
 
 func dockerPublishedPortUse(project string, port int) (dockerPublishedPortStatus, error) {

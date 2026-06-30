@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"bytes"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -79,7 +80,10 @@ func PublicURLFromTraefik(ctx *config.Context, opts TraefikRouteOptions) (string
 	if err != nil {
 		return "", false, err
 	}
-	routers, err := readTraefikDynamicRouters(ctx, files)
+	routers, err := readTraefikDynamicRouters(ctx, files, traefikDynamicRouteHints{
+		AppService: appService,
+		Router:     opts.Router,
+	})
 	if err != nil {
 		return "", false, err
 	}
@@ -386,7 +390,12 @@ func traefikDynamicConfigFilesInDir(ctx *config.Context, dir string) ([]string, 
 	return out, nil
 }
 
-func readTraefikDynamicRouters(ctx *config.Context, files []string) ([]traefikDynamicRouter, error) {
+type traefikDynamicRouteHints struct {
+	AppService string
+	Router     string
+}
+
+func readTraefikDynamicRouters(ctx *config.Context, files []string, hints traefikDynamicRouteHints) ([]traefikDynamicRouter, error) {
 	routers := []traefikDynamicRouter{}
 	for _, file := range files {
 		data, err := ctx.ReadFile(file)
@@ -395,6 +404,9 @@ func readTraefikDynamicRouters(ctx *config.Context, files []string) ([]traefikDy
 		}
 		parsed, err := parseTraefikDynamicRouters(data, file)
 		if err != nil {
+			if !traefikDynamicConfigMayContainRoute(data, hints) {
+				continue
+			}
 			return nil, err
 		}
 		routers = append(routers, parsed...)
@@ -402,7 +414,20 @@ func readTraefikDynamicRouters(ctx *config.Context, files []string) ([]traefikDy
 	return routers, nil
 }
 
+func traefikDynamicConfigMayContainRoute(data []byte, hints traefikDynamicRouteHints) bool {
+	for _, hint := range []string{hints.Router, hints.AppService} {
+		hint = strings.TrimSpace(hint)
+		if hint != "" && bytes.Contains(data, []byte(hint)) {
+			return true
+		}
+	}
+	return strings.TrimSpace(hints.Router) == "" && strings.TrimSpace(hints.AppService) == ""
+}
+
 func parseTraefikDynamicRouters(data []byte, file string) ([]traefikDynamicRouter, error) {
+	if !bytes.Contains(data, []byte("routers:")) {
+		return nil, nil
+	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parse Traefik dynamic config %q: %w", file, err)

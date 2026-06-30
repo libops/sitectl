@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -246,6 +247,17 @@ func TestResolveLocalDevPortAllowsDockerPublishedPortOwnedByProject(t *testing.T
 	}
 	if len(messages) != 0 {
 		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestTCPPortListenPermissionDeniedIsNotOccupied(t *testing.T) {
+	t.Parallel()
+
+	if !tcpPortListenPermissionDenied(os.ErrPermission) {
+		t.Fatal("expected permission denied to be detected")
+	}
+	if tcpPortListenPermissionDenied(errors.New("address already in use")) {
+		t.Fatal("did not expect address-in-use error to be permission denied")
 	}
 }
 

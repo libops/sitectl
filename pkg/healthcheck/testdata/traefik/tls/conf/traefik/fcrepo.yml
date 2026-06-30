@@ -1,0 +1,6 @@
+http:
+  routers:
+    fcrepo:
+      rule: Host(`fcrepo.localhost`)
+      service: fcrepo
+    {{end}}

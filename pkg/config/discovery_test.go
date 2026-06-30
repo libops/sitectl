@@ -29,6 +29,19 @@ func TestDetectComposeProjectNameFromComposeName(t *testing.T) {
 	}
 }
 
+func TestDetectComposeServicesIncludesServicesWithImageOnly(t *testing.T) {
+	projectDir := t.TempDir()
+	content := "services:\n  alpaca:\n    image: libops/alpaca:2\n  drupal:\n    image: islandora/drupal:main\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+
+	got := DetectComposeServices(projectDir)
+	if len(got) != 2 || got[0] != "alpaca" || got[1] != "drupal" {
+		t.Fatalf("expected alpaca and drupal services, got %v", got)
+	}
+}
+
 func TestDetectComposeNetworkNameUsesDefaultNetwork(t *testing.T) {
 	projectDir := t.TempDir()
 	content := "name: isle-preserve\nservices:\n  web:\n    image: nginx:latest\n"

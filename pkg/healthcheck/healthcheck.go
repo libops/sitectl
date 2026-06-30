@@ -240,7 +240,74 @@ func (c *DockerChecker) CheckHTTPRoute(ctx context.Context, name, service, publi
 	if publicURL == "" {
 		return failed(name, "URL is empty")
 	}
-	return CheckHTTP(ctx, name, publicURL)
+	if runtimeURL := c.publicURLWithRunningTraefikHostPort(ctx, publicURL); runtimeURL != "" {
+		publicURL = runtimeURL
+	}
+	return checkHTTP(ctx, name, publicURL)
+}
+
+func (c *DockerChecker) publicURLWithRunningTraefikHostPort(ctx context.Context, publicURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	target := 80
+	if parsed.Scheme == "https" {
+		target = 443
+	}
+	port, ok, err := c.runningTraefikHostPort(ctx, target)
+	if err != nil || !ok {
+		return ""
+	}
+	parsed.Host = routeURLHost(parsed.Hostname(), parsed.Scheme, port)
+	return parsed.String()
+}
+
+func (c *DockerChecker) runningTraefikHostPort(ctx context.Context, target int) (int, bool, error) {
+	if c == nil || c.Client == nil || c.Context == nil {
+		return 0, false, nil
+	}
+	containerName, err := c.Client.GetContainerNameContext(ctx, c.Context, "traefik")
+	if err != nil {
+		return 0, false, err
+	}
+	if strings.TrimSpace(containerName) == "" {
+		return 0, false, nil
+	}
+	inspect, err := c.Client.CLI.ContainerInspect(ctx, containerName)
+	if err != nil {
+		return 0, false, err
+	}
+	if inspect.NetworkSettings == nil {
+		return 0, false, nil
+	}
+	for port, bindings := range inspect.NetworkSettings.Ports {
+		containerPort, _, ok := strings.Cut(string(port), "/")
+		if !ok || containerPort != strconv.Itoa(target) || len(bindings) == 0 {
+			continue
+		}
+		for _, binding := range bindings {
+			hostPort := strings.TrimSpace(binding.HostPort)
+			if hostPort == "" {
+				continue
+			}
+			parsed, err := strconv.Atoi(hostPort)
+			if err == nil {
+				return parsed, true, nil
+			}
+		}
+	}
+	return 0, false, nil
+}
+
+func routeURLHost(hostname, scheme string, port int) string {
+	if isDefaultPort(scheme, strconv.Itoa(port)) {
+		if strings.Contains(hostname, ":") && !strings.HasPrefix(hostname, "[") {
+			return "[" + hostname + "]"
+		}
+		return hostname
+	}
+	return net.JoinHostPort(hostname, strconv.Itoa(port))
 }
 
 // CheckOptionalHTTPServices runs container-side HTTP checks for optional
@@ -353,6 +420,8 @@ func CheckHTTP(ctx context.Context, name, targetURL string) sitevalidate.Result 
 	result, _ := checkHTTPURL(reqCtx, name, targetURL, "")
 	return result
 }
+
+var checkHTTP = CheckHTTP
 
 func checkHTTPURL(ctx context.Context, name, targetURL, hostHeader string) (sitevalidate.Result, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
