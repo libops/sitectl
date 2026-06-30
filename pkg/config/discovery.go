@@ -478,6 +478,21 @@ func cloneProjectClaim(claim *ProjectClaim) *ProjectClaim {
 	return &copied
 }
 
+// NewLocalProjectContext returns a transient local context for a Compose
+// project directory. The returned context is not persisted to the sitectl config
+// file and mirrors the context shape used for claimed current-directory
+// projects.
+func NewLocalProjectContext(projectDir, pluginName string) (*Context, error) {
+	projectDir = canonicalProjectDir(projectDir)
+	if projectDir == "" {
+		return nil, fmt.Errorf("project directory is required")
+	}
+	return claimedLocalContext(&ProjectClaim{
+		Plugin:     strings.TrimSpace(pluginName),
+		ProjectDir: projectDir,
+	}), nil
+}
+
 func canonicalProjectDir(projectDir string) string {
 	projectDir = filepath.Clean(strings.TrimSpace(projectDir))
 	if projectDir == "" {

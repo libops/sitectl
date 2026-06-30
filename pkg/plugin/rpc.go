@@ -46,6 +46,8 @@ const (
 	MethodValidateRun = "validate.run"
 	// MethodHealthcheckRun runs plugin health checks.
 	MethodHealthcheckRun = "healthcheck.run"
+	// MethodIngressRoutes lists plugin-owned public ingress routes.
+	MethodIngressRoutes = "ingress.routes"
 	// MethodVerifyRun runs plugin behavioral verification checks.
 	MethodVerifyRun = "verify.run"
 	// MethodDebugRun renders plugin debug sections.
@@ -289,6 +291,11 @@ type ValidateRunParams struct {
 // HealthcheckRunParams is the params payload for MethodHealthcheckRun.
 type HealthcheckRunParams struct{}
 
+// IngressRoutesParams is the params payload for MethodIngressRoutes.
+type IngressRoutesParams struct {
+	Path string `json:"path,omitempty" rpc_flags:"path"`
+}
+
 // VerifyRunParams is the params payload for MethodVerifyRun.
 type VerifyRunParams struct{}
 
@@ -385,6 +392,13 @@ func NewValidateRunRequest(params ValidateRunParams, args ...string) (RPCRequest
 // NewHealthcheckRunRequest creates a typed healthcheck.run request.
 func NewHealthcheckRunRequest(params HealthcheckRunParams, args ...string) (RPCRequest, error) {
 	req := NewRPCRequest(MethodHealthcheckRun)
+	req.Args = copyRPCArgs(args)
+	return withRPCParams(req, params)
+}
+
+// NewIngressRoutesRequest creates a typed ingress.routes request.
+func NewIngressRoutesRequest(params IngressRoutesParams, args ...string) (RPCRequest, error) {
+	req := NewRPCRequest(MethodIngressRoutes)
 	req.Args = copyRPCArgs(args)
 	return withRPCParams(req, params)
 }

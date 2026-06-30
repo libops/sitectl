@@ -97,3 +97,26 @@ func TestHostSummaryRowsIncludeRequestedStats(t *testing.T) {
 		}
 	}
 }
+
+func TestIngressDebugRowsMarksErrorsAsWarning(t *testing.T) {
+	rendered := debugui.FormatRows(ingressDebugRowsFromReport(statsIngressReport{
+		Status:              "warning",
+		PublicURL:           "http://localhost",
+		TrustedProxiesError: "compose file missing",
+		Routes: []statsIngressRoute{{
+			Name:   "app",
+			URL:    "http://localhost",
+			Status: "resolved",
+		}},
+	}))
+
+	if !strings.Contains(rendered, "WARNING") {
+		t.Fatalf("expected warning status, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Public URL") || !strings.Contains(rendered, "http://localhost") {
+		t.Fatalf("expected public URL row, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Trusted proxies error") || !strings.Contains(rendered, "compose file missing") {
+		t.Fatalf("expected trusted proxy error row, got:\n%s", rendered)
+	}
+}

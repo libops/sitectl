@@ -174,6 +174,7 @@ func TestRPCMethodsDecodeExpectedParamsTypes(t *testing.T) {
 		MethodComponentSet:       "ComponentSetParams",
 		MethodValidateRun:        "ValidateRunParams",
 		MethodHealthcheckRun:     "HealthcheckRunParams",
+		MethodIngressRoutes:      "IngressRoutesParams",
 		MethodVerifyRun:          "VerifyRunParams",
 		MethodDebugRun:           "DebugRunParams",
 		MethodSetRun:             "SetRunParams",
@@ -606,6 +607,7 @@ func TestRPCRequestBuildersCoverParamMethods(t *testing.T) {
 		MethodComponentSet:       mustRPCRequest(NewComponentSetRequest(ComponentSetParams{Name: "fcrepo", Disposition: "off"}, "--flag")),
 		MethodValidateRun:        mustRPCRequest(NewValidateRunRequest(ValidateRunParams{CodebaseRootfs: "app/rootfs"}, "--flag")),
 		MethodHealthcheckRun:     mustRPCRequest(NewHealthcheckRunRequest(HealthcheckRunParams{}, "--flag")),
+		MethodIngressRoutes:      mustRPCRequest(NewIngressRoutesRequest(IngressRoutesParams{Path: "/srv/site"}, "--flag")),
 		MethodVerifyRun:          mustRPCRequest(NewVerifyRunRequest(VerifyRunParams{}, "--flag")),
 		MethodDebugRun:           mustRPCRequest(NewDebugRunRequest(DebugRunParams{Verbose: true}, "--flag")),
 		MethodSetRun:             mustRPCRequest(NewSetRunRequest(SetRunParams{Path: "/srv/site"}, "--flag")),
@@ -740,6 +742,7 @@ func TestDiscoveryMetadataAdvertisesRegisteredCapabilities(t *testing.T) {
 	sdk.RegisterConvergeRunner(convergeBridgeValidationRunner{})
 	sdk.RegisterValidateRunner(&validateRunnerStub{})
 	sdk.RegisterHealthcheckRunner(&healthcheckRunnerStub{})
+	sdk.RegisterIngressRouteProvider(StaticIngressRoutes(IngressRoute{Name: "app", Service: "app"}))
 	sdk.RegisterVerifyRunner(&verifyRunnerStub{})
 
 	resp, err := sdk.handleRPC(&cobra.Command{Use: "rpc"}, NewRPCRequest(MethodPluginMetadata))
@@ -753,7 +756,7 @@ func TestDiscoveryMetadataAdvertisesRegisteredCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeRPCResult() error = %v", err)
 	}
-	if !got.CanCreate || !got.CanDeploy || !got.CanDebug || !got.CanConverge || !got.CanSet || !got.CanValidate || !got.CanHealthcheck || !got.CanVerify {
+	if !got.CanCreate || !got.CanDeploy || !got.CanDebug || !got.CanConverge || !got.CanSet || !got.CanValidate || !got.CanHealthcheck || !got.CanIngressRoutes || !got.CanVerify {
 		t.Fatalf("expected all registered capabilities to be advertised, got %+v", got)
 	}
 	if !reflect.DeepEqual(got, metadata) {
@@ -777,6 +780,7 @@ func TestRPCParamsUseSnakeCaseJSONContract(t *testing.T) {
 		reflect.TypeOf(ConvergeRunParams{}),
 		reflect.TypeOf(ValidateRunParams{}),
 		reflect.TypeOf(HealthcheckRunParams{}),
+		reflect.TypeOf(IngressRoutesParams{}),
 		reflect.TypeOf(VerifyRunParams{}),
 	}
 	assertRPCParamTypeListComplete(t, paramTypes)
@@ -795,6 +799,7 @@ func TestRPCArgBridgeContractCoversEveryField(t *testing.T) {
 		reflect.TypeOf(ConvergeRunParams{}),
 		reflect.TypeOf(ValidateRunParams{}),
 		reflect.TypeOf(HealthcheckRunParams{}),
+		reflect.TypeOf(IngressRoutesParams{}),
 		reflect.TypeOf(VerifyRunParams{}),
 	}
 	for _, typ := range bridgeTypes {
@@ -822,6 +827,7 @@ func TestRegisteredRPCCommandsDeclareBridgedFlags(t *testing.T) {
 	sdk.RegisterConvergeRunner(convergeBridgeValidationRunner{})
 	sdk.RegisterValidateRunner(&validateRunnerStub{})
 	sdk.RegisterHealthcheckRunner(&healthcheckRunnerStub{})
+	sdk.RegisterIngressRouteProvider(StaticIngressRoutes(IngressRoute{Name: "app", Service: "app"}))
 	sdk.RegisterVerifyRunner(&verifyRunnerStub{})
 	sdk.RegisterServiceComponents(ServiceComponentRegistryOptions{
 		DisplayName: "ISLE",
@@ -840,6 +846,7 @@ func TestRegisteredRPCCommandsDeclareBridgedFlags(t *testing.T) {
 		{name: "converge", method: MethodConvergeRun, command: sdk.convergeCmd, params: ConvergeRunParams{}},
 		{name: "validate", method: MethodValidateRun, command: sdk.validateCmd, params: ValidateRunParams{}},
 		{name: "healthcheck", method: MethodHealthcheckRun, command: sdk.healthcheckCmd, params: HealthcheckRunParams{}},
+		{name: "ingress routes", method: MethodIngressRoutes, command: sdk.ingressRoutesCmd, params: IngressRoutesParams{}},
 		{name: "verify", method: MethodVerifyRun, command: sdk.verifyCmd, params: VerifyRunParams{}},
 		{name: "component describe", method: MethodComponentDescribe, command: sdk.componentRootCmd, subcommand: "describe", params: ComponentTargetParams{}},
 		{name: "component reconcile", method: MethodComponentReconcile, command: sdk.componentRootCmd, subcommand: "reconcile", params: ComponentTargetParams{}},

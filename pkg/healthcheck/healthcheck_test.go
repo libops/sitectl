@@ -171,6 +171,17 @@ func TestContainerHTTPRouteURLPreservesPathAndQuery(t *testing.T) {
 	}
 }
 
+func TestTraefikHTTPRouteURLPreservesPathAndQuery(t *testing.T) {
+	parsed, err := url.Parse("https://example.test/admin?check=1")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	got := traefikHTTPRouteURL(parsed)
+	if got != "http://traefik/admin?check=1" {
+		t.Fatalf("traefikHTTPRouteURL() = %q", got)
+	}
+}
+
 type fakeDockerAPI struct {
 	containers []dockercontainer.Summary
 	inspect    map[string]dockercontainer.InspectResponse
