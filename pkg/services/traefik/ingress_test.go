@@ -114,3 +114,55 @@ func TestApplyIngressTraefikCommandsRemovesStaleHTTPEntrypointAddress(t *testing
 		t.Fatalf("expected active HTTP read timeout command:\n%s", got)
 	}
 }
+
+func TestNormalizeTraefikFileProviderPreservesBotMitigationMounts(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "docker-compose.yml")
+	input := `services:
+  traefik:
+    command:
+      - --providers.file.filename=/etc/traefik/dynamic/drupal.yml
+    volumes:
+      - ./conf/traefik:/etc/traefik/dynamic:ro,Z
+      - ./conf/traefik/plugins/captcha-protect:/plugins-local/src/github.com/libops/captcha-protect:r
+      - ./conf/traefik/challenge.tmpl.html:/challenge.tmpl.html:ro
+`
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	compose, err := corecomponent.LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile() error = %v", err)
+	}
+
+	opts := normalizeIngressOptions(IngressOptions{NoAppService: true})
+	if err := normalizeTraefikFileProvider(compose, opts); err != nil {
+		t.Fatalf("normalizeTraefikFileProvider() error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		"./conf/traefik:/etc/traefik/dynamic:ro",
+		"./conf/traefik/plugins/captcha-protect:/plugins-local/src/github.com/libops/captcha-protect:r",
+		"./conf/traefik/challenge.tmpl.html:/challenge.tmpl.html:ro",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected Traefik volume %q to be present:\n%s", want, got)
+		}
+	}
+	for _, stale := range []string{
+		"--providers.file.filename=",
+		"./conf/traefik:/etc/traefik/dynamic:ro,Z",
+	} {
+		if strings.Contains(got, stale) {
+			t.Fatalf("stale Traefik provider value %q was not removed:\n%s", stale, got)
+		}
+	}
+}
