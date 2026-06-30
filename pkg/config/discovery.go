@@ -71,9 +71,7 @@ type composeDiscoveryDoc struct {
 	Networks map[string]composeDiscoveryNetwork `yaml:"networks"`
 }
 
-type composeDiscoveryService struct {
-	Networks any `yaml:"networks"`
-}
+type composeDiscoveryService map[string]any
 
 type composeDiscoveryNetwork struct {
 	Name string `yaml:"name"`
@@ -223,7 +221,7 @@ func usesImplicitDefaultNetwork(services map[string]composeDiscoveryService) boo
 		return true
 	}
 	for _, service := range services {
-		if len(serviceNetworkKeys(service.Networks)) == 0 {
+		if len(serviceNetworkKeys(service["networks"])) == 0 {
 			return true
 		}
 	}
@@ -237,7 +235,7 @@ func commonServiceNetwork(services map[string]composeDiscoveryService) string {
 	counts := map[string]int{}
 	total := 0
 	for _, service := range services {
-		keys := serviceNetworkKeys(service.Networks)
+		keys := serviceNetworkKeys(service["networks"])
 		if len(keys) == 0 {
 			return ""
 		}

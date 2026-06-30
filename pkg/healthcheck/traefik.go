@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"bytes"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -403,6 +404,9 @@ func readTraefikDynamicRouters(ctx *config.Context, files []string) ([]traefikDy
 }
 
 func parseTraefikDynamicRouters(data []byte, file string) ([]traefikDynamicRouter, error) {
+	if !bytes.Contains(data, []byte("routers:")) {
+		return nil, nil
+	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parse Traefik dynamic config %q: %w", file, err)

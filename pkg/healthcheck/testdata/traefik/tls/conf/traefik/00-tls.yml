@@ -1,0 +1,6 @@
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: {{ env "CERT_PUBLIC_KEY" }}
+        keyFile: {{ env "CERT_PRIVATE_KEY" }}
