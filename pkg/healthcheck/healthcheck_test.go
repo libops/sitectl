@@ -10,8 +10,10 @@ import (
 	"testing"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
+	"github.com/docker/go-connections/nat"
 	"github.com/libops/sitectl/pkg/config"
 	sitectldocker "github.com/libops/sitectl/pkg/docker"
+	sitevalidate "github.com/libops/sitectl/pkg/validate"
 )
 
 func TestSolrCoreStatusDetailLoaded(t *testing.T) {
@@ -103,6 +105,45 @@ func TestServiceEnvReadsConfiguredContainerEnv(t *testing.T) {
 	}
 	if got != "http://localhost:8081/" {
 		t.Fatalf("ServiceEnv() = %q", got)
+	}
+}
+
+func TestCheckHTTPRouteUsesRunningTraefikHostPort(t *testing.T) {
+	originalCheckHTTP := checkHTTP
+	t.Cleanup(func() { checkHTTP = originalCheckHTTP })
+
+	var checkedURL string
+	checkHTTP = func(ctx context.Context, name, targetURL string) sitevalidate.Result {
+		checkedURL = targetURL
+		return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK}
+	}
+
+	checker := &DockerChecker{
+		Context: &config.Context{Name: "test", ProjectName: "archives"},
+		Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{
+			containers: []dockercontainer.Summary{{
+				ID:     "traefik123",
+				Names:  []string{"/archives-traefik-1"},
+				Labels: map[string]string{"com.docker.compose.service": "traefik"},
+			}},
+			inspect: map[string]dockercontainer.InspectResponse{
+				"/archives-traefik-1": {
+					NetworkSettings: &dockercontainer.NetworkSettings{
+						NetworkSettingsBase: dockercontainer.NetworkSettingsBase{Ports: nat.PortMap{
+							"80/tcp": []nat.PortBinding{{HostPort: "80"}},
+						}},
+					},
+				},
+			},
+		}},
+	}
+
+	result := checker.CheckHTTPRoute(context.Background(), "http:archivesspace", "archivesspace", "http://localhost:8080/")
+	if result.Status != sitevalidate.StatusOK {
+		t.Fatalf("CheckHTTPRoute() status = %s", result.Status)
+	}
+	if checkedURL != "http://localhost/" {
+		t.Fatalf("checked URL = %q, want http://localhost/", checkedURL)
 	}
 }
 
