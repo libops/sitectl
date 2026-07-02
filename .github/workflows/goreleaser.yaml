@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   goreleaser:
-    uses: libops/terraform-linux-packages/.github/workflows/reusable-goreleaser.yaml@45a727f250c38776630d6c37a01328b140a78d99 # main
+    uses: libops/terraform-linux-packages/.github/workflows/reusable-goreleaser.yaml@879d9d104fb42220718c6815a962bd857b67efa2 # main
     permissions:
       contents: write
       id-token: write
