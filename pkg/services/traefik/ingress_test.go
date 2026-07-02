@@ -166,3 +166,152 @@ func TestNormalizeTraefikFileProviderPreservesBotMitigationMounts(t *testing.T) 
 		}
 	}
 }
+
+func TestRewriteIngressRouterTextHTTPRemovesHostGates(t *testing.T) {
+	t.Parallel()
+
+	input := `http:
+  services:
+    app:
+      loadBalancer:
+        servers:
+          - url: http://app:80
+  routers:
+    app-api:
+      rule: 'Host("localhost") && PathPrefix("/api")'
+      service: app
+      tls: {}
+    app:
+      rule: Host("localhost")
+      service: app
+      tls: {}
+`
+	settings := ingressSettings{
+		Mode:        IngressModeHTTP,
+		Domain:      DefaultIngressDomain,
+		UploadSize:  DefaultMaxUploadSize,
+		ReadTimeout: DefaultUploadTimeout,
+		Scheme:      "http",
+	}
+	got := rewriteIngressRouterText(input, normalizeIngressOptions(IngressOptions{NoAppService: true}), settings)
+
+	if strings.Contains(got, "Host(") {
+		t.Fatalf("expected HTTP routers to be hostless, got:\n%s", got)
+	}
+	for _, want := range []string{
+		`rule: 'PathPrefix("/api")'`,
+		"rule: PathPrefix(`/`)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected rewritten router config to contain %q, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "tls:") {
+		t.Fatalf("expected HTTP routers to remove TLS blocks, got:\n%s", got)
+	}
+}
+
+func TestRewriteIngressRouterTextHTTPSRestoresHostGates(t *testing.T) {
+	t.Parallel()
+
+	input := `http:
+  services:
+    app:
+      loadBalancer:
+        servers:
+          - url: http://app:80
+  routers:
+    app-api:
+      rule: 'PathPrefix("/api")'
+      service: app
+    app:
+      rule: 'PathPrefix("/")'
+      service: app
+`
+	settings := ingressSettings{
+		Mode:        IngressModeHTTPSDefault,
+		Domain:      "repo.example.org",
+		UploadSize:  DefaultMaxUploadSize,
+		ReadTimeout: DefaultUploadTimeout,
+		Scheme:      "https",
+		HTTPS:       true,
+	}
+	opts := normalizeIngressOptions(IngressOptions{
+		NoAppService: true,
+		RouterHosts: map[string]string{
+			"app-api": "api.{domain}",
+		},
+	})
+	got := rewriteIngressRouterText(input, opts, settings)
+
+	for _, want := range []string{
+		"rule: 'Host(`api.repo.example.org`) && PathPrefix(\"/api\")'",
+		"rule: 'Host(`repo.example.org`)'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected rewritten router config to contain %q, got:\n%s", want, got)
+		}
+	}
+	if count := strings.Count(got, "tls: {}"); count != 2 {
+		t.Fatalf("TLS block count = %d, want 2:\n%s", count, got)
+	}
+}
+
+func TestRewriteIngressRouterTextHTTPPreservesSubdomainOnlyServiceRouters(t *testing.T) {
+	t.Parallel()
+
+	input := `http:
+  services:
+    drupal:
+      loadBalancer:
+        servers:
+          - url: http://drupal:80
+    fcrepo:
+      loadBalancer:
+        servers:
+          - url: http://fcrepo:8080
+    triplet:
+      loadBalancer:
+        servers:
+          - url: http://triplet:8080
+  routers:
+    drupal:
+      rule: Host("localhost")
+      service: drupal
+    fcrepo:
+      rule: Host("fcrepo.localhost")
+      service: fcrepo
+    triplet:
+      rule: Host("localhost") && PathPrefix("/iiif")
+      service: triplet
+`
+	settings := ingressSettings{
+		Mode:        IngressModeHTTP,
+		Domain:      DefaultIngressDomain,
+		UploadSize:  DefaultMaxUploadSize,
+		ReadTimeout: DefaultUploadTimeout,
+		Scheme:      "http",
+	}
+	opts := normalizeIngressOptions(IngressOptions{
+		AppService: "drupal",
+		RouterHosts: map[string]string{
+			"drupal":  "{domain}",
+			"fcrepo":  "fcrepo.{domain}",
+			"triplet": "{domain}",
+		},
+	})
+	got := rewriteIngressRouterText(input, opts, settings)
+
+	for _, want := range []string{
+		"rule: PathPrefix(`/`)",
+		`rule: Host("fcrepo.localhost")`,
+		`rule: PathPrefix("/iiif")`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected rewritten router config to contain %q, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `Host("localhost")`) {
+		t.Fatalf("expected localhost app/path routers to be hostless, got:\n%s", got)
+	}
+}

@@ -77,6 +77,57 @@ func TestPublicURLFromTraefikUsesTLSRouter(t *testing.T) {
 	}
 }
 
+func TestPublicURLFromTraefikUsesDefaultDomainForHostlessRouter(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	writeTraefikFile(t, projectDir, "docker-compose.yml", `services:
+  traefik:
+    command:
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --entrypoints.web.address=:80
+    ports:
+      - "80:80"
+    volumes:
+      - ./conf/traefik:/etc/traefik/dynamic:ro
+  drupal: {}
+`)
+	writeTraefikFile(t, projectDir, "docker-compose.override.yml", `services:
+  traefik:
+    ports: !override
+      - "8080:80"
+`)
+	writeTraefikFile(t, projectDir, "conf/traefik/drupal.yml", `http:
+  services:
+    drupal:
+      loadBalancer:
+        servers:
+          - url: http://drupal:80
+  routers:
+    drupal:
+      rule: PathPrefix("/")
+      entryPoints:
+        - web
+      service: drupal
+`)
+
+	got, ok, err := PublicURLFromTraefik(&config.Context{ProjectDir: projectDir, DockerHostType: config.ContextLocal}, TraefikRouteOptions{
+		AppService:    "drupal",
+		Router:        "drupal",
+		DefaultScheme: "http",
+		DefaultDomain: "172.234.17.94",
+	})
+	if err != nil {
+		t.Fatalf("PublicURLFromTraefik() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected Traefik route to resolve")
+	}
+	if got != "http://172.234.17.94:8080/" {
+		t.Fatalf("PublicURLFromTraefik() = %q, want http://172.234.17.94:8080/", got)
+	}
+}
+
 func copyTraefikFixture(t *testing.T, projectDir, name string) {
 	t.Helper()
 
@@ -103,5 +154,17 @@ func copyTraefikFixture(t *testing.T, projectDir, name string) {
 		return os.WriteFile(target, data, 0o600)
 	}); err != nil {
 		t.Fatalf("copy fixture %q: %v", name, err)
+	}
+}
+
+func writeTraefikFile(t *testing.T, projectDir, rel, content string) {
+	t.Helper()
+
+	target := filepath.Join(projectDir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(target), err)
+	}
+	if err := os.WriteFile(target, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", target, err)
 	}
 }

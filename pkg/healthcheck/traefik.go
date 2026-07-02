@@ -466,7 +466,7 @@ func chooseTraefikRouter(routers []traefikDynamicRouter, appService, preferredRo
 	}
 	candidates := []candidate{}
 	for _, router := range routers {
-		if traefikRuleHost(router.Rule) == "" {
+		if strings.TrimSpace(router.Rule) == "" {
 			continue
 		}
 		score := traefikRouterScore(router, appService, preferredRouter)
