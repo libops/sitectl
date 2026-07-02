@@ -24,7 +24,8 @@ import (
 )
 
 const (
-	defaultHTTPTimeout = 10 * time.Second
+	defaultHTTPTimeout       = 10 * time.Second
+	defaultHTTPRetryInterval = 500 * time.Millisecond
 )
 
 var lookupIP = net.LookupIP
@@ -408,17 +409,30 @@ func CheckHTTP(ctx context.Context, name, targetURL string) sitevalidate.Result 
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, defaultHTTPTimeout)
 	defer cancel()
-	if result, err := checkHTTPURL(reqCtx, name, targetURL, ""); err == nil {
-		return result
-	}
-	if fallbackURL, hostHeader, ok := dockerHostFallbackURL(targetURL); ok && dockerHostFallbackReachable() {
-		if result, err := checkHTTPURL(reqCtx, name, fallbackURL, hostHeader); err == nil {
-			result.Detail += " via host.docker.internal"
+	var last sitevalidate.Result
+	for {
+		if result, err := checkHTTPURL(reqCtx, name, targetURL, ""); err == nil {
 			return result
+		} else {
+			last = result
+		}
+		if fallbackURL, hostHeader, ok := dockerHostFallbackURL(targetURL); ok && dockerHostFallbackReachable() {
+			if result, err := checkHTTPURL(reqCtx, name, fallbackURL, hostHeader); err == nil {
+				result.Detail += " via host.docker.internal"
+				return result
+			} else {
+				last = result
+			}
+		}
+		select {
+		case <-reqCtx.Done():
+			if strings.TrimSpace(last.Name) == "" {
+				return failed(name, reqCtx.Err().Error())
+			}
+			return last
+		case <-time.After(defaultHTTPRetryInterval):
 		}
 	}
-	result, _ := checkHTTPURL(reqCtx, name, targetURL, "")
-	return result
 }
 
 var checkHTTP = CheckHTTP

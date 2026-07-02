@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
@@ -171,6 +174,26 @@ func TestDockerHostFallbackURLPreservesHostHeader(t *testing.T) {
 	}
 	if gotHost != "localhost:8080" {
 		t.Fatalf("host header = %q", gotHost)
+	}
+}
+
+func TestCheckHTTPRetriesTransientFailures(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) < 3 {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	result := CheckHTTP(context.Background(), "http:test", server.URL)
+	if result.Status != sitevalidate.StatusOK {
+		t.Fatalf("CheckHTTP() status = %s, detail = %q", result.Status, result.Detail)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
 	}
 }
 
