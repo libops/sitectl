@@ -1,8 +1,8 @@
 services:
   drupal:
-    image: drupal:latest
+    image: drupal:latest@sha256:ed37f404790e9895ad2cd6e7336851c32b48aa0912622685ff960484ad9efb68
   traefik:
-    image: traefik:v3
+    image: traefik:v3@sha256:21a3d83696379bac6434bb32e1dde0aff0e84ef2abd053ed3db87d3f45e749b2
     command:
       - --entryPoints.http.address=:80
       - --entryPoints.https.address=:443
