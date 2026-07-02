@@ -42,7 +42,11 @@ const (
 )
 
 var (
-	hostRulePattern = regexp.MustCompile(`Host\(` + "`" + `[^` + "`" + `]*` + "`" + `\)`)
+	hostRuleExpr                        = `\bHost\s*\(\s*(?:` + "`" + `[^` + "`" + `]*` + "`" + `|"[^"]*"|'[^']*')\s*\)`
+	hostRulePattern                     = regexp.MustCompile(hostRuleExpr)
+	hostRuleWithTrailingOperatorPattern = regexp.MustCompile(hostRuleExpr + `\s*(?:&&|\|\|)\s*`)
+	operatorWithTrailingHostRulePattern = regexp.MustCompile(`\s*(?:&&|\|\|)\s*` + hostRuleExpr)
+	pathRulePattern                     = regexp.MustCompile(`\bPath(?:Prefix)?\s*\(`)
 )
 
 //go:embed assets/ingress/default-tls.yml
@@ -651,14 +655,133 @@ func rewriteRouterHostRules(lines []string, opts IngressOptions, settings ingres
 			router = strings.TrimSuffix(trimmed, ":")
 			continue
 		}
-		if router == "" || !strings.Contains(trimmed, "rule:") || !strings.Contains(trimmed, "Host(") {
+		if router == "" || !strings.Contains(trimmed, "rule:") {
 			continue
 		}
 		host := ingressRouterHost(opts, router, settings.Domain)
-		out[i] = hostRulePattern.ReplaceAllString(line, "Host(`"+host+"`)")
-		out[i] = replaceLegacyDomainTemplates(out[i], settings.Domain)
+		out[i] = rewriteRouterRuleLine(line, router, host, settings.Domain, opts, settings.HTTPS)
 	}
 	return out
+}
+
+func rewriteRouterRuleLine(line, router, host, domain string, opts IngressOptions, https bool) string {
+	idx := strings.Index(line, "rule:")
+	if idx < 0 {
+		return line
+	}
+	prefix := line[:idx+len("rule:")]
+	after := line[idx+len("rule:"):]
+	space := after[:len(after)-len(strings.TrimLeft(after, " \t"))]
+	raw := strings.TrimSpace(after)
+	if raw == "" {
+		return line
+	}
+	quote := ""
+	rule := raw
+	if len(raw) >= 2 {
+		first := raw[0]
+		last := raw[len(raw)-1]
+		if (first == '\'' || first == '"') && first == last {
+			quote = raw[:1]
+			rule = raw[1 : len(raw)-1]
+		}
+	}
+	rule = replaceLegacyDomainTemplates(rule, domain)
+	if https {
+		rule = ensureRouterRuleHost(rule, host)
+	} else if shouldPreserveHTTPHostGate(rule, router, host, domain, opts) {
+		rule = strings.TrimSpace(rule)
+	} else {
+		rule = removeRouterRuleHostGate(rule)
+	}
+	return prefix + space + quote + rule + quote
+}
+
+func ensureRouterRuleHost(rule, host string) string {
+	hostRule := "Host(`" + host + "`)"
+	if hostRulePattern.MatchString(rule) {
+		return hostRulePattern.ReplaceAllStringFunc(rule, func(string) string {
+			return hostRule
+		})
+	}
+	rule = strings.TrimSpace(rule)
+	if isEmptyRouterRule(rule) || isCatchAllRouterRule(rule) {
+		return hostRule
+	}
+	return hostRule + " && " + rule
+}
+
+func removeRouterRuleHostGate(rule string) string {
+	current := strings.TrimSpace(rule)
+	for {
+		next := hostRuleWithTrailingOperatorPattern.ReplaceAllString(current, "")
+		next = operatorWithTrailingHostRulePattern.ReplaceAllString(next, "")
+		next = hostRulePattern.ReplaceAllString(next, "")
+		next = strings.TrimSpace(next)
+		if next == current {
+			break
+		}
+		current = next
+	}
+	if isEmptyRouterRule(current) {
+		return "PathPrefix(`/`)"
+	}
+	return current
+}
+
+func shouldPreserveHTTPHostGate(rule, router, renderedHost, domain string, opts IngressOptions) bool {
+	if !hostRulePattern.MatchString(rule) || pathRulePattern.MatchString(rule) {
+		return false
+	}
+	if opts.RouterHosts != nil {
+		if template := strings.TrimSpace(opts.RouterHosts[router]); template != "" && renderDomainTemplate(template, domain) != domain {
+			return true
+		}
+	}
+	for _, host := range routerRuleHosts(rule) {
+		switch host {
+		case "", "localhost", domain, renderedHost:
+			continue
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func routerRuleHosts(rule string) []string {
+	matches := hostRulePattern.FindAllString(rule, -1)
+	hosts := make([]string, 0, len(matches))
+	for _, match := range matches {
+		start := strings.Index(match, "(")
+		end := strings.LastIndex(match, ")")
+		if start < 0 || end <= start {
+			continue
+		}
+		arg := strings.TrimSpace(match[start+1 : end])
+		arg = strings.TrimSpace(strings.Trim(arg, "`\"'"))
+		hosts = append(hosts, arg)
+	}
+	return hosts
+}
+
+func isEmptyRouterRule(rule string) bool {
+	rule = strings.TrimSpace(rule)
+	for rule != "" {
+		next := strings.TrimSpace(strings.Trim(rule, "()"))
+		if next == rule {
+			break
+		}
+		rule = next
+	}
+	return rule == "" || rule == "&&" || rule == "||"
+}
+
+func isCatchAllRouterRule(rule string) bool {
+	normalized := strings.TrimSpace(rule)
+	normalized = strings.ReplaceAll(normalized, `"`, "`")
+	normalized = strings.ReplaceAll(normalized, `'`, "`")
+	return normalized == "PathPrefix(`/`)" || normalized == "Path(`/`)"
 }
 
 func rewriteRouterTLS(lines []string, settings ingressSettings) []string {
@@ -729,7 +852,7 @@ func removeRouterTLSBlock(lines []string) []string {
 
 func routerBlockHasRule(lines []string) bool {
 	for _, line := range lines {
-		if leadingSpaces(line) == 6 && strings.Contains(strings.TrimSpace(line), "rule:") && strings.Contains(line, "Host(") {
+		if leadingSpaces(line) == 6 && strings.Contains(strings.TrimSpace(line), "rule:") {
 			return true
 		}
 	}
