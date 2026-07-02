@@ -198,7 +198,11 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", ComposeImageOverrideFile)
 	}
-	if cloned {
+	needsInit, err := composeTemplateNeedsInit(ctx, r.spec)
+	if err != nil {
+		return err
+	}
+	if cloned || needsInit {
 		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeInit); err != nil {
 			return err
 		}
@@ -213,6 +217,34 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	}
 	PrintComposeTemplateCreateSummary(cmd.OutOrStdout(), ctx, r.opts.ReadyMessage, req.SetupOnly)
 	return nil
+}
+
+func composeTemplateNeedsInit(ctx *config.Context, spec CreateSpec) (bool, error) {
+	if ctx == nil {
+		return false, fmt.Errorf("context is nil")
+	}
+	for _, artifact := range spec.InitArtifacts {
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			continue
+		}
+		resolved := ctx.ResolveProjectPath(filepath.FromSlash(path))
+		exists, err := ctx.FileExists(resolved)
+		if err != nil {
+			return false, fmt.Errorf("check init artifact %s: %w", path, err)
+		}
+		if !exists {
+			return true, nil
+		}
+		data, err := ctx.ReadSmallFile(resolved)
+		if err != nil {
+			return false, fmt.Errorf("read init artifact %s: %w", path, err)
+		}
+		if strings.TrimSpace(data) == "" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // EnsureComposeTemplateCheckout ensures the requested Docker Compose template
