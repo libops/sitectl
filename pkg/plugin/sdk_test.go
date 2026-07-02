@@ -672,6 +672,52 @@ func TestRegisterStandardComposeTemplateAddsLifecycleCommands(t *testing.T) {
 	}
 }
 
+func TestComposeTemplateNeedsInitDetectsMissingArtifacts(t *testing.T) {
+	projectDir := t.TempDir()
+	ctx := &config.Context{ProjectDir: projectDir, DockerHostType: config.ContextLocal}
+	spec := CreateSpec{InitArtifacts: []InitArtifact{
+		{Path: "secrets/DB_ROOT_PASSWORD"},
+		{Path: ".env"},
+	}}
+
+	needsInit, err := composeTemplateNeedsInit(ctx, spec)
+	if err != nil {
+		t.Fatalf("composeTemplateNeedsInit() error = %v", err)
+	}
+	if !needsInit {
+		t.Fatal("expected missing init artifacts to need init")
+	}
+
+	if err := os.MkdirAll(filepath.Join(projectDir, "secrets"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	for _, rel := range []string{"secrets/DB_ROOT_PASSWORD", ".env"} {
+		if err := os.WriteFile(filepath.Join(projectDir, filepath.FromSlash(rel)), []byte("\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", rel, err)
+		}
+	}
+	needsInit, err = composeTemplateNeedsInit(ctx, spec)
+	if err != nil {
+		t.Fatalf("composeTemplateNeedsInit() error = %v", err)
+	}
+	if !needsInit {
+		t.Fatal("expected empty init artifacts to need init")
+	}
+
+	for _, rel := range []string{"secrets/DB_ROOT_PASSWORD", ".env"} {
+		if err := os.WriteFile(filepath.Join(projectDir, filepath.FromSlash(rel)), []byte("present\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", rel, err)
+		}
+	}
+	needsInit, err = composeTemplateNeedsInit(ctx, spec)
+	if err != nil {
+		t.Fatalf("composeTemplateNeedsInit() error = %v", err)
+	}
+	if needsInit {
+		t.Fatal("did not expect populated init artifacts to need init")
+	}
+}
+
 func TestDockerComposeExecCommandQuotesArgs(t *testing.T) {
 	got := DockerComposeExecCommand("wp", "wp", "--path=/var/www/wp", "post", "get", "hello's world")
 	want := "'docker' 'compose' 'exec' '-T' 'wp' 'wp' '--path=/var/www/wp' 'post' 'get' 'hello'\\''s world'"
