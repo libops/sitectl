@@ -213,7 +213,7 @@ func assistantService(ctx *config.Context, opts Options, assistant AssistantOpti
 	harness := normalizeHarness(assistant.Harness)
 	env := sortedStringMap(assistantEnvironment(ctx, harness, assistant))
 	service := map[string]any{
-		"image":       "ghcr.io/libops/cli-sandbox:" + harness,
+		"image":       "${SITECTL_ASSISTANT_IMAGE:-ghcr.io/libops/cli-sandbox:" + harness + "}",
 		"pull_policy": "always",
 		"profiles":    []string{"assistant"},
 		"working_dir": "/workspace",

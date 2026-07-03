@@ -92,7 +92,7 @@ func TestComponentAssistantWritesCliSandboxService(t *testing.T) {
 	rendered := readOverrideForTest(t, projectDir)
 	for _, want := range []string{
 		"cli-sandbox:",
-		"image: ghcr.io/libops/cli-sandbox:codex",
+		"image: ${SITECTL_ASSISTANT_IMAGE:-ghcr.io/libops/cli-sandbox:codex}",
 		"pull_policy: always",
 		"- assistant",
 		"SKIP_EGRESS_FIREWALL: \"false\"",
@@ -145,7 +145,7 @@ func TestComponentAssistantCanSkipEgressFirewallAndUseEndpointModel(t *testing.T
 	}
 	rendered := readOverrideForTest(t, projectDir)
 	for _, want := range []string{
-		"image: ghcr.io/libops/cli-sandbox:gemini",
+		"image: ${SITECTL_ASSISTANT_IMAGE:-ghcr.io/libops/cli-sandbox:gemini}",
 		"SKIP_EGRESS_FIREWALL: \"true\"",
 		"OPENAI_BASE_URL: https://models.example/v1",
 		"OPENAI_API_BASE: https://models.example/v1",
