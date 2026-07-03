@@ -25,6 +25,7 @@ qa_cloudflare_key="${SITECTL_QA_CLOUDFLARE_KEY:-}"
 qa_custom_domain="${SITECTL_QA_CUSTOM_DOMAIN:-${qa_domain}}"
 qa_custom_cert="${SITECTL_QA_CUSTOM_CERT:-}"
 qa_custom_key="${SITECTL_QA_CUSTOM_KEY:-}"
+qa_allow_skips="${SITECTL_QA_ALLOW_SKIPS:-false}"
 
 usage() {
 	cat <<'USAGE'
@@ -40,6 +41,7 @@ Environment:
   SITECTL_QA_PHASES="default-http domain-http mkcert letsencrypt cloudflare custom"
   SITECTL_QA_APPS="wp drupal isle"
   SITECTL_QA_KEEP=true
+  SITECTL_QA_ALLOW_SKIPS=true
 
 Cloudflare/custom TLS phases require:
   SITECTL_QA_CLOUDFLARE_CERT=/path/to/cert.pem
@@ -58,6 +60,17 @@ need() {
 
 log() {
 	printf '\n[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2
+}
+
+skip_phase() {
+	local phase="$1"
+	local reason="$2"
+	if [ "$qa_allow_skips" = "true" ]; then
+		log "skipping ${phase}: ${reason}"
+		return 0
+	fi
+	echo "cannot run ${phase}: ${reason}; set SITECTL_QA_ALLOW_SKIPS=true to allow partial QA" >&2
+	return 1
 }
 
 run() {
@@ -208,8 +221,8 @@ phase_mkcert() {
 phase_letsencrypt() {
 	local ctx="$1"
 	if [ -z "$qa_acme_email" ]; then
-		log "skipping letsencrypt: SITECTL_QA_ACME_EMAIL is not set"
-		return 0
+		skip_phase "letsencrypt" "SITECTL_QA_ACME_EMAIL is not set"
+		return $?
 	fi
 	set_ingress "$ctx" --mode https-letsencrypt --domain "$qa_domain" --acme-email "$qa_acme_email"
 	curl_url "https://${qa_domain}/" "$qa_domain" 443 strict
@@ -219,8 +232,8 @@ phase_cloudflare() {
 	local ctx="$1"
 	local dir="$2"
 	if [ -z "$qa_cloudflare_cert" ] || [ -z "$qa_cloudflare_key" ]; then
-		log "skipping cloudflare: SITECTL_QA_CLOUDFLARE_CERT and SITECTL_QA_CLOUDFLARE_KEY are not set"
-		return 0
+		skip_phase "cloudflare" "SITECTL_QA_CLOUDFLARE_CERT and SITECTL_QA_CLOUDFLARE_KEY are not set"
+		return $?
 	fi
 	install_cert_pair "$dir" "$qa_cloudflare_cert" "$qa_cloudflare_key"
 	set_ingress "$ctx" --mode https-cloudflare-origin --domain "$qa_cloudflare_domain"
@@ -231,8 +244,8 @@ phase_custom() {
 	local ctx="$1"
 	local dir="$2"
 	if [ -z "$qa_custom_cert" ] || [ -z "$qa_custom_key" ]; then
-		log "skipping custom: SITECTL_QA_CUSTOM_CERT and SITECTL_QA_CUSTOM_KEY are not set"
-		return 0
+		skip_phase "custom" "SITECTL_QA_CUSTOM_CERT and SITECTL_QA_CUSTOM_KEY are not set"
+		return $?
 	fi
 	install_cert_pair "$dir" "$qa_custom_cert" "$qa_custom_key"
 	set_ingress "$ctx" --mode https-custom --domain "$qa_custom_domain"
