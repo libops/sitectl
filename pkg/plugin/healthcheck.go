@@ -109,15 +109,18 @@ func (r standardComposeWebHealthcheckRunner) Run(cmd *cobra.Command, ctx *config
 }
 
 func healthcheckURLFromServiceEnvironment(ctx *config.Context, appService string, opts StandardComposeWebHealthcheckOptions) string {
-	if len(opts.URLVariables) == 0 && len(opts.DomainVariables) == 0 && len(opts.HTTPSVariables) == 0 {
-		return ""
-	}
 	env, err := ContextServiceEnvironment(ctx, appService)
 	if err != nil {
 		return ""
 	}
 	scheme := firstHealthcheckValue(opts.DefaultScheme, "http")
 	domain := firstHealthcheckValue(opts.DefaultDomain, "localhost")
+	if ingressScheme, ingressDomain, ok := ingressSchemeDomainFromEnv(env, scheme, domain); ok {
+		return (&url.URL{Scheme: ingressScheme, Host: ingressDomain, Path: "/"}).String()
+	}
+	if len(opts.URLVariables) == 0 && len(opts.DomainVariables) == 0 && len(opts.HTTPSVariables) == 0 {
+		return ""
+	}
 	for _, key := range opts.URLVariables {
 		parsedScheme, parsedDomain := schemeDomainFromURL(env[strings.TrimSpace(key)])
 		if parsedDomain != "" {

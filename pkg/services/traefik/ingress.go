@@ -75,6 +75,7 @@ type IngressOptions struct {
 	RouterFiles         []string
 	RouterHosts         map[string]string
 	ServiceEnvTemplates map[string]map[string]string
+	AppEnvDeletes       []string
 	AppUpdate           IngressAppUpdateFunc
 	TrustedIPLimit      int
 }
@@ -387,7 +388,7 @@ func applyIngress(runCtx context.Context, ctx *config.Context, opts IngressOptio
 	if err != nil {
 		return err
 	}
-	if err := applyIngressCompose(compose, opts, settings); err != nil {
+	if err := applyIngressCompose(ctx, compose, opts, settings); err != nil {
 		return err
 	}
 	if opts.AppUpdate != nil {
@@ -585,7 +586,7 @@ func runIngressMkcert(ctx *config.Context, certPath, keyPath string, hosts []str
 	return fmt.Errorf("run mkcert: %w", err)
 }
 
-func applyIngressCompose(compose *corecomponent.ComposeFile, opts IngressOptions, settings ingressSettings) error {
+func applyIngressCompose(ctx *config.Context, compose *corecomponent.ComposeFile, opts IngressOptions, settings ingressSettings) error {
 	if err := removeLegacyTraefikEnvironment(compose, opts); err != nil {
 		return err
 	}
@@ -601,7 +602,7 @@ func applyIngressCompose(compose *corecomponent.ComposeFile, opts IngressOptions
 	if err := applyIngressTLSModeEnvironment(compose, opts, settings); err != nil {
 		return err
 	}
-	if err := applyIngressServiceEnvironment(compose, opts, settings); err != nil {
+	if err := applyIngressServiceEnvironment(ctx, compose, opts, settings); err != nil {
 		return err
 	}
 	if err := applyIngressUploadEnvironment(compose, opts, settings); err != nil {
@@ -763,7 +764,30 @@ func applyIngressPortsAndVolumes(compose *corecomponent.ComposeFile, opts Ingres
 	return nil
 }
 
-func applyIngressServiceEnvironment(compose *corecomponent.ComposeFile, opts IngressOptions, settings ingressSettings) error {
+func applyIngressServiceEnvironment(ctx *config.Context, compose *corecomponent.ComposeFile, opts IngressOptions, settings ingressSettings) error {
+	if strings.TrimSpace(opts.AppService) != "" && compose.HasService(opts.AppService) {
+		update := newIngressAppUpdate(settings)
+		standardEnv := map[string]string{
+			"INGRESS_HOSTNAMES": strings.Join(SuggestedApplicationHosts(ctx, update), ","),
+			"INGRESS_SCHEME":    settings.Scheme,
+		}
+		keys := make([]string, 0, len(standardEnv))
+		for key := range standardEnv {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if err := compose.SetServiceEnv(opts.AppService, key, standardEnv[key]); err != nil {
+				return err
+			}
+		}
+		for _, key := range opts.AppEnvDeletes {
+			if err := compose.DeleteServiceEnv(opts.AppService, key); err != nil {
+				return err
+			}
+		}
+	}
+
 	services := make([]string, 0, len(opts.ServiceEnvTemplates))
 	for service := range opts.ServiceEnvTemplates {
 		if strings.TrimSpace(service) != "" {

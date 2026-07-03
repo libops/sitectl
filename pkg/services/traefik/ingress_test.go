@@ -194,7 +194,7 @@ func TestApplyIngressComposeTLSModes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveIngressSettings() error = %v", err)
 			}
-			if err := applyIngressCompose(compose, normalizeIngressOptions(IngressOptions{AppService: "app"}), settings); err != nil {
+			if err := applyIngressCompose(&config.Context{DockerHostType: config.ContextLocal}, compose, normalizeIngressOptions(IngressOptions{AppService: "app"}), settings); err != nil {
 				t.Fatalf("applyIngressCompose() error = %v", err)
 			}
 			if err := compose.Save(); err != nil {
@@ -205,7 +205,7 @@ func TestApplyIngressComposeTLSModes(t *testing.T) {
 				t.Fatalf("ReadFile() error = %v", err)
 			}
 			got := string(data)
-			for _, want := range tt.want {
+			for _, want := range append(tt.want, `INGRESS_HOSTNAMES: "app.example.org,localhost,127.0.0.1,::1"`, `INGRESS_SCHEME: "`+settings.Scheme+`"`) {
 				if !strings.Contains(got, want) {
 					t.Fatalf("expected compose to contain %q:\n%s", want, got)
 				}
@@ -246,7 +246,7 @@ func TestApplyIngressComposeHTTPRemovesTLSModeMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveIngressSettings() error = %v", err)
 	}
-	if err := applyIngressCompose(compose, normalizeIngressOptions(IngressOptions{NoAppService: true}), settings); err != nil {
+	if err := applyIngressCompose(nil, compose, normalizeIngressOptions(IngressOptions{NoAppService: true}), settings); err != nil {
 		t.Fatalf("applyIngressCompose() error = %v", err)
 	}
 	if err := compose.Save(); err != nil {
