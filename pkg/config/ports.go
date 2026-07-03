@@ -35,6 +35,7 @@ const (
 type composePortPlan struct {
 	Services    map[string]map[int]struct{}
 	LetsEncrypt bool
+	TLSMode     string
 }
 
 type dockerPublishedPortStatus struct {
@@ -91,6 +92,9 @@ func (p composePortPlan) usesPublicHTTPS() bool {
 }
 
 func (p composePortPlan) tlsProvider(defaultProvider string) string {
+	if provider := tlsProviderFromIngressMode(p.TLSMode); provider != "" {
+		return provider
+	}
 	if p.LetsEncrypt {
 		return "letsencrypt"
 	}
@@ -99,6 +103,21 @@ func (p composePortPlan) tlsProvider(defaultProvider string) string {
 		return defaultProvider
 	}
 	return "self-managed"
+}
+
+func tlsProviderFromIngressMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "https-cloudflare-origin", "https", "cloudflare", "cloudflare-origin", "origin-ca":
+		return "cloudflare-origin"
+	case "https-letsencrypt", "letsencrypt", "le":
+		return "letsencrypt"
+	case "https-custom", "custom", "byo", "bring-your-own", "self-managed":
+		return "custom"
+	case "https-mkcert", "mkcert", "self-signed", "dev":
+		return "mkcert"
+	default:
+		return ""
+	}
 }
 
 func (p composePortPlan) targets() []int {
@@ -320,6 +339,11 @@ func mergeComposePortPlan(plan *composePortPlan, data []byte) {
 		if strings.EqualFold(serviceName, "traefik") && serviceCommandUsesLetsEncrypt(command) {
 			plan.LetsEncrypt = true
 		}
+		if strings.EqualFold(serviceName, "traefik") {
+			if mode := serviceEnvironmentValue(yamlnode.MappingValue(service, "environment"), "SITECTL_TLS_MODE"); mode != "" {
+				plan.TLSMode = mode
+			}
+		}
 		for target := range targets {
 			if _, ok := localDevFallbackPort(target); !ok {
 				continue
@@ -330,6 +354,38 @@ func mergeComposePortPlan(plan *composePortPlan, data []byte) {
 			plan.Services[serviceName][target] = struct{}{}
 		}
 	}
+}
+
+func serviceEnvironmentValue(node *yaml.Node, key string) string {
+	key = strings.TrimSpace(key)
+	if node == nil || key == "" {
+		return ""
+	}
+	switch node.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if strings.EqualFold(strings.TrimSpace(node.Content[i].Value), key) {
+				return strings.Trim(strings.TrimSpace(node.Content[i+1].Value), `"`)
+			}
+		}
+	case yaml.SequenceNode:
+		for _, item := range node.Content {
+			if value := serviceEnvironmentStringValue(item.Value, key); value != "" {
+				return value
+			}
+		}
+	case yaml.ScalarNode:
+		return serviceEnvironmentStringValue(node.Value, key)
+	}
+	return ""
+}
+
+func serviceEnvironmentStringValue(value, key string) string {
+	name, raw, ok := strings.Cut(strings.TrimSpace(value), "=")
+	if !ok || !strings.EqualFold(strings.TrimSpace(name), key) {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(raw), `"`)
 }
 
 func serviceTargetPorts(node *yaml.Node) map[int]struct{} {

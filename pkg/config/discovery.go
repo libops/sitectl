@@ -65,6 +65,30 @@ func DetectComposeProjectName(projectDir string) string {
 	return ""
 }
 
+func DetectContextComposeProjectName(ctx *Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if ctx.DockerHostType != ContextRemote {
+		return DetectComposeProjectName(ctx.ProjectDir)
+	}
+
+	envPath := ctx.ResolveProjectPath(".env")
+	if content, err := ctx.ReadSmallFile(envPath); err == nil {
+		if values, err := godotenv.Unmarshal(content); err == nil {
+			if value := strings.TrimSpace(values["COMPOSE_PROJECT_NAME"]); value != "" {
+				return value
+			}
+		}
+	}
+
+	doc, ok := readComposeDiscoveryDocForContext(ctx)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(doc.Name)
+}
+
 type composeDiscoveryDoc struct {
 	Name     string                             `yaml:"name"`
 	Services map[string]composeDiscoveryService `yaml:"services"`

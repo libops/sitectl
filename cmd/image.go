@@ -22,12 +22,10 @@ var imageSetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if ctx.DockerHostType != config.ContextLocal {
-			return fmt.Errorf("image override updates currently require a local context")
-		}
 		if strings.TrimSpace(ctx.ProjectDir) == "" {
 			return fmt.Errorf("context %q does not define a project directory", ctx.Name)
 		}
+		warnRemoteProjectMutation(cmd, ctx)
 		imageTags, err := cmd.Flags().GetStringArray("tag")
 		if err != nil {
 			return err
@@ -47,7 +45,7 @@ var imageSetCmd = &cobra.Command{
 		if overrides.Empty() {
 			return fmt.Errorf("no image overrides requested")
 		}
-		if err := plugin.ApplyComposeImageOverrides(ctx.ProjectDir, overrides); err != nil {
+		if err := plugin.ApplyComposeImageOverridesContext(ctx, overrides); err != nil {
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", plugin.ComposeImageOverrideFile)
@@ -63,13 +61,11 @@ var imageClearCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if ctx.DockerHostType != config.ContextLocal {
-			return fmt.Errorf("image override updates currently require a local context")
-		}
 		if strings.TrimSpace(ctx.ProjectDir) == "" {
 			return fmt.Errorf("context %q does not define a project directory", ctx.Name)
 		}
-		if err := plugin.ClearComposeImageOverrides(ctx.ProjectDir, args); err != nil {
+		warnRemoteProjectMutation(cmd, ctx)
+		if err := plugin.ClearComposeImageOverridesContext(ctx, args); err != nil {
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Updated %s\n", plugin.ComposeImageOverrideFile)
@@ -85,4 +81,11 @@ func init() {
 	imageCmd.AddCommand(imageClearCmd)
 	imageCmd.GroupID = "workflow"
 	RootCmd.AddCommand(imageCmd)
+}
+
+func warnRemoteProjectMutation(cmd *cobra.Command, ctx *config.Context) {
+	if cmd == nil || ctx == nil || ctx.DockerHostType != config.ContextRemote {
+		return
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), "Warning: modifying remote project files directly; commit and review these changes through version control before promoting them.")
 }

@@ -286,6 +286,9 @@ func (c *Context) DialSSH() (*ssh.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error resolving known_hosts path: %w", err)
 	}
+	if err := ensureKnownHostsFile(knownHostsPath); err != nil {
+		return nil, fmt.Errorf("error preparing known_hosts file: %w", err)
+	}
 	slog.Debug("Setting known_hosts", "known_hosts", knownHostsPath)
 	hostKeyCallback, err := knownhosts.New(knownHostsPath)
 	if err != nil {
@@ -382,6 +385,20 @@ func defaultKnownHostsPath() (string, error) {
 		return "", fmt.Errorf("unable to determine user home directory")
 	}
 	return filepath.Join(home, ".ssh", "known_hosts"), nil
+}
+
+func ensureKnownHostsFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("known_hosts path cannot be empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func (c *Context) ProjectDirExists() (bool, error) {

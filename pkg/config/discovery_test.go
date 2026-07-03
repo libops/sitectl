@@ -29,6 +29,36 @@ func TestDetectComposeProjectNameFromComposeName(t *testing.T) {
 	}
 }
 
+func TestDetectContextComposeProjectNameFromRemoteEnv(t *testing.T) {
+	ctx := &Context{
+		DockerHostType: ContextRemote,
+		ProjectDir:     "/srv/example",
+		ReadSmallFileFunc: func(filename string) (string, error) {
+			if filename != "/srv/example/.env" {
+				t.Fatalf("expected .env read, got %q", filename)
+			}
+			return "COMPOSE_PROJECT_NAME=remote-env-name\n", nil
+		},
+	}
+
+	if got := DetectContextComposeProjectName(ctx); got != "remote-env-name" {
+		t.Fatalf("expected remote-env-name, got %q", got)
+	}
+}
+
+func TestDetectContextComposeProjectNameFromLocalComposeName(t *testing.T) {
+	projectDir := t.TempDir()
+	content := "name: local-context-compose-name\nservices:\n  web:\n    image: nginx:latest\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "compose.yaml"), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(compose.yaml) error = %v", err)
+	}
+	ctx := &Context{DockerHostType: ContextLocal, ProjectDir: projectDir}
+
+	if got := DetectContextComposeProjectName(ctx); got != "local-context-compose-name" {
+		t.Fatalf("expected local-context-compose-name, got %q", got)
+	}
+}
+
 func TestDetectComposeServicesIncludesServicesWithImageOnly(t *testing.T) {
 	projectDir := t.TempDir()
 	content := "services:\n  alpaca:\n    image: libops/alpaca:2\n  drupal:\n    image: islandora/drupal:main\n"

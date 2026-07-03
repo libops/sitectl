@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -114,20 +113,36 @@ func addServiceTagOverride(overrides *ComposeImageOverrides, tag string, target 
 }
 
 func ApplyComposeImageOverrides(projectDir string, overrides ComposeImageOverrides) error {
+	return ApplyComposeImageOverridesContext(localImageOverrideContext(projectDir), overrides)
+}
+
+func ApplyComposeImageOverridesContext(ctx *config.Context, overrides ComposeImageOverrides) error {
 	if overrides.Empty() {
 		return nil
 	}
-	if strings.TrimSpace(projectDir) == "" {
-		return fmt.Errorf("project directory cannot be empty")
+	ctx, projectDir, err := imageOverrideContext(ctx)
+	if err != nil {
+		return err
 	}
 	path := filepath.Join(projectDir, ComposeImageOverrideFile)
 	doc := map[string]any{}
-	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) > 0 {
-		if err := yaml.Unmarshal(data, &doc); err != nil {
-			return fmt.Errorf("parse %s: %w", path, err)
+	exists, err := ctx.FileExists(path)
+	if err != nil {
+		return fmt.Errorf("check %s: %w", path, err)
+	}
+	if exists {
+		data, err := ctx.ReadFile(path)
+		if err != nil {
+			return err
 		}
-	} else if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read %s: %w", path, err)
+		if len(strings.TrimSpace(string(data))) == 0 {
+			data = nil
+		}
+		if len(data) > 0 {
+			if err := yaml.Unmarshal(data, &doc); err != nil {
+				return fmt.Errorf("parse %s: %w", path, err)
+			}
+		}
 	}
 
 	services := ensureStringMap(doc, "services")
@@ -148,23 +163,32 @@ func ApplyComposeImageOverrides(projectDir string, overrides ComposeImageOverrid
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+	if err := ctx.WriteFile(path, data); err != nil {
+		return err
 	}
 	return nil
 }
 
 func ClearComposeImageOverrides(projectDir string, services []string) error {
-	if strings.TrimSpace(projectDir) == "" {
-		return fmt.Errorf("project directory cannot be empty")
+	return ClearComposeImageOverridesContext(localImageOverrideContext(projectDir), services)
+}
+
+func ClearComposeImageOverridesContext(ctx *config.Context, services []string) error {
+	ctx, projectDir, err := imageOverrideContext(ctx)
+	if err != nil {
+		return err
 	}
 	path := filepath.Join(projectDir, ComposeImageOverrideFile)
-	data, err := os.ReadFile(path)
+	exists, err := ctx.FileExists(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read %s: %w", path, err)
+		return fmt.Errorf("check %s: %w", path, err)
+	}
+	if !exists {
+		return nil
+	}
+	data, err := ctx.ReadFile(path)
+	if err != nil {
+		return err
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
 		return nil
@@ -201,8 +225,8 @@ func ClearComposeImageOverrides(projectDir string, services []string) error {
 		delete(doc, "services")
 	}
 	if len(doc) == 0 {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", path, err)
+		if err := ctx.RemoveFile(path); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -210,10 +234,28 @@ func ClearComposeImageOverrides(projectDir string, services []string) error {
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+	if err := ctx.WriteFile(path, data); err != nil {
+		return err
 	}
 	return nil
+}
+
+func localImageOverrideContext(projectDir string) *config.Context {
+	return &config.Context{
+		DockerHostType: config.ContextLocal,
+		ProjectDir:     strings.TrimSpace(projectDir),
+	}
+}
+
+func imageOverrideContext(ctx *config.Context) (*config.Context, string, error) {
+	if ctx == nil {
+		return nil, "", fmt.Errorf("context cannot be nil")
+	}
+	projectDir := strings.TrimSpace(ctx.ProjectDir)
+	if projectDir == "" {
+		return nil, "", fmt.Errorf("project directory cannot be empty")
+	}
+	return ctx, projectDir, nil
 }
 
 func clearComposeImageOverrideService(serviceMap map[string]any) {

@@ -4,8 +4,11 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"net"
 	"net/mail"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -21,10 +24,14 @@ const (
 
 	// IngressModeHTTP serves the stack over plain HTTP.
 	IngressModeHTTP = "http"
-	// IngressModeHTTPSDefault serves HTTPS using certificates mounted from ./certs.
-	IngressModeHTTPSDefault = "https-default"
+	// IngressModeHTTPSCloudflareOrigin serves HTTPS using a Cloudflare Origin CA certificate mounted from ./certs.
+	IngressModeHTTPSCloudflareOrigin = "https-cloudflare-origin"
 	// IngressModeHTTPSLetsEncrypt serves HTTPS using Let's Encrypt ACME automation.
 	IngressModeHTTPSLetsEncrypt = "https-letsencrypt"
+	// IngressModeHTTPSCustom serves HTTPS using an operator-managed certificate mounted from ./certs.
+	IngressModeHTTPSCustom = "https-custom"
+	// IngressModeHTTPSMkcert serves HTTPS using mkcert-managed certificates for non-production contexts.
+	IngressModeHTTPSMkcert = "https-mkcert"
 
 	ingressModeName      = "mode"
 	ingressDomainName    = "domain"
@@ -32,6 +39,7 @@ const (
 	ingressTrustedIPName = "trusted-ip"
 	uploadSizeName       = "max-upload-size"
 	uploadTimeoutName    = "upload-timeout"
+	ingressTLSModeEnv    = "SITECTL_TLS_MODE"
 
 	// DefaultIngressDomain is the default local development domain.
 	DefaultIngressDomain = "localhost"
@@ -67,8 +75,29 @@ type IngressOptions struct {
 	RouterFiles         []string
 	RouterHosts         map[string]string
 	ServiceEnvTemplates map[string]map[string]string
+	AppUpdate           IngressAppUpdateFunc
 	TrustedIPLimit      int
 }
+
+// IngressAppUpdate describes a resolved ingress change for plugin-owned
+// application wiring.
+type IngressAppUpdate struct {
+	Mode            string
+	Domain          string
+	Scheme          string
+	BaseURL         string
+	ACMEEmail       string
+	TrustedProxyIPs []string
+	UploadSize      string
+	ReadTimeout     string
+	HTTPS           bool
+	LetsEncrypt     bool
+	Mkcert          bool
+}
+
+// IngressAppUpdateFunc lets application plugins update app-specific config
+// whenever the shared ingress component changes.
+type IngressAppUpdateFunc func(context.Context, *config.Context, *corecomponent.ComposeFile, IngressAppUpdate) error
 
 type ingressSettings struct {
 	Mode        string
@@ -80,7 +109,12 @@ type ingressSettings struct {
 	Scheme      string
 	HTTPS       bool
 	LetsEncrypt bool
+	Mkcert      bool
 }
+
+type mkcertRunnerFunc func(ctx *config.Context, certPath, keyPath string, hosts []string) error
+
+var ingressMkcertRunner mkcertRunnerFunc = runIngressMkcert
 
 // Ingress returns a reusable component that owns Traefik ingress, TLS, domain,
 // proxy trust, upload, and read timeout configuration.
@@ -101,14 +135,16 @@ func Ingress(opts IngressOptions) (corecomponent.ComposeServiceComponent, error)
 				Name:                 ingressModeName,
 				Label:                "Ingress mode",
 				FlagName:             "mode",
-				FlagUsage:            "Ingress mode: http, https-default, or https-letsencrypt.",
+				FlagUsage:            "Ingress mode: http, https, https-letsencrypt, https-custom, or https-mkcert.",
 				Question:             "Choose how Traefik should expose this application.",
 				DefaultValue:         IngressModeHTTP,
 				AppliesToDisposition: corecomponent.DispositionEnabled,
 				Choices: []corecomponent.Choice{
 					{Value: IngressModeHTTP, Label: IngressModeHTTP, Help: "Serve plain HTTP.", Aliases: []string{"1"}},
-					{Value: IngressModeHTTPSDefault, Label: IngressModeHTTPSDefault, Help: "Serve HTTPS with certificates mounted from ./certs.", Aliases: []string{"2"}},
-					{Value: IngressModeHTTPSLetsEncrypt, Label: IngressModeHTTPSLetsEncrypt, Help: "Serve HTTPS with Let's Encrypt ACME automation.", Aliases: []string{"3"}},
+					{Value: IngressModeHTTPSCloudflareOrigin, Label: "https", Help: "Serve HTTPS with a Cloudflare Origin CA certificate mounted from ./certs.", Aliases: []string{"2", "cloudflare", "cloudflare-origin", "origin-ca"}},
+					{Value: IngressModeHTTPSLetsEncrypt, Label: IngressModeHTTPSLetsEncrypt, Help: "Serve HTTPS with Let's Encrypt ACME automation.", Aliases: []string{"3", "letsencrypt", "le"}},
+					{Value: IngressModeHTTPSCustom, Label: IngressModeHTTPSCustom, Help: "Serve HTTPS with operator-managed certs/cert.pem and certs/privkey.pem.", Aliases: []string{"4", "custom", "byo", "bring-your-own", "self-managed"}},
+					{Value: IngressModeHTTPSMkcert, Label: IngressModeHTTPSMkcert, Help: "Serve HTTPS with mkcert-managed certificates for non-production environments.", Aliases: []string{"5", "mkcert", "self-signed", "dev"}},
 				},
 			},
 			{
@@ -167,8 +203,8 @@ func Ingress(opts IngressOptions) (corecomponent.ComposeServiceComponent, error)
 			Path:  ".services." + opts.TraefikService,
 		}},
 		AfterEnableOptions: func(values map[string]string) []corecomponent.Hook {
-			return []corecomponent.Hook{func(_ context.Context, runtime *corecomponent.Runtime) error {
-				return applyIngress(runtime.Context, opts, values)
+			return []corecomponent.Hook{func(ctx context.Context, runtime *corecomponent.Runtime) error {
+				return applyIngress(ctx, runtime.Context, opts, values)
 			}}
 		},
 		Behavior: corecomponent.Behavior{
@@ -225,19 +261,139 @@ func normalizeIngressOptions(opts IngressOptions) IngressOptions {
 	return opts
 }
 
-func applyIngress(ctx *config.Context, opts IngressOptions, values map[string]string) error {
+// NormalizeIngressMode returns the canonical ingress mode for a user-provided
+// mode or alias.
+func NormalizeIngressMode(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		return IngressModeHTTP, true
+	case IngressModeHTTP:
+		return IngressModeHTTP, true
+	case "https", IngressModeHTTPSCloudflareOrigin, "cloudflare", "cloudflare-origin", "origin-ca":
+		return IngressModeHTTPSCloudflareOrigin, true
+	case IngressModeHTTPSLetsEncrypt, "letsencrypt", "le":
+		return IngressModeHTTPSLetsEncrypt, true
+	case IngressModeHTTPSCustom, "custom", "byo", "bring-your-own", "self-managed":
+		return IngressModeHTTPSCustom, true
+	case IngressModeHTTPSMkcert, "mkcert", "self-signed", "dev":
+		return IngressModeHTTPSMkcert, true
+	default:
+		return strings.TrimSpace(mode), false
+	}
+}
+
+// IngressModeUsesHTTPS reports whether a mode or alias enables HTTPS.
+func IngressModeUsesHTTPS(mode string) bool {
+	canonical, ok := NormalizeIngressMode(mode)
+	if !ok {
+		return false
+	}
+	return canonical != IngressModeHTTP
+}
+
+// IngressModeRequiresACMEEmail reports whether a mode or alias needs an ACME email.
+func IngressModeRequiresACMEEmail(mode string) bool {
+	canonical, ok := NormalizeIngressMode(mode)
+	return ok && canonical == IngressModeHTTPSLetsEncrypt
+}
+
+// IngressModeTLSProvider reports the TLS provider label used for status output.
+func IngressModeTLSProvider(mode string) string {
+	canonical, ok := NormalizeIngressMode(mode)
+	if !ok {
+		return ""
+	}
+	switch canonical {
+	case IngressModeHTTPSCloudflareOrigin:
+		return "cloudflare-origin"
+	case IngressModeHTTPSLetsEncrypt:
+		return "letsencrypt"
+	case IngressModeHTTPSCustom:
+		return "custom"
+	case IngressModeHTTPSMkcert:
+		return "mkcert"
+	default:
+		return ""
+	}
+}
+
+// SuggestedApplicationHosts returns hostnames that app-level host allowlists
+// should commonly accept for this ingress update.
+func SuggestedApplicationHosts(ctx *config.Context, update IngressAppUpdate) []string {
+	hosts := appendUniqueHostnames(nil, update.Domain)
+	hosts = appendUniqueHostnames(hosts, DefaultIngressDomain, "127.0.0.1", "::1")
+	if ctx != nil && ctx.DockerHostType == config.ContextRemote {
+		hosts = appendUniqueHostnames(hosts, ctx.SSHHostname)
+	}
+	return hosts
+}
+
+func appendUniqueHostnames(hosts []string, candidates ...string) []string {
+	for _, candidate := range candidates {
+		host := normalizeApplicationHostname(candidate)
+		if host == "" {
+			continue
+		}
+		exists := false
+		for _, existing := range hosts {
+			if strings.EqualFold(existing, host) {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
+}
+
+func normalizeApplicationHostname(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err == nil && parsed.Host != "" {
+			value = parsed.Host
+		}
+	}
+	value = strings.TrimSpace(strings.Split(value, "/")[0])
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	} else if strings.Count(value, ":") == 1 {
+		if before, _, ok := strings.Cut(value, ":"); ok {
+			value = before
+		}
+	}
+	return strings.Trim(strings.TrimSpace(value), "[]")
+}
+
+func applyIngress(runCtx context.Context, ctx *config.Context, opts IngressOptions, values map[string]string) error {
 	settings, err := resolveIngressSettings(values)
 	if err != nil {
 		return err
 	}
 	opts = normalizeIngressOptions(opts)
+	if err := validateIngressSettingsForContext(ctx, settings); err != nil {
+		return err
+	}
+	if err := prepareIngressTLS(ctx, settings); err != nil {
+		return err
+	}
 
-	compose, err := corecomponent.LoadComposeFile(composePathForContext(ctx))
+	compose, err := corecomponent.LoadComposeFileForContext(ctx, composePathForContext(ctx))
 	if err != nil {
 		return err
 	}
 	if err := applyIngressCompose(compose, opts, settings); err != nil {
 		return err
+	}
+	if opts.AppUpdate != nil {
+		if err := opts.AppUpdate(runCtx, ctx, compose, newIngressAppUpdate(settings)); err != nil {
+			return err
+		}
 	}
 	if err := compose.Save(); err != nil {
 		return err
@@ -248,10 +404,27 @@ func applyIngress(ctx *config.Context, opts IngressOptions, values map[string]st
 	return writeIngressTLSFiles(ctx, opts, settings)
 }
 
+func newIngressAppUpdate(settings ingressSettings) IngressAppUpdate {
+	return IngressAppUpdate{
+		Mode:            settings.Mode,
+		Domain:          settings.Domain,
+		Scheme:          settings.Scheme,
+		BaseURL:         settings.Scheme + "://" + settings.Domain,
+		ACMEEmail:       settings.ACMEEmail,
+		TrustedProxyIPs: append([]string{}, settings.TrustedIPs...),
+		UploadSize:      settings.UploadSize,
+		ReadTimeout:     settings.ReadTimeout,
+		HTTPS:           settings.HTTPS,
+		LetsEncrypt:     settings.LetsEncrypt,
+		Mkcert:          settings.Mkcert,
+	}
+}
+
 func resolveIngressSettings(values map[string]string) (ingressSettings, error) {
-	mode := strings.TrimSpace(values[ingressModeName])
-	if mode == "" {
-		mode = IngressModeHTTP
+	rawMode := strings.TrimSpace(values[ingressModeName])
+	mode, ok := NormalizeIngressMode(rawMode)
+	if !ok {
+		return ingressSettings{}, fmt.Errorf("invalid ingress mode %q: expected %s, https, %s, %s, or %s", rawMode, IngressModeHTTP, IngressModeHTTPSLetsEncrypt, IngressModeHTTPSCustom, IngressModeHTTPSMkcert)
 	}
 	settings := ingressSettings{
 		Mode:        mode,
@@ -273,7 +446,7 @@ func resolveIngressSettings(values map[string]string) (ingressSettings, error) {
 	switch settings.Mode {
 	case IngressModeHTTP:
 		settings.Scheme = "http"
-	case IngressModeHTTPSDefault:
+	case IngressModeHTTPSCloudflareOrigin, IngressModeHTTPSCustom:
 		settings.Scheme = "https"
 		settings.HTTPS = true
 	case IngressModeHTTPSLetsEncrypt:
@@ -286,8 +459,12 @@ func resolveIngressSettings(values map[string]string) (ingressSettings, error) {
 		if _, err := mail.ParseAddress(settings.ACMEEmail); err != nil {
 			return ingressSettings{}, fmt.Errorf("invalid ACME email %q: %w", settings.ACMEEmail, err)
 		}
+	case IngressModeHTTPSMkcert:
+		settings.Scheme = "https"
+		settings.HTTPS = true
+		settings.Mkcert = true
 	default:
-		return ingressSettings{}, fmt.Errorf("invalid ingress mode %q: expected %s, %s, or %s", settings.Mode, IngressModeHTTP, IngressModeHTTPSDefault, IngressModeHTTPSLetsEncrypt)
+		return ingressSettings{}, fmt.Errorf("invalid ingress mode %q: expected %s, https, %s, %s, or %s", settings.Mode, IngressModeHTTP, IngressModeHTTPSLetsEncrypt, IngressModeHTTPSCustom, IngressModeHTTPSMkcert)
 	}
 	for _, trustedIP := range settings.TrustedIPs {
 		if err := validateTrustedIP(trustedIP); err != nil {
@@ -295,6 +472,117 @@ func resolveIngressSettings(values map[string]string) (ingressSettings, error) {
 		}
 	}
 	return settings, nil
+}
+
+func validateIngressSettingsForContext(ctx *config.Context, settings ingressSettings) error {
+	if !settings.Mkcert {
+		return nil
+	}
+	if !mkcertAllowedForContext(ctx) {
+		name := ""
+		environment := ""
+		if ctx != nil {
+			name = ctx.Name
+			environment = ctx.Environment
+		}
+		if name == "" {
+			name = "current"
+		}
+		if environment == "" {
+			environment = "-"
+		}
+		return fmt.Errorf("--%s %s is limited to local, dev, development, test, testing, qa, or sandbox contexts; context %q has environment %q", ingressModeName, IngressModeHTTPSMkcert, name, environment)
+	}
+	return nil
+}
+
+func mkcertAllowedForContext(ctx *config.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	environment := strings.ToLower(strings.TrimSpace(ctx.Environment))
+	switch environment {
+	case "local", "dev", "development", "test", "testing", "qa", "sandbox":
+		return true
+	case "":
+		return ctx.DockerHostType == config.ContextLocal
+	default:
+		return false
+	}
+}
+
+func prepareIngressTLS(ctx *config.Context, settings ingressSettings) error {
+	if !settings.Mkcert {
+		return nil
+	}
+	return ensureIngressMkcertCertificates(ctx, settings)
+}
+
+func ensureIngressMkcertCertificates(ctx *config.Context, settings ingressSettings) error {
+	if ctx == nil {
+		return fmt.Errorf("context is required for --%s %s", ingressModeName, IngressModeHTTPSMkcert)
+	}
+	targetCertPath := ctx.ResolveProjectPath(filepath.Join("certs", "cert.pem"))
+	targetKeyPath := ctx.ResolveProjectPath(filepath.Join("certs", "privkey.pem"))
+	hosts := mkcertHosts(settings)
+
+	if ctx.DockerHostType == config.ContextRemote {
+		tmpDir, err := os.MkdirTemp("", "sitectl-mkcert-*")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+		localCertPath := filepath.Join(tmpDir, "cert.pem")
+		localKeyPath := filepath.Join(tmpDir, "privkey.pem")
+		if err := ingressMkcertRunner(ctx, localCertPath, localKeyPath, hosts); err != nil {
+			return err
+		}
+		certData, err := os.ReadFile(localCertPath) // #nosec G304 -- mkcert output path is created by sitectl.
+		if err != nil {
+			return fmt.Errorf("read mkcert certificate: %w", err)
+		}
+		keyData, err := os.ReadFile(localKeyPath) // #nosec G304 -- mkcert output path is created by sitectl.
+		if err != nil {
+			return fmt.Errorf("read mkcert private key: %w", err)
+		}
+		if err := ctx.WriteFile(targetCertPath, certData); err != nil {
+			return err
+		}
+		return ctx.WriteFile(targetKeyPath, keyData)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(targetCertPath), 0o700); err != nil {
+		return err
+	}
+	return ingressMkcertRunner(ctx, targetCertPath, targetKeyPath, hosts)
+}
+
+func mkcertHosts(settings ingressSettings) []string {
+	hosts := appendUniqueStrings(nil, settings.Domain)
+	if strings.EqualFold(settings.Domain, DefaultIngressDomain) {
+		hosts = appendUniqueStrings(hosts, "127.0.0.1", "::1")
+	} else {
+		hosts = appendUniqueStrings(hosts, DefaultIngressDomain, "127.0.0.1", "::1")
+	}
+	return hosts
+}
+
+func runIngressMkcert(ctx *config.Context, certPath, keyPath string, hosts []string) error {
+	args := []string{"-cert-file", certPath, "-key-file", keyPath}
+	args = append(args, hosts...)
+	cmd := exec.Command("mkcert", args...) // #nosec G204 -- mkcert args are fixed flags plus operator-provided domain names.
+	if ctx != nil && ctx.DockerHostType == config.ContextLocal && strings.TrimSpace(ctx.ProjectDir) != "" {
+		cmd.Dir = ctx.ProjectDir
+	}
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(output))
+	if detail != "" {
+		return fmt.Errorf("run mkcert: %w: %s", err, detail)
+	}
+	return fmt.Errorf("run mkcert: %w", err)
 }
 
 func applyIngressCompose(compose *corecomponent.ComposeFile, opts IngressOptions, settings ingressSettings) error {
@@ -308,6 +596,9 @@ func applyIngressCompose(compose *corecomponent.ComposeFile, opts IngressOptions
 		return err
 	}
 	if err := applyIngressPortsAndVolumes(compose, opts, settings); err != nil {
+		return err
+	}
+	if err := applyIngressTLSModeEnvironment(compose, opts, settings); err != nil {
 		return err
 	}
 	if err := applyIngressServiceEnvironment(compose, opts, settings); err != nil {
@@ -326,6 +617,13 @@ func removeLegacyTraefikEnvironment(compose *corecomponent.ComposeFile, opts Ing
 		}
 	}
 	return nil
+}
+
+func applyIngressTLSModeEnvironment(compose *corecomponent.ComposeFile, opts IngressOptions, settings ingressSettings) error {
+	if !settings.HTTPS {
+		return compose.DeleteServiceEnv(opts.TraefikService, ingressTLSModeEnv)
+	}
+	return compose.SetServiceEnv(opts.TraefikService, ingressTLSModeEnv, settings.Mode)
 }
 
 func normalizeTraefikFileProvider(compose *corecomponent.ComposeFile, opts IngressOptions) error {
@@ -442,7 +740,7 @@ func applyIngressPortsAndVolumes(compose *corecomponent.ComposeFile, opts Ingres
 	if err := compose.AppendUniqueServiceString(opts.TraefikService, "ports", `"80:80"`); err != nil {
 		return err
 	}
-	for _, volume := range []string{"./certs:/certs:rw", "acme-data:/acme:rw"} {
+	for _, volume := range []string{"./certs:/certs:rw", "./certs:/certs:ro", "./certs:/certs:rw,Z", "./certs:/certs:ro,Z", "acme-data:/acme:rw"} {
 		removeServiceStringVariants(compose, opts.TraefikService, "volumes", volume)
 	}
 	if settings.HTTPS {
@@ -460,7 +758,7 @@ func applyIngressPortsAndVolumes(compose *corecomponent.ComposeFile, opts Ingres
 		return err
 	}
 	if settings.HTTPS {
-		return compose.AppendUniqueServiceString(opts.TraefikService, "volumes", "./certs:/certs:rw")
+		return compose.AppendUniqueServiceString(opts.TraefikService, "volumes", "./certs:/certs:ro")
 	}
 	return nil
 }
@@ -581,25 +879,29 @@ func ingressRouterFiles(ctx *config.Context, opts IngressOptions) ([]string, err
 		return out, nil
 	}
 	root := ctx.ResolveProjectPath(filepath.FromSlash(opts.TraefikConfigDir))
-	entries, err := os.ReadDir(root)
+	exists, err := ctx.FileExists(root)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+	files, err := ctx.ListFiles(root)
+	if err != nil {
 		return nil, err
 	}
 	out := []string{}
-	for _, entry := range entries {
-		if entry.IsDir() {
+	for _, rel := range files {
+		if strings.Contains(filepath.ToSlash(rel), "/") {
 			continue
 		}
-		name := entry.Name()
+		name := filepath.Base(rel)
 		if strings.HasPrefix(name, "00-") {
 			continue
 		}
 		switch filepath.Ext(name) {
 		case ".yml", ".yaml", ".tmpl":
-			out = append(out, filepath.Join(root, name))
+			out = append(out, filepath.Join(root, filepath.FromSlash(rel)))
 		}
 	}
 	sort.Strings(out)
@@ -610,6 +912,7 @@ func rewriteIngressRouterText(text string, opts IngressOptions, settings ingress
 	lines := strings.Split(text, "\n")
 	lines = stripLegacyTLSGoTemplates(lines)
 	lines = rewriteRouterHostRules(lines, opts, settings)
+	lines = rewriteRouterEntryPoints(lines, opts, settings)
 	lines = rewriteRouterTLS(lines, settings)
 	return strings.Join(lines, "\n")
 }
@@ -784,6 +1087,82 @@ func isCatchAllRouterRule(rule string) bool {
 	return normalized == "PathPrefix(`/`)" || normalized == "Path(`/`)"
 }
 
+func rewriteRouterEntryPoints(lines []string, opts IngressOptions, settings ingressSettings) []string {
+	target := strings.TrimSpace(opts.HTTPEntrypoint)
+	if settings.HTTPS {
+		target = strings.TrimSpace(opts.HTTPSEntrypoint)
+	}
+	if target == "" {
+		return lines
+	}
+	out := make([]string, 0, len(lines))
+	inRouters := false
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		indent := leadingSpaces(line)
+		if indent == 2 && trimmed == "routers:" {
+			inRouters = true
+			out = append(out, line)
+			i++
+			continue
+		}
+		if inRouters && indent <= 2 && trimmed != "" && trimmed != "routers:" {
+			inRouters = false
+		}
+		if inRouters && indent == 4 && strings.HasSuffix(trimmed, ":") {
+			end := routerBlockEnd(lines, i)
+			block := lines[i:end]
+			if routerBlockHasRule(block) {
+				block = setRouterEntryPointsBlock(block, target)
+			}
+			out = append(out, block...)
+			i = end
+			continue
+		}
+		out = append(out, line)
+		i++
+	}
+	return out
+}
+
+func setRouterEntryPointsBlock(lines []string, entrypoint string) []string {
+	cleaned := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		if leadingSpaces(line) == 6 && strings.HasPrefix(strings.TrimSpace(line), "entryPoints:") {
+			i++
+			for i < len(lines) {
+				trimmed := strings.TrimSpace(lines[i])
+				if trimmed != "" && leadingSpaces(lines[i]) <= 6 {
+					break
+				}
+				i++
+			}
+			continue
+		}
+		cleaned = append(cleaned, line)
+		i++
+	}
+
+	insertAt := len(cleaned)
+	for i, line := range cleaned {
+		if leadingSpaces(line) == 6 && strings.HasPrefix(strings.TrimSpace(line), "rule:") {
+			insertAt = i + 1
+			break
+		}
+	}
+	block := []string{
+		"      entryPoints:",
+		"        - " + entrypoint,
+	}
+	out := make([]string, 0, len(cleaned)+len(block))
+	out = append(out, cleaned[:insertAt]...)
+	out = append(out, block...)
+	out = append(out, cleaned[insertAt:]...)
+	return out
+}
+
 func rewriteRouterTLS(lines []string, settings ingressSettings) []string {
 	out := make([]string, 0, len(lines))
 	inRouters := false
@@ -883,24 +1262,21 @@ func writeIngressTLSFiles(ctx *config.Context, opts IngressOptions, settings ing
 		return nil
 	}
 	dir := ctx.ResolveProjectPath(filepath.FromSlash(opts.TraefikConfigDir))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	tlsPath := filepath.Join(dir, "00-tls.yml")
 	redirectPath := filepath.Join(dir, "00-redirect.yml")
 	if !settings.HTTPS || settings.LetsEncrypt {
-		if err := removeIfExists(tlsPath); err != nil {
+		if err := removeIfExists(ctx, tlsPath); err != nil {
 			return err
 		}
 	} else {
-		if err := os.WriteFile(tlsPath, []byte(defaultTLSFile()), 0o600); err != nil {
+		if err := ctx.WriteFile(tlsPath, []byte(defaultTLSFile())); err != nil {
 			return err
 		}
 	}
 	if !settings.HTTPS {
-		return removeIfExists(redirectPath)
+		return removeIfExists(ctx, redirectPath)
 	}
-	return os.WriteFile(redirectPath, []byte(redirectTLSFile(opts.HTTPEntrypoint)), 0o600)
+	return ctx.WriteFile(redirectPath, []byte(redirectTLSFile(opts.HTTPEntrypoint)))
 }
 
 func defaultTLSFile() string {
@@ -918,11 +1294,11 @@ func ensureTrailingNewline(value string) string {
 	return value + "\n"
 }
 
-func removeIfExists(path string) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+func removeIfExists(ctx *config.Context, path string) error {
+	if ctx == nil {
+		return nil
 	}
-	return nil
+	return ctx.RemoveFile(path)
 }
 
 func ingressRouterHost(opts IngressOptions, router, domain string) string {

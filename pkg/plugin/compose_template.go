@@ -182,18 +182,28 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	if err := r.sdk.EnsureRemoteCreatePrerequisitesContext(cmd.Context(), cmd.OutOrStdout(), ctx, RemoteCreatePrerequisitesOptions{
+		Yolo:  req.Yolo,
+		Input: input,
+	}); err != nil {
+		return err
+	}
+	applyRemoteIngressCreateDefaults(ctx, req.Decisions)
 	cloned, err := r.sdk.EnsureComposeTemplateCheckoutContext(cmd.Context(), cmd.OutOrStdout(), req, ctx)
 	if err != nil {
+		return err
+	}
+	if err := refreshCreateContextComposeIdentity(ctx, req); err != nil {
 		return err
 	}
 	if err := r.sdk.reconcileCreateServiceComponents(cmd.Context(), ctx, req.Decisions); err != nil {
 		return err
 	}
 	if !req.ImageOverrides.Empty() {
-		if ctx.DockerHostType != config.ContextLocal {
-			return fmt.Errorf("image overrides during create currently require a local context")
+		if ctx.DockerHostType == config.ContextRemote {
+			fmt.Fprintln(cmd.ErrOrStderr(), "Warning: modifying remote project files directly; commit and review these changes through version control before promoting them.")
 		}
-		if err := ApplyComposeImageOverrides(ctx.ProjectDir, req.ImageOverrides); err != nil {
+		if err := ApplyComposeImageOverridesContext(ctx, req.ImageOverrides); err != nil {
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", ComposeImageOverrideFile)
@@ -217,6 +227,25 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 	}
 	PrintComposeTemplateCreateSummary(cmd.OutOrStdout(), ctx, r.opts.ReadyMessage, req.SetupOnly)
 	return nil
+}
+
+func applyRemoteIngressCreateDefaults(ctx *config.Context, decisions map[string]corecomponent.ReviewDecision) {
+	if ctx == nil || ctx.DockerHostType != config.ContextRemote || strings.TrimSpace(ctx.SSHHostname) == "" {
+		return
+	}
+	decision, ok := decisions["ingress"]
+	if !ok {
+		return
+	}
+	if decision.Options == nil {
+		decision.Options = map[string]string{}
+	}
+	domain := strings.TrimSpace(decision.Options["domain"])
+	if domain != "" && !strings.EqualFold(domain, "localhost") {
+		return
+	}
+	decision.Options["domain"] = strings.TrimSpace(ctx.SSHHostname)
+	decisions["ingress"] = decision
 }
 
 func composeTemplateNeedsInit(ctx *config.Context, spec CreateSpec) (bool, error) {
@@ -301,6 +330,29 @@ func (s *SDK) ensureLocalComposeTemplateCheckout(runCtx context.Context, out io.
 		return false, err
 	}
 	return true, nil
+}
+
+func refreshCreateContextComposeIdentity(ctx *config.Context, req ComposeCreateRequest) error {
+	if ctx == nil {
+		return nil
+	}
+	changed := false
+	if strings.TrimSpace(req.ComposeProjectName) == "" {
+		if detected := config.DetectContextComposeProjectName(ctx); detected != "" && detected != ctx.ComposeProjectName {
+			ctx.ComposeProjectName = detected
+			changed = true
+		}
+	}
+	if strings.TrimSpace(req.ComposeNetwork) == "" {
+		if detected := config.DetectContextComposeNetwork(ctx); detected != "" && detected != ctx.ComposeNetwork {
+			ctx.ComposeNetwork = detected
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return config.SaveContext(ctx, false)
 }
 
 func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io.Writer, req ComposeCreateRequest, ctx *config.Context) (bool, error) {

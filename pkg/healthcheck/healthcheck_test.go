@@ -149,6 +149,135 @@ func TestCheckHTTPRouteUsesRunningTraefikHostPort(t *testing.T) {
 	}
 }
 
+func TestCheckHTTPRouteUsesRemoteSSHHostForLocalhostRoute(t *testing.T) {
+	originalCheckHTTP := checkHTTP
+	originalCheckHTTPViaOrigin := checkHTTPViaOrigin
+	t.Cleanup(func() {
+		checkHTTP = originalCheckHTTP
+		checkHTTPViaOrigin = originalCheckHTTPViaOrigin
+	})
+	var checkedURL string
+	checkHTTP = func(ctx context.Context, name, targetURL string) sitevalidate.Result {
+		t.Fatalf("expected remote localhost route to use origin dial, got direct URL %q", targetURL)
+		return sitevalidate.Result{Name: name, Status: sitevalidate.StatusFailed}
+	}
+	var checkedOrigin string
+	checkHTTPViaOrigin = func(ctx context.Context, name, targetURL, originHost string) sitevalidate.Result {
+		checkedURL = targetURL
+		checkedOrigin = originHost
+		return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK}
+	}
+
+	checker := &DockerChecker{
+		Context: &config.Context{
+			Name:           "test",
+			ProjectName:    "wp",
+			DockerHostType: config.ContextRemote,
+			SSHHostname:    "203.0.113.10",
+		},
+		Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{
+			containers: []dockercontainer.Summary{{
+				ID:     "traefik123",
+				Names:  []string{"/wp-traefik-1"},
+				Labels: map[string]string{"com.docker.compose.service": "traefik"},
+			}},
+			inspect: map[string]dockercontainer.InspectResponse{
+				"/wp-traefik-1": {
+					NetworkSettings: networkSettingsWithPorts(t, nat.PortMap{
+						"80/tcp": []nat.PortBinding{{HostPort: "80"}},
+					}),
+				},
+			},
+		}},
+	}
+
+	result := checker.CheckHTTPRoute(context.Background(), "http:wp", "wp", "http://localhost/")
+	if result.Status != sitevalidate.StatusOK {
+		t.Fatalf("CheckHTTPRoute() status = %s", result.Status)
+	}
+	if checkedURL != "http://localhost/" {
+		t.Fatalf("checked URL = %q, want http://localhost/", checkedURL)
+	}
+	if checkedOrigin != "203.0.113.10" {
+		t.Fatalf("checked origin = %q, want 203.0.113.10", checkedOrigin)
+	}
+}
+
+func TestCheckHTTPRouteUsesRemoteOriginForDomainRoute(t *testing.T) {
+	originalCheckHTTP := checkHTTP
+	originalCheckHTTPViaOrigin := checkHTTPViaOrigin
+	t.Cleanup(func() {
+		checkHTTP = originalCheckHTTP
+		checkHTTPViaOrigin = originalCheckHTTPViaOrigin
+	})
+	checkHTTP = func(ctx context.Context, name, targetURL string) sitevalidate.Result {
+		t.Fatalf("expected remote domain route to use origin dial, got direct URL %q", targetURL)
+		return sitevalidate.Result{Name: name, Status: sitevalidate.StatusFailed}
+	}
+	var checkedURL string
+	var checkedOrigin string
+	checkHTTPViaOrigin = func(ctx context.Context, name, targetURL, originHost string) sitevalidate.Result {
+		checkedURL = targetURL
+		checkedOrigin = originHost
+		return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK}
+	}
+
+	checker := &DockerChecker{
+		Context: &config.Context{
+			Name:           "test",
+			ProjectName:    "wp",
+			DockerHostType: config.ContextRemote,
+			SSHHostname:    "203.0.113.10",
+		},
+		Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{
+			containers: []dockercontainer.Summary{{
+				ID:     "traefik123",
+				Names:  []string{"/wp-traefik-1"},
+				Labels: map[string]string{"com.docker.compose.service": "traefik"},
+			}},
+			inspect: map[string]dockercontainer.InspectResponse{
+				"/wp-traefik-1": {
+					NetworkSettings: networkSettingsWithPorts(t, nat.PortMap{
+						"443/tcp": []nat.PortBinding{{HostPort: "443"}},
+					}),
+				},
+			},
+		}},
+	}
+
+	result := checker.CheckHTTPRoute(context.Background(), "http:wp", "wp", "https://app-test.libops.io/")
+	if result.Status != sitevalidate.StatusOK {
+		t.Fatalf("CheckHTTPRoute() status = %s", result.Status)
+	}
+	if checkedURL != "https://app-test.libops.io/" {
+		t.Fatalf("checked URL = %q, want https://app-test.libops.io/", checkedURL)
+	}
+	if checkedOrigin != "203.0.113.10" {
+		t.Fatalf("checked origin = %q, want 203.0.113.10", checkedOrigin)
+	}
+}
+
+func TestCheckHTTPViaOriginInsecureTLSAllowsPrivateOriginCertificate(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == "" || !strings.HasPrefix(r.Host, "example.test:") {
+			t.Fatalf("Host header = %q, want example.test with port", r.Host)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+	result := CheckHTTPViaOriginInsecureTLS(context.Background(), "http:test", "https://example.test:"+port+"/", "127.0.0.1")
+	if result.Status != sitevalidate.StatusOK {
+		t.Fatalf("CheckHTTPViaOriginInsecureTLS() status = %s, detail = %q", result.Status, result.Detail)
+	}
+}
+
 func networkSettingsWithPorts(t *testing.T, ports nat.PortMap) *dockercontainer.NetworkSettings {
 	t.Helper()
 	payload, err := json.Marshal(struct {

@@ -145,15 +145,30 @@ func evaluateYAMLState(ctx *config.Context, root, domain string, spec YAMLStateS
 		return nil, nil
 	}
 
-	availableFiles, err := listYAMLFiles(ctx, root)
-	if err != nil {
-		return nil, err
+	var availableFiles []string
+	listedFiles := false
+	ensureAvailableFiles := func() error {
+		if listedFiles {
+			return nil
+		}
+		files, err := listYAMLFiles(ctx, root)
+		if err != nil {
+			return err
+		}
+		availableFiles = files
+		listedFiles = true
+		return nil
 	}
-
 	cache := map[string][]byte{}
 	results := []RuleCheckResult{}
 	for _, rule := range spec.Rules {
-		matched := matchRuleFiles(availableFiles, rule.Files, rule.Exclude)
+		var matched []string
+		if ruleNeedsFileListing(rule) {
+			if err := ensureAvailableFiles(); err != nil {
+				return nil, err
+			}
+			matched = matchRuleFiles(availableFiles, rule.Files, rule.Exclude)
+		}
 		if len(matched) == 0 {
 			matched = syntheticRuleTargets(rule.Files)
 		}
@@ -187,6 +202,22 @@ func evaluateYAMLState(ctx *config.Context, root, domain string, spec YAMLStateS
 	})
 
 	return results, nil
+}
+
+func ruleNeedsFileListing(rule YAMLRule) bool {
+	if len(rule.Exclude) > 0 {
+		return true
+	}
+	for _, pattern := range rule.Files {
+		if hasGlobMeta(pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGlobMeta(pattern string) bool {
+	return strings.ContainsAny(pattern, "*?[")
 }
 
 func listYAMLFiles(ctx *config.Context, root string) ([]string, error) {

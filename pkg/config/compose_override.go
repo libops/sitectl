@@ -42,6 +42,9 @@ func (c Context) EnsureTrackedComposeOverrideSymlink() error {
 	if trackedPath == "" || runtimePath == "" {
 		return nil
 	}
+	if c.DockerHostType == ContextRemote {
+		return c.ensureTrackedComposeOverrideSymlinkRemote(trackedPath, runtimePath)
+	}
 
 	_, err := os.Stat(trackedPath)
 	if err != nil {
@@ -75,11 +78,55 @@ func (c Context) EnsureTrackedComposeOverrideSymlink() error {
 	return os.Symlink(filepath.Base(trackedPath), runtimePath)
 }
 
+func (c Context) ensureTrackedComposeOverrideSymlinkRemote(trackedPath, runtimePath string) error {
+	accessor, err := c.NewFileAccessor()
+	if err != nil {
+		return err
+	}
+	defer accessor.Close()
+
+	_, err = accessor.sftp.Stat(trackedPath)
+	if err != nil {
+		if isSFTPNotExist(err) {
+			if info, statErr := accessor.sftp.Lstat(runtimePath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+				return accessor.sftp.Remove(runtimePath)
+			} else if statErr != nil && !isSFTPNotExist(statErr) {
+				return statErr
+			}
+			return nil
+		}
+		return err
+	}
+
+	if info, err := accessor.sftp.Lstat(runtimePath); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("%s exists and is not a symlink", runtimePath)
+		}
+		target, err := accessor.sftp.ReadLink(runtimePath)
+		if err != nil {
+			return err
+		}
+		if filepath.Clean(filepath.Join(c.ProjectDir, target)) == filepath.Clean(trackedPath) {
+			return nil
+		}
+		if err := accessor.sftp.Remove(runtimePath); err != nil {
+			return err
+		}
+	} else if !isSFTPNotExist(err) {
+		return err
+	}
+
+	return accessor.sftp.Symlink(filepath.Base(trackedPath), runtimePath)
+}
+
 func (c Context) ValidateTrackedComposeOverrideSymlink() error {
 	trackedPath := c.TrackedComposeOverridePath()
 	runtimePath := c.RuntimeComposeOverridePath()
 	if trackedPath == "" || runtimePath == "" {
 		return nil
+	}
+	if c.DockerHostType == ContextRemote {
+		return c.validateTrackedComposeOverrideSymlinkRemote(trackedPath, runtimePath)
 	}
 
 	_, trackedErr := os.Stat(trackedPath)
@@ -106,6 +153,46 @@ func (c Context) ValidateTrackedComposeOverrideSymlink() error {
 		return fmt.Errorf("%s exists and is not a symlink", runtimePath)
 	}
 	target, err := os.Readlink(runtimePath)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(filepath.Join(c.ProjectDir, target)) != filepath.Clean(trackedPath) {
+		return fmt.Errorf("%s points to %s; expected %s", runtimePath, target, filepath.Base(trackedPath))
+	}
+	return nil
+}
+
+func (c Context) validateTrackedComposeOverrideSymlinkRemote(trackedPath, runtimePath string) error {
+	accessor, err := c.NewFileAccessor()
+	if err != nil {
+		return err
+	}
+	defer accessor.Close()
+
+	_, trackedErr := accessor.sftp.Stat(trackedPath)
+	if trackedErr != nil {
+		if isSFTPNotExist(trackedErr) {
+			if _, runtimeErr := accessor.sftp.Lstat(runtimePath); isSFTPNotExist(runtimeErr) {
+				return nil
+			} else if runtimeErr != nil {
+				return runtimeErr
+			}
+			return fmt.Errorf("%s exists but tracked override %s does not", runtimePath, trackedPath)
+		}
+		return trackedErr
+	}
+
+	info, err := accessor.sftp.Lstat(runtimePath)
+	if err != nil {
+		if isSFTPNotExist(err) {
+			return fmt.Errorf("%s is missing; expected symlink to %s", runtimePath, filepath.Base(trackedPath))
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("%s exists and is not a symlink", runtimePath)
+	}
+	target, err := accessor.sftp.ReadLink(runtimePath)
 	if err != nil {
 		return err
 	}

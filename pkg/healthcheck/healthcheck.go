@@ -3,6 +3,7 @@ package healthcheck
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -241,16 +242,38 @@ func (c *DockerChecker) CheckHTTPRoute(ctx context.Context, name, service, publi
 	if publicURL == "" {
 		return failed(name, "URL is empty")
 	}
-	if runtimeURL := c.publicURLWithRunningTraefikHostPort(ctx, publicURL); runtimeURL != "" {
+	if runtimeURL, originHost := c.publicURLWithRunningTraefikHostPort(ctx, publicURL); runtimeURL != "" {
+		if originHost != "" {
+			if c.skipOriginTLSVerification(runtimeURL) {
+				return checkHTTPViaOriginInsecureTLS(ctx, name, runtimeURL, originHost)
+			}
+			return checkHTTPViaOrigin(ctx, name, runtimeURL, originHost)
+		}
 		publicURL = runtimeURL
 	}
 	return checkHTTP(ctx, name, publicURL)
 }
 
-func (c *DockerChecker) publicURLWithRunningTraefikHostPort(ctx context.Context, publicURL string) string {
+func (c *DockerChecker) skipOriginTLSVerification(targetURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(targetURL))
+	if err != nil || parsed.Scheme != "https" || c == nil || c.Context == nil {
+		return false
+	}
+	if strings.TrimSpace(c.Context.ProjectDir) == "" {
+		return false
+	}
+	switch c.Context.ComposeTLSProvider("") {
+	case "cloudflare-origin", "mkcert":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *DockerChecker) publicURLWithRunningTraefikHostPort(ctx context.Context, publicURL string) (string, string) {
 	parsed, err := url.Parse(strings.TrimSpace(publicURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return ""
+		return "", ""
 	}
 	target := 80
 	if parsed.Scheme == "https" {
@@ -258,10 +281,33 @@ func (c *DockerChecker) publicURLWithRunningTraefikHostPort(ctx context.Context,
 	}
 	port, ok, err := c.runningTraefikHostPort(ctx, target)
 	if err != nil || !ok {
-		return ""
+		return "", ""
 	}
-	parsed.Host = routeURLHost(parsed.Hostname(), parsed.Scheme, port)
-	return parsed.String()
+	hostname := parsed.Hostname()
+	originHost := ""
+	if c != nil && c.Context != nil && c.Context.DockerHostType == config.ContextRemote {
+		originHost = strings.TrimSpace(c.Context.SSHHostname)
+	}
+	if originHost != "" {
+		parsed.Host = routeURLHost(hostname, parsed.Scheme, port)
+	} else {
+		parsed.Host = routeURLHost(c.reachableRouteHostname(hostname), parsed.Scheme, port)
+	}
+	return parsed.String(), originHost
+}
+
+func (c *DockerChecker) reachableRouteHostname(hostname string) string {
+	if c == nil || c.Context == nil || c.Context.DockerHostType != config.ContextRemote {
+		return hostname
+	}
+	if !isLocalHost(hostname) {
+		return hostname
+	}
+	remoteHost := strings.TrimSpace(c.Context.SSHHostname)
+	if remoteHost == "" {
+		return hostname
+	}
+	return remoteHost
 }
 
 func (c *DockerChecker) runningTraefikHostPort(ctx context.Context, target int) (int, bool, error) {
@@ -384,6 +430,17 @@ func (c *DockerChecker) readComposeDependencyConfig(ctx context.Context) (compos
 	args := []string{"compose"}
 	args = append(args, c.Context.DockerComposeGlobalArgs()...)
 	args = append(args, "config", "--format", "json")
+	if c.Context.DockerHostType == config.ContextRemote {
+		output, err := c.Context.RunQuietCommandContext(ctx, exec.CommandContext(ctx, "docker", args...))
+		if err != nil {
+			return composeDependencyConfigDocument{}, fmt.Errorf("docker compose config: %w", err)
+		}
+		var document composeDependencyConfigDocument
+		if err := json.Unmarshal([]byte(output), &document); err != nil {
+			return composeDependencyConfigDocument{}, fmt.Errorf("parse docker compose config json: %w", err)
+		}
+		return document, nil
+	}
 	command := exec.CommandContext(ctx, "docker", args...) // #nosec G204 -- fixed docker compose command with context-owned compose/env file arguments.
 	command.Dir = c.Context.ProjectDir
 	var stdout bytes.Buffer
@@ -436,8 +493,61 @@ func CheckHTTP(ctx context.Context, name, targetURL string) sitevalidate.Result 
 }
 
 var checkHTTP = CheckHTTP
+var checkHTTPViaOrigin = CheckHTTPViaOrigin
+var checkHTTPViaOriginInsecureTLS = CheckHTTPViaOriginInsecureTLS
+
+// CheckHTTPViaOrigin verifies targetURL while dialing originHost instead of
+// resolving the URL hostname through public DNS. The URL hostname is preserved
+// for Host headers and TLS SNI.
+func CheckHTTPViaOrigin(ctx context.Context, name, targetURL, originHost string) sitevalidate.Result {
+	return checkHTTPViaOriginWithTLS(ctx, name, targetURL, originHost, false)
+}
+
+// CheckHTTPViaOriginInsecureTLS verifies targetURL through originHost while
+// allowing non-public origin certificates such as mkcert or Cloudflare Origin CA.
+func CheckHTTPViaOriginInsecureTLS(ctx context.Context, name, targetURL, originHost string) sitevalidate.Result {
+	return checkHTTPViaOriginWithTLS(ctx, name, targetURL, originHost, true)
+}
+
+func checkHTTPViaOriginWithTLS(ctx context.Context, name, targetURL, originHost string, insecureTLS bool) sitevalidate.Result {
+	targetURL = strings.TrimSpace(targetURL)
+	originHost = strings.TrimSpace(originHost)
+	if targetURL == "" {
+		return failed(name, "URL is empty")
+	}
+	if originHost == "" {
+		return failed(name, "origin host is empty")
+	}
+	client, err := httpClientForOrigin(targetURL, originHost, insecureTLS)
+	if err != nil {
+		return failed(name, err.Error())
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, defaultHTTPTimeout)
+	defer cancel()
+	var last sitevalidate.Result
+	for {
+		if result, err := checkHTTPURLWithClient(reqCtx, name, targetURL, "", client); err == nil {
+			result.Detail += " via " + originHost
+			return result
+		} else {
+			last = result
+		}
+		select {
+		case <-reqCtx.Done():
+			if strings.TrimSpace(last.Name) == "" {
+				return failed(name, reqCtx.Err().Error())
+			}
+			return last
+		case <-time.After(defaultHTTPRetryInterval):
+		}
+	}
+}
 
 func checkHTTPURL(ctx context.Context, name, targetURL, hostHeader string) (sitevalidate.Result, error) {
+	return checkHTTPURLWithClient(ctx, name, targetURL, hostHeader, http.DefaultClient)
+}
+
+func checkHTTPURLWithClient(ctx context.Context, name, targetURL, hostHeader string, client *http.Client) (sitevalidate.Result, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		result := failed(name, err.Error())
@@ -446,7 +556,10 @@ func checkHTTPURL(ctx context.Context, name, targetURL, hostHeader string) (site
 	if strings.TrimSpace(hostHeader) != "" {
 		req.Host = hostHeader
 	}
-	resp, err := http.DefaultClient.Do(req)
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		result := failed(name, err.Error())
 		return result, err
@@ -458,6 +571,31 @@ func checkHTTPURL(ctx context.Context, name, targetURL, hostHeader string) (site
 		return result, err
 	}
 	return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK, Detail: resp.Status}, nil
+}
+
+func httpClientForOrigin(targetURL, originHost string, insecureTLS bool) (*http.Client, error) {
+	parsed, err := url.Parse(strings.TrimSpace(targetURL))
+	if err != nil {
+		return nil, err
+	}
+	targetHost := strings.TrimSpace(parsed.Hostname())
+	if targetHost == "" {
+		return nil, fmt.Errorf("URL host is empty")
+	}
+	dialer := &net.Dialer{}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err == nil && strings.EqualFold(strings.Trim(host, "[]"), strings.Trim(targetHost, "[]")) {
+				address = net.JoinHostPort(originHost, port)
+			}
+			return dialer.DialContext(ctx, network, address)
+		},
+	}
+	if insecureTLS {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- only used for explicit non-public origin TLS providers.
+	}
+	return &http.Client{Transport: transport}, nil
 }
 
 func dockerHostFallbackURL(targetURL string) (string, string, bool) {
