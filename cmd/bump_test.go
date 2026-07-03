@@ -75,8 +75,10 @@ func TestBuildRenovateConfigScopesAndUpdateType(t *testing.T) {
 	if len(cfg.Repositories) != 1 || cfg.Repositories[0] != "libops/sitectl" {
 		t.Fatalf("unexpected repositories: %#v", cfg.Repositories)
 	}
-	if !slices.Contains(cfg.PackageRules[0].MatchUpdateTypes, "major") || slices.Contains(cfg.PackageRules[0].MatchUpdateTypes, "minor") {
-		t.Fatalf("non-target update rule should disable everything except minor: %#v", cfg.PackageRules[0].MatchUpdateTypes)
+	if !slices.Contains(cfg.PackageRules[0].MatchUpdateTypes, "major") ||
+		slices.Contains(cfg.PackageRules[0].MatchUpdateTypes, "minor") ||
+		slices.Contains(cfg.PackageRules[0].MatchUpdateTypes, "patch") {
+		t.Fatalf("update rule should disable everything outside minor scope: %#v", cfg.PackageRules[0].MatchUpdateTypes)
 	}
 	foundActionsRule := false
 	for _, rule := range cfg.PackageRules {
@@ -86,6 +88,31 @@ func TestBuildRenovateConfigScopesAndUpdateType(t *testing.T) {
 	}
 	if !foundActionsRule {
 		t.Fatalf("expected disabled github-actions package rule: %#v", cfg.PackageRules)
+	}
+}
+
+func TestAllowedUpdateTypesAreCumulative(t *testing.T) {
+	tests := []struct {
+		updateType string
+		want       []string
+	}{
+		{updateType: "patch", want: []string{"patch"}},
+		{updateType: "minor", want: []string{"minor", "patch"}},
+		{updateType: "major", want: []string{"major", "minor", "patch"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.updateType, func(t *testing.T) {
+			got := allowedUpdateTypes(tt.updateType)
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("allowedUpdateTypes(%q) = %#v, want %#v", tt.updateType, got, tt.want)
+			}
+			disabled := disabledUpdateTypes(tt.updateType)
+			for _, updateType := range tt.want {
+				if slices.Contains(disabled, updateType) {
+					t.Fatalf("disabledUpdateTypes(%q) disabled allowed update %q: %#v", tt.updateType, updateType, disabled)
+				}
+			}
+		})
 	}
 }
 
