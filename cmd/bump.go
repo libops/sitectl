@@ -101,8 +101,8 @@ GitHub repository from origin and create or update Renovate branches and PRs.`,
 		},
 	}
 	cmd.Flags().BoolVar(&opts.patch, "patch", false, "Allow patch updates only.")
-	cmd.Flags().BoolVar(&opts.minor, "minor", false, "Allow minor updates only.")
-	cmd.Flags().BoolVar(&opts.major, "major", false, "Allow major updates only.")
+	cmd.Flags().BoolVar(&opts.minor, "minor", false, "Allow minor and patch updates.")
+	cmd.Flags().BoolVar(&opts.major, "major", false, "Allow major, minor, and patch updates.")
 	cmd.Flags().Var(&opts.compose, "compose", "Update Docker Compose dependencies: on or off.")
 	cmd.Flags().Var(&opts.actions, "actions", "Update GitHub Actions dependencies: on or off.")
 	cmd.Flags().Var(&opts.dependencies, "dependencies", "Update application dependencies: on or off.")
@@ -257,11 +257,11 @@ func buildRenovateConfig(target bumpTarget, updateType string, opts bumpOptions)
 	}
 
 	disabled := false
-	nonTargetTypes := otherUpdateTypes(updateType)
-	if len(nonTargetTypes) > 0 {
+	disallowedUpdateTypes := disabledUpdateTypes(updateType)
+	if len(disallowedUpdateTypes) > 0 {
 		cfg.PackageRules = append(cfg.PackageRules, renovatePackageRule{
-			Description:      "sitectl bump: disable non-" + updateType + " updates",
-			MatchUpdateTypes: nonTargetTypes,
+			Description:      "sitectl bump: disable updates outside " + updateType + " scope",
+			MatchUpdateTypes: disallowedUpdateTypes,
 			Enabled:          &disabled,
 		})
 	}
@@ -335,14 +335,37 @@ func cleanGitHubSlug(path string) (string, error) {
 	return parts[0] + "/" + parts[1], nil
 }
 
-func otherUpdateTypes(updateType string) []string {
+func allowedUpdateTypes(updateType string) []string {
+	switch updateType {
+	case "major":
+		return []string{"major", "minor", "patch"}
+	case "minor":
+		return []string{"minor", "patch"}
+	case "patch":
+		return []string{"patch"}
+	default:
+		return []string{updateType}
+	}
+}
+
+func disabledUpdateTypes(updateType string) []string {
+	allowed := allowedUpdateTypes(updateType)
 	types := make([]string, 0, len(bumpUpdateTypes)-1)
 	for _, candidate := range bumpUpdateTypes {
-		if candidate != updateType {
+		if !containsString(allowed, candidate) {
 			types = append(types, candidate)
 		}
 	}
 	return types
+}
+
+func containsString(values []string, candidate string) bool {
+	for _, value := range values {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *onOffFlag) Set(value string) error {
