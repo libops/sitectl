@@ -65,6 +65,24 @@ run() {
 	"$@"
 }
 
+remote_ssh() {
+	local args=(-p "$qa_remote_port")
+	if [ -n "$qa_remote_key" ]; then
+		args+=(-i "$qa_remote_key")
+	fi
+	ssh "${args[@]}" "${qa_remote_user}@${qa_remote_host}" "$@"
+}
+
+remote_scp_to() {
+	local source="$1"
+	local target="$2"
+	local args=(-P "$qa_remote_port")
+	if [ -n "$qa_remote_key" ]; then
+		args+=(-i "$qa_remote_key")
+	fi
+	scp "${args[@]}" "$source" "${qa_remote_user}@${qa_remote_host}:${target}"
+}
+
 context_name() {
 	local app="$1"
 	printf 'qa-%s-%s' "$qa_target" "$app"
@@ -157,9 +175,9 @@ install_cert_pair() {
 		return 1
 	fi
 	if [ "$qa_target" = "remote" ]; then
-		run ssh -p "$qa_remote_port" "${qa_remote_user}@${qa_remote_host}" "mkdir -p '${dir}/certs'"
-		run scp -P "$qa_remote_port" "$cert" "${qa_remote_user}@${qa_remote_host}:${dir}/certs/cert.pem"
-		run scp -P "$qa_remote_port" "$key" "${qa_remote_user}@${qa_remote_host}:${dir}/certs/privkey.pem"
+		run remote_ssh "mkdir -p '${dir}/certs'"
+		run remote_scp_to "$cert" "${dir}/certs/cert.pem"
+		run remote_scp_to "$key" "${dir}/certs/privkey.pem"
 	else
 		run mkdir -p "$dir/certs"
 		run cp "$cert" "$dir/certs/cert.pem"
