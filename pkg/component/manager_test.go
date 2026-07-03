@@ -585,6 +585,34 @@ func TestManagerYoloBypassesConfirmation(t *testing.T) {
 	}
 }
 
+func TestManagerRuntimeReceivesApplyOptions(t *testing.T) {
+	t.Parallel()
+
+	ctx := &config.Context{DockerHostType: config.ContextLocal, Name: "local"}
+	manager := NewManager(ctx)
+
+	called := false
+	err := manager.EnableComponentWithOptions(context.Background(), ComponentSpec{
+		Name: "ingress",
+		AfterEnable: []Hook{func(_ context.Context, runtime *Runtime) error {
+			called = true
+			if runtime == nil {
+				t.Fatal("expected runtime")
+			}
+			if !runtime.ApplyOptions.Yolo {
+				t.Fatal("expected yolo apply option to be available to hooks")
+			}
+			return nil
+		}},
+	}, ApplyOptions{Yolo: true})
+	if err != nil {
+		t.Fatalf("EnableComponentWithOptions() error = %v", err)
+	}
+	if !called {
+		t.Fatal("expected after-enable hook to be called")
+	}
+}
+
 func TestManagerConfirmationDeclineDoesNotMutateFiles(t *testing.T) {
 	t.Parallel()
 

@@ -7,8 +7,6 @@ import (
 	"net"
 	"net/mail"
 	"net/url"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -113,7 +111,7 @@ type ingressSettings struct {
 	Mkcert      bool
 }
 
-type mkcertRunnerFunc func(ctx *config.Context, certPath, keyPath string, hosts []string) error
+type mkcertRunnerFunc func(context.Context, *config.Context, string, string, []string) error
 
 var ingressMkcertRunner mkcertRunnerFunc = runIngressMkcert
 
@@ -205,7 +203,7 @@ func Ingress(opts IngressOptions) (corecomponent.ComposeServiceComponent, error)
 		}},
 		AfterEnableOptions: func(values map[string]string) []corecomponent.Hook {
 			return []corecomponent.Hook{func(ctx context.Context, runtime *corecomponent.Runtime) error {
-				return applyIngress(ctx, runtime.Context, opts, values)
+				return applyIngressWithOptions(ctx, runtime.Context, opts, values, runtime.ApplyOptions)
 			}}
 		},
 		Behavior: corecomponent.Behavior{
@@ -372,6 +370,10 @@ func normalizeApplicationHostname(value string) string {
 }
 
 func applyIngress(runCtx context.Context, ctx *config.Context, opts IngressOptions, values map[string]string) error {
+	return applyIngressWithOptions(runCtx, ctx, opts, values, corecomponent.ApplyOptions{})
+}
+
+func applyIngressWithOptions(runCtx context.Context, ctx *config.Context, opts IngressOptions, values map[string]string, applyOpts corecomponent.ApplyOptions) error {
 	settings, err := resolveIngressSettings(values)
 	if err != nil {
 		return err
@@ -380,7 +382,7 @@ func applyIngress(runCtx context.Context, ctx *config.Context, opts IngressOptio
 	if err := validateIngressSettingsForContext(ctx, settings); err != nil {
 		return err
 	}
-	if err := prepareIngressTLS(ctx, settings); err != nil {
+	if err := prepareIngressTLS(runCtx, ctx, settings, applyOpts); err != nil {
 		return err
 	}
 
@@ -512,14 +514,14 @@ func mkcertAllowedForContext(ctx *config.Context) bool {
 	}
 }
 
-func prepareIngressTLS(ctx *config.Context, settings ingressSettings) error {
+func prepareIngressTLS(runCtx context.Context, ctx *config.Context, settings ingressSettings, applyOpts corecomponent.ApplyOptions) error {
 	if !settings.Mkcert {
 		return nil
 	}
-	return ensureIngressMkcertCertificates(ctx, settings)
+	return ensureIngressMkcertCertificates(runCtx, ctx, settings, applyOpts)
 }
 
-func ensureIngressMkcertCertificates(ctx *config.Context, settings ingressSettings) error {
+func ensureIngressMkcertCertificates(runCtx context.Context, ctx *config.Context, settings ingressSettings, applyOpts corecomponent.ApplyOptions) error {
 	if ctx == nil {
 		return fmt.Errorf("context is required for --%s %s", ingressModeName, IngressModeHTTPSMkcert)
 	}
@@ -527,35 +529,13 @@ func ensureIngressMkcertCertificates(ctx *config.Context, settings ingressSettin
 	targetKeyPath := ctx.ResolveProjectPath(filepath.Join("certs", "privkey.pem"))
 	hosts := mkcertHosts(settings)
 
-	if ctx.DockerHostType == config.ContextRemote {
-		tmpDir, err := os.MkdirTemp("", "sitectl-mkcert-*")
-		if err != nil {
-			return err
-		}
-		defer func() { _ = os.RemoveAll(tmpDir) }()
-		localCertPath := filepath.Join(tmpDir, "cert.pem")
-		localKeyPath := filepath.Join(tmpDir, "privkey.pem")
-		if err := ingressMkcertRunner(ctx, localCertPath, localKeyPath, hosts); err != nil {
-			return err
-		}
-		certData, err := os.ReadFile(localCertPath) // #nosec G304 -- mkcert output path is created by sitectl.
-		if err != nil {
-			return fmt.Errorf("read mkcert certificate: %w", err)
-		}
-		keyData, err := os.ReadFile(localKeyPath) // #nosec G304 -- mkcert output path is created by sitectl.
-		if err != nil {
-			return fmt.Errorf("read mkcert private key: %w", err)
-		}
-		if err := ctx.WriteFile(targetCertPath, certData); err != nil {
-			return err
-		}
-		return ctx.WriteFile(targetKeyPath, keyData)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(targetCertPath), 0o700); err != nil {
+	if err := ingressEnsureMkcertPrerequisites(runCtx, ctx, applyOpts); err != nil {
 		return err
 	}
-	return ingressMkcertRunner(ctx, targetCertPath, targetKeyPath, hosts)
+	if err := ensureIngressCertDir(runCtx, ctx, targetCertPath); err != nil {
+		return err
+	}
+	return ingressMkcertRunner(runCtx, ctx, targetCertPath, targetKeyPath, hosts)
 }
 
 func mkcertHosts(settings ingressSettings) []string {
@@ -568,18 +548,14 @@ func mkcertHosts(settings ingressSettings) []string {
 	return hosts
 }
 
-func runIngressMkcert(ctx *config.Context, certPath, keyPath string, hosts []string) error {
+func runIngressMkcert(runCtx context.Context, ctx *config.Context, certPath, keyPath string, hosts []string) error {
 	args := []string{"-cert-file", certPath, "-key-file", keyPath}
 	args = append(args, hosts...)
-	cmd := exec.Command("mkcert", args...) // #nosec G204 -- mkcert args are fixed flags plus operator-provided domain names.
-	if ctx != nil && ctx.DockerHostType == config.ContextLocal && strings.TrimSpace(ctx.ProjectDir) != "" {
-		cmd.Dir = ctx.ProjectDir
-	}
-	output, err := cmd.CombinedOutput()
+	output, err := ingressRunHostCommand(runCtx, ctx, append([]string{"mkcert"}, args...))
 	if err == nil {
 		return nil
 	}
-	detail := strings.TrimSpace(string(output))
+	detail := strings.TrimSpace(output)
 	if detail != "" {
 		return fmt.Errorf("run mkcert: %w: %s", err, detail)
 	}

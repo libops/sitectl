@@ -102,8 +102,9 @@ type ApplyOptions struct {
 }
 
 type Runtime struct {
-	Context *config.Context
-	Docker  *docker.DockerClient
+	Context      *config.Context
+	Docker       *docker.DockerClient
+	ApplyOptions ApplyOptions
 }
 
 type Manager struct {
@@ -154,7 +155,7 @@ func (m *Manager) DisableComponentWithOptions(ctx context.Context, spec Componen
 		return err
 	}
 
-	runtime, err := m.newRuntime(spec.BeforeDisable, spec.AfterDisable)
+	runtime, err := m.newRuntime(opts, spec.BeforeDisable, spec.AfterDisable)
 	if err != nil {
 		return err
 	}
@@ -196,7 +197,7 @@ func (m *Manager) EnableComponentWithOptions(ctx context.Context, spec Component
 		return err
 	}
 
-	runtime, err := m.newRuntime(spec.BeforeEnable, spec.AfterEnable)
+	runtime, err := m.newRuntime(opts, spec.BeforeEnable, spec.AfterEnable)
 	if err != nil {
 		return err
 	}
@@ -399,9 +400,10 @@ func (r *Runtime) close() {
 	}
 }
 
-func (m *Manager) newRuntime(hookSets ...[]Hook) (*Runtime, error) {
+func (m *Manager) newRuntime(opts ApplyOptions, hookSets ...[]Hook) (*Runtime, error) {
 	return &Runtime{
-		Context: m.ctx,
+		Context:      m.ctx,
+		ApplyOptions: opts,
 	}, nil
 }
 

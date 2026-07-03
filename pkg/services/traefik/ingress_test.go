@@ -342,7 +342,7 @@ func TestPrepareIngressTLSGeneratesMkcertCertificates(t *testing.T) {
 	}
 	var gotHosts []string
 	original := ingressMkcertRunner
-	ingressMkcertRunner = func(ctx *config.Context, certPath, keyPath string, hosts []string) error {
+	ingressMkcertRunner = func(_ context.Context, _ *config.Context, certPath, keyPath string, hosts []string) error {
 		gotHosts = append([]string{}, hosts...)
 		if err := os.WriteFile(certPath, []byte("cert"), 0o600); err != nil {
 			return err
@@ -350,11 +350,16 @@ func TestPrepareIngressTLSGeneratesMkcertCertificates(t *testing.T) {
 		return os.WriteFile(keyPath, []byte("key"), 0o600)
 	}
 	t.Cleanup(func() { ingressMkcertRunner = original })
+	originalPrereqs := ingressEnsureMkcertPrerequisites
+	ingressEnsureMkcertPrerequisites = func(context.Context, *config.Context, corecomponent.ApplyOptions) error {
+		return nil
+	}
+	t.Cleanup(func() { ingressEnsureMkcertPrerequisites = originalPrereqs })
 
 	if err := validateIngressSettingsForContext(ctx, settings); err != nil {
 		t.Fatalf("validateIngressSettingsForContext() error = %v", err)
 	}
-	if err := prepareIngressTLS(ctx, settings); err != nil {
+	if err := prepareIngressTLS(context.Background(), ctx, settings, corecomponent.ApplyOptions{}); err != nil {
 		t.Fatalf("prepareIngressTLS() error = %v", err)
 	}
 	if got := strings.Join(gotHosts, ","); got != "dev.example.test,localhost,127.0.0.1,::1" {
@@ -364,6 +369,74 @@ func TestPrepareIngressTLSGeneratesMkcertCertificates(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(projectDir, rel)); err != nil {
 			t.Fatalf("expected %s to exist: %v", rel, err)
 		}
+	}
+}
+
+func TestPrepareIngressTLSRunsMkcertOnRemoteHost(t *testing.T) {
+	ctx := &config.Context{
+		Name:           "site-qa",
+		DockerHostType: config.ContextRemote,
+		Environment:    "qa",
+		ProjectDir:     "/srv/site",
+		SSHHostname:    "qa-origin.libops.io",
+	}
+	settings, err := resolveIngressSettings(map[string]string{
+		ingressModeName:   IngressModeHTTPSMkcert,
+		ingressDomainName: "qa-origin.libops.io",
+	})
+	if err != nil {
+		t.Fatalf("resolveIngressSettings() error = %v", err)
+	}
+
+	originalPrereqs := ingressEnsureMkcertPrerequisites
+	ingressEnsureMkcertPrerequisites = func(_ context.Context, gotCtx *config.Context, opts corecomponent.ApplyOptions) error {
+		if gotCtx != ctx {
+			t.Fatalf("prereq context = %#v, want original context", gotCtx)
+		}
+		if !opts.Yolo {
+			t.Fatal("expected yolo option to reach mkcert prerequisites")
+		}
+		return nil
+	}
+	t.Cleanup(func() { ingressEnsureMkcertPrerequisites = originalPrereqs })
+
+	var gotCommands [][]string
+	originalCommandRunner := ingressRunHostCommand
+	ingressRunHostCommand = func(_ context.Context, gotCtx *config.Context, args []string) (string, error) {
+		if gotCtx != ctx {
+			t.Fatalf("command context = %#v, want original context", gotCtx)
+		}
+		gotCommands = append(gotCommands, append([]string{}, args...))
+		return "", nil
+	}
+	t.Cleanup(func() { ingressRunHostCommand = originalCommandRunner })
+
+	var gotCertPath string
+	var gotKeyPath string
+	var gotHosts []string
+	originalRunner := ingressMkcertRunner
+	ingressMkcertRunner = func(_ context.Context, gotCtx *config.Context, certPath, keyPath string, hosts []string) error {
+		if gotCtx != ctx {
+			t.Fatalf("mkcert context = %#v, want original context", gotCtx)
+		}
+		gotCertPath = certPath
+		gotKeyPath = keyPath
+		gotHosts = append([]string{}, hosts...)
+		return nil
+	}
+	t.Cleanup(func() { ingressMkcertRunner = originalRunner })
+
+	if err := prepareIngressTLS(context.Background(), ctx, settings, corecomponent.ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("prepareIngressTLS() error = %v", err)
+	}
+	if gotCertPath != "/srv/site/certs/cert.pem" || gotKeyPath != "/srv/site/certs/privkey.pem" {
+		t.Fatalf("mkcert paths = %q %q", gotCertPath, gotKeyPath)
+	}
+	if got := strings.Join(gotHosts, ","); got != "qa-origin.libops.io,localhost,127.0.0.1,::1" {
+		t.Fatalf("mkcert hosts = %q", got)
+	}
+	if len(gotCommands) != 1 || strings.Join(gotCommands[0], " ") != "mkdir -p /srv/site/certs" {
+		t.Fatalf("expected remote cert directory command, got %#v", gotCommands)
 	}
 }
 
