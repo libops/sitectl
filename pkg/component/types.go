@@ -85,6 +85,7 @@ type FollowUpSpec struct {
 	Question             string      `json:"question,omitempty" yaml:"question,omitempty"`
 	Choices              []Choice    `json:"choices,omitempty" yaml:"choices,omitempty"`
 	DefaultValue         string      `json:"default_value,omitempty" yaml:"default_value,omitempty"`
+	BoolValue            bool        `json:"bool_value,omitempty" yaml:"bool_value,omitempty"`
 	MultiValue           bool        `json:"multi_value,omitempty" yaml:"multi_value,omitempty"`
 	Required             bool        `json:"required,omitempty" yaml:"required,omitempty"`
 	PromptOnCreate       bool        `json:"prompt_on_create,omitempty" yaml:"prompt_on_create,omitempty"`
