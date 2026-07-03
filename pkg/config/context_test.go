@@ -342,6 +342,31 @@ func TestDefaultKnownHostsPathUsesHomeSSHDirectory(t *testing.T) {
 	}
 }
 
+func TestEnsureKnownHostsFileCreatesSSHDirectoryAndFile(t *testing.T) {
+	tempHome := t.TempDir()
+	path := filepath.Join(tempHome, ".ssh", "known_hosts")
+
+	if err := ensureKnownHostsFile(path); err != nil {
+		t.Fatalf("ensureKnownHostsFile() error = %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(known_hosts) error = %v", err)
+	}
+	if info.IsDir() {
+		t.Fatalf("known_hosts should be a file")
+	}
+
+	dirInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("Stat(.ssh) error = %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf(".ssh mode = %o, want 700", got)
+	}
+}
+
 func TestKnownHostKeyAlgorithmsReturnsKnownAlgorithms(t *testing.T) {
 	tempDir := t.TempDir()
 	knownHostsPath := filepath.Join(tempDir, "known_hosts")

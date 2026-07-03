@@ -260,10 +260,6 @@ func (r serviceComponentRegistry) detectViews(componentName, projectPath, codeba
 	if err != nil {
 		return nil, fmt.Errorf("resolve component context: %w", err)
 	}
-	// Describe/report detection is read-only and can inspect either local or
-	// remote contexts. Reconcile and set mutate compose files, so those paths
-	// enforce local-only contexts before applying component changes.
-
 	allDefs := r.definitions()
 	defs := allDefs
 	if strings.TrimSpace(componentName) != "" {
@@ -312,9 +308,7 @@ func (r serviceComponentRegistry) reconcile(cmd *cobra.Command, componentName, p
 	if err != nil {
 		return fmt.Errorf("resolve component context: %w", err)
 	}
-	if ctx.DockerHostType != config.ContextLocal {
-		return fmt.Errorf("component changes are local-only; context %q is %q", ctx.Name, ctx.DockerHostType)
-	}
+	warnRemoteComponentMutation(cmd, ctx)
 
 	components := r.components
 	if strings.TrimSpace(componentName) != "" {
@@ -382,9 +376,7 @@ func (r serviceComponentRegistry) set(cmd *cobra.Command, name, argDisposition, 
 	if err != nil {
 		return fmt.Errorf("resolve component context: %w", err)
 	}
-	if ctx.DockerHostType != config.ContextLocal {
-		return fmt.Errorf("component changes are local-only; context %q is %q", ctx.Name, ctx.DockerHostType)
-	}
+	warnRemoteComponentMutation(cmd, ctx)
 
 	if err := promptRequiredServiceFollowUps(cmd, def, disposition, yolo, followUps); err != nil {
 		return err
@@ -406,6 +398,13 @@ func (r serviceComponentRegistry) set(cmd *cobra.Command, name, argDisposition, 
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", component.Name(), disposition)
 	return nil
+}
+
+func warnRemoteComponentMutation(cmd *cobra.Command, ctx *config.Context) {
+	if cmd == nil || ctx == nil || ctx.DockerHostType != config.ContextRemote {
+		return
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), "Warning: modifying remote project files directly; commit and review these changes through version control before promoting them.")
 }
 
 func (r serviceComponentRegistry) resolveContext(projectPath string) (*config.Context, error) {

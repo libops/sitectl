@@ -146,6 +146,51 @@ func TestComposeTLSProviderInfersLetsEncryptFromTraefikCommand(t *testing.T) {
 	}
 }
 
+func TestComposeTLSProviderPrefersSitectlTLSModeMarker(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	ctx := Context{
+		DockerHostType: ContextLocal,
+		ProjectDir:     projectDir,
+	}
+	writePortCompose(t, projectDir, `services:
+  traefik:
+    environment:
+      SITECTL_TLS_MODE: "https-cloudflare-origin"
+    command:
+      - --entryPoints.http.address=:80
+      - --entryPoints.https.address=:443
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+`)
+
+	if got := ctx.ComposeTLSProvider("self-managed"); got != "cloudflare-origin" {
+		t.Fatalf("ComposeTLSProvider() = %q, want cloudflare-origin", got)
+	}
+}
+
+func TestComposeTLSProviderReadsSitectlTLSModeMarkerFromEnvList(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	ctx := Context{
+		DockerHostType: ContextLocal,
+		ProjectDir:     projectDir,
+	}
+	writePortCompose(t, projectDir, `services:
+  traefik:
+    environment:
+      - SITECTL_TLS_MODE=https-mkcert
+    command:
+      - --entryPoints.http.address=:80
+      - --entryPoints.https.address=:443
+`)
+
+	if got := ctx.ComposeTLSProvider("self-managed"); got != "mkcert" {
+		t.Fatalf("ComposeTLSProvider() = %q, want mkcert", got)
+	}
+}
+
 func TestComposeTLSProviderIgnoresNonTraefikACMECommands(t *testing.T) {
 	t.Parallel()
 

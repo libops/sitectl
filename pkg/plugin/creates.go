@@ -109,6 +109,7 @@ type ComposeCreateRequest struct {
 	DrupalRootfs       string
 	SetDefaultContext  bool
 	SetupOnly          bool
+	Yolo               bool
 	ImageOverrides     ComposeImageOverrides
 	Decisions          map[string]corecomponent.ReviewDecision
 }
@@ -258,10 +259,14 @@ func (s *SDK) BindComposeCreateFlags(cmd *cobra.Command, spec CreateSpec, drupal
 	cmd.Flags().String("project-dir", "", "Directory where the stack exists or will be created.")
 	cmd.Flags().String("type", "", "Target machine for this stack: local or remote.")
 	cmd.Flags().String("checkout-source", "", "How to source the project checkout: template or existing.")
+	if cmd.Flags().Lookup("context") == nil {
+		cmd.Flags().String("context", "", "sitectl context name to save for this stack.")
+	}
 	cmd.Flags().String("template-repo", spec.DockerComposeRepo, "Git repository to clone as the Docker Compose stack.")
 	cmd.Flags().String("template-branch", normalizeCreateSpec(spec).DockerComposeBranch, "Branch or ref to clone from the template repository.")
 	cmd.Flags().Bool("default-context", false, "Set the new context as the default sitectl context.")
 	cmd.Flags().Bool("setup-only", false, "Clone and configure the checkout but do not start the stack.")
+	cmd.Flags().Bool("yolo", false, "Skip confirmation prompts for create-time host changes.")
 	cmd.Flags().StringArray("tag", []string{}, "Set a LibOps image tag for a known Compose service as SERVICE=TAG; may be passed more than once.")
 	cmd.Flags().StringArray("image", []string{}, "Override a Compose service image as SERVICE=IMAGE; may be passed more than once.")
 	cmd.Flags().StringArray("build-arg", []string{}, "Override a Compose service build arg as SERVICE.ARG=VALUE; may be passed more than once.")
@@ -341,6 +346,10 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 	if err != nil {
 		return ComposeCreateRequest{}, fmt.Errorf("get setup-only flag: %w", err)
 	}
+	yolo, err := cmd.Flags().GetBool("yolo")
+	if err != nil {
+		return ComposeCreateRequest{}, fmt.Errorf("get yolo flag: %w", err)
+	}
 	request := ComposeCreateRequest{
 		ContextName:       contextName,
 		TargetType:        targetType,
@@ -351,6 +360,7 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 		DrupalRootfs:      strings.TrimSpace(drupalRootfs),
 		SetDefaultContext: setDefaultContext,
 		SetupOnly:         setupOnly,
+		Yolo:              yolo,
 	}
 	request.Site, _ = cmd.Flags().GetString("site")
 	request.Site = strings.TrimSpace(request.Site)
@@ -654,53 +664,50 @@ func promptAndSaveRemoteContext(opts ComposeRemoteContextOptions) (*config.Conte
 		}
 	}
 
-	projectDir, err := resolveRequiredCreateValue(input, "Project directory", helpers.FirstNonEmpty(strings.TrimSpace(opts.ProjectDir), strings.TrimSpace(opts.DefaultProjectDir)), strings.Split(corecomponent.RenderSection("Project directory", "Enter the full directory path where this stack exists or should be managed on the remote host."), "\n"))
-	if err != nil {
-		return nil, err
-	}
-	site := strings.TrimSpace(opts.Site)
-	if site == "" {
-		site, err = resolveRequiredCreateValue(input, "Site name", helpers.FirstNonEmpty(strings.TrimSpace(opts.DefaultSite), filepath.Base(projectDir)), strings.Split(corecomponent.RenderSection("Site name", "Enter the logical site name this context belongs to."), "\n"))
+	projectDir := helpers.FirstNonEmpty(strings.TrimSpace(opts.ProjectDir), strings.TrimSpace(opts.DefaultProjectDir))
+	if projectDir == "" {
+		projectDir, err = resolveRequiredCreateValue(input, "Project directory", "", strings.Split(corecomponent.RenderSection("Project directory", "Enter the full directory path where this stack exists or should be managed on the remote host."), "\n"))
 		if err != nil {
 			return nil, err
 		}
 	}
-	projectName := strings.TrimSpace(opts.ProjectName)
-	if projectName == "" {
-		projectName, err = resolveRequiredCreateValue(input, "Project name", helpers.FirstNonEmpty(strings.TrimSpace(opts.DefaultProjectName), filepath.Base(projectDir), "docker-compose"), strings.Split(corecomponent.RenderSection("Project name", "Enter the logical project name for this stack."), "\n"))
-		if err != nil {
-			return nil, err
-		}
-	}
-	environment := strings.TrimSpace(opts.Environment)
-	if environment == "" {
-		environment, err = resolveRequiredCreateValue(input, "Environment", helpers.FirstNonEmpty(strings.TrimSpace(opts.DefaultEnvironment), "remote"), strings.Split(corecomponent.RenderSection("Environment", "Enter the environment name for this remote stack, such as dev, staging, or prod."), "\n"))
-		if err != nil {
-			return nil, err
-		}
-	}
+	site := helpers.FirstNonEmpty(strings.TrimSpace(opts.Site), strings.TrimSpace(opts.DefaultSite), filepath.Base(projectDir))
+	projectName := helpers.FirstNonEmpty(strings.TrimSpace(opts.ProjectName), strings.TrimSpace(opts.DefaultProjectName), filepath.Base(projectDir), "docker-compose")
+	environment := helpers.FirstNonEmpty(strings.TrimSpace(opts.Environment), strings.TrimSpace(opts.DefaultEnvironment), "remote")
 	composeProjectName := helpers.FirstNonEmpty(strings.TrimSpace(opts.ComposeProjectName), projectName)
 	composeNetwork := helpers.FirstNonEmpty(strings.TrimSpace(opts.ComposeNetwork), composeProjectName+"_default")
-	hostname, err := resolveRequiredCreateValue(input, "SSH hostname", strings.TrimSpace(opts.SSHHostname), strings.Split(corecomponent.RenderSection("Remote SSH connection", "Enter the SSH connection details for the remote machine that hosts this stack."), "\n"))
-	if err != nil {
-		return nil, err
+	hostname := strings.TrimSpace(opts.SSHHostname)
+	if hostname == "" {
+		hostname, err = resolveRequiredCreateValue(input, "SSH hostname", "", strings.Split(corecomponent.RenderSection("Remote SSH connection", "Enter the SSH connection details for the remote machine that hosts this stack."), "\n"))
+		if err != nil {
+			return nil, err
+		}
 	}
 	currentUser := ""
 	if u, userErr := user.Current(); userErr == nil {
 		currentUser = u.Username
 	}
-	sshUser, err := resolveRequiredCreateValue(input, "SSH user", helpers.FirstNonEmpty(strings.TrimSpace(opts.SSHUser), currentUser, "root"), nil)
-	if err != nil {
-		return nil, err
+	sshUser := strings.TrimSpace(opts.SSHUser)
+	if sshUser == "" {
+		sshUser, err = resolveRequiredCreateValue(input, "SSH user", helpers.FirstNonEmpty(currentUser, "root"), nil)
+		if err != nil {
+			return nil, err
+		}
 	}
-	sshPort, err := resolveRequiredCreateUint(input, "SSH port", defaultCreateSSHPort(opts.SSHPort), nil)
-	if err != nil {
-		return nil, err
+	sshPort := opts.SSHPort
+	if sshPort == 0 {
+		sshPort, err = resolveRequiredCreateUint(input, "SSH port", defaultCreateSSHPort(sshPort), nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defaultKey := filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa")
-	sshKeyPath, err := resolveRequiredCreateValue(input, "Path to SSH private key", helpers.FirstNonEmpty(strings.TrimSpace(opts.SSHKeyPath), defaultKey), nil)
-	if err != nil {
-		return nil, err
+	sshKeyPath := strings.TrimSpace(opts.SSHKeyPath)
+	if sshKeyPath == "" {
+		sshKeyPath, err = resolveRequiredCreateValue(input, "Path to SSH private key", defaultKey, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	dockerSocket := helpers.FirstNonEmpty(strings.TrimSpace(opts.DockerSocket), "/var/run/docker.sock")
 
@@ -819,21 +826,29 @@ func populateRemoteCreateRequest(req *ComposeCreateRequest, input config.InputFu
 	}
 	defaultKey := filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa")
 	var err error
-	req.SSHHostname, err = resolveRequiredCreateValue(input, "SSH hostname", req.SSHHostname, strings.Split(corecomponent.RenderSection("Remote SSH connection", "Enter the SSH connection details for the remote machine that hosts this stack."), "\n"))
-	if err != nil {
-		return err
+	if strings.TrimSpace(req.SSHHostname) == "" {
+		req.SSHHostname, err = resolveRequiredCreateValue(input, "SSH hostname", "", strings.Split(corecomponent.RenderSection("Remote SSH connection", "Enter the SSH connection details for the remote machine that hosts this stack."), "\n"))
+		if err != nil {
+			return err
+		}
 	}
-	req.SSHUser, err = resolveRequiredCreateValue(input, "SSH user", helpers.FirstNonEmpty(req.SSHUser, currentUser, "root"), nil)
-	if err != nil {
-		return err
+	if strings.TrimSpace(req.SSHUser) == "" {
+		req.SSHUser, err = resolveRequiredCreateValue(input, "SSH user", helpers.FirstNonEmpty(currentUser, "root"), nil)
+		if err != nil {
+			return err
+		}
 	}
-	req.SSHPort, err = resolveRequiredCreateUint(input, "SSH port", defaultCreateSSHPort(req.SSHPort), nil)
-	if err != nil {
-		return err
+	if req.SSHPort == 0 {
+		req.SSHPort, err = resolveRequiredCreateUint(input, "SSH port", defaultCreateSSHPort(req.SSHPort), nil)
+		if err != nil {
+			return err
+		}
 	}
-	req.SSHKeyPath, err = resolveRequiredCreateValue(input, "Path to SSH private key", helpers.FirstNonEmpty(req.SSHKeyPath, defaultKey), nil)
-	if err != nil {
-		return err
+	if strings.TrimSpace(req.SSHKeyPath) == "" {
+		req.SSHKeyPath, err = resolveRequiredCreateValue(input, "Path to SSH private key", defaultKey, nil)
+		if err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(req.DockerSocket) == "" {
 		req.DockerSocket = "/var/run/docker.sock"

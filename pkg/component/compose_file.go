@@ -4,14 +4,32 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/libops/sitectl/pkg/config"
 )
 
 type ComposeFile struct {
 	path  string
 	lines []string
+	ctx   *config.Context
 }
 
 func LoadComposeFile(path string) (*ComposeFile, error) {
+	return LoadComposeFileForContext(nil, path)
+}
+
+func LoadComposeFileForContext(ctx *config.Context, path string) (*ComposeFile, error) {
+	if ctx != nil && ctx.DockerHostType == config.ContextRemote {
+		data, err := ctx.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read compose file: %w", err)
+		}
+		return &ComposeFile{
+			path:  path,
+			lines: strings.Split(string(data), "\n"),
+			ctx:   ctx,
+		}, nil
+	}
 	data, err := os.ReadFile(path) // #nosec G304 -- compose file path is an explicit project configuration path.
 	if err != nil {
 		return nil, fmt.Errorf("read compose file: %w", err)
@@ -23,6 +41,31 @@ func LoadComposeFile(path string) (*ComposeFile, error) {
 }
 
 func LoadComposeFileOptional(path string) (*ComposeFile, error) {
+	return LoadComposeFileOptionalForContext(nil, path)
+}
+
+func LoadComposeFileOptionalForContext(ctx *config.Context, path string) (*ComposeFile, error) {
+	if ctx != nil && ctx.DockerHostType == config.ContextRemote {
+		exists, err := ctx.FileExists(path)
+		if err != nil {
+			return nil, fmt.Errorf("check compose file: %w", err)
+		}
+		if !exists {
+			return &ComposeFile{
+				path: path,
+				ctx:  ctx,
+			}, nil
+		}
+		data, err := ctx.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read compose file: %w", err)
+		}
+		return &ComposeFile{
+			path:  path,
+			lines: strings.Split(string(data), "\n"),
+			ctx:   ctx,
+		}, nil
+	}
 	data, err := os.ReadFile(path) // #nosec G304 -- compose file path is an explicit project configuration path.
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -41,10 +84,16 @@ func LoadComposeFileOptional(path string) (*ComposeFile, error) {
 
 func (c *ComposeFile) Save() error {
 	if len(composeContentLines(c.lines)) == 0 {
+		if c.ctx != nil {
+			return c.ctx.RemoveFile(c.path)
+		}
 		if err := os.Remove(c.path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return nil
+	}
+	if c.ctx != nil {
+		return c.ctx.WriteFile(c.path, []byte(strings.Join(c.lines, "\n")))
 	}
 	return os.WriteFile(c.path, []byte(strings.Join(c.lines, "\n")), 0o600)
 }

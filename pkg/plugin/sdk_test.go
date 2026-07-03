@@ -672,6 +672,49 @@ func TestRegisterStandardComposeTemplateAddsLifecycleCommands(t *testing.T) {
 	}
 }
 
+func TestRefreshCreateContextComposeIdentityDetectsClonedTemplateName(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("name: wp\nservices:\n  wp:\n    image: wordpress:latest\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yml) error = %v", err)
+	}
+
+	ctx := &config.Context{
+		Name:               "generated-wp-local",
+		Site:               "generated-wp",
+		Plugin:             "wp",
+		DockerHostType:     config.ContextLocal,
+		Environment:        "local",
+		DockerSocket:       "/var/run/docker.sock",
+		ProjectName:        "generated-wp",
+		ComposeProjectName: "generated-wp",
+		ComposeNetwork:     "generated-wp_default",
+		ProjectDir:         projectDir,
+	}
+	if err := config.SaveContext(ctx, true); err != nil {
+		t.Fatalf("SaveContext() error = %v", err)
+	}
+
+	if err := refreshCreateContextComposeIdentity(ctx, ComposeCreateRequest{}); err != nil {
+		t.Fatalf("refreshCreateContextComposeIdentity() error = %v", err)
+	}
+
+	if ctx.ComposeProjectName != "wp" {
+		t.Fatalf("ComposeProjectName = %q, want wp", ctx.ComposeProjectName)
+	}
+	if ctx.ComposeNetwork != "wp_default" {
+		t.Fatalf("ComposeNetwork = %q, want wp_default", ctx.ComposeNetwork)
+	}
+	saved, err := config.GetContext("generated-wp-local")
+	if err != nil {
+		t.Fatalf("GetContext() error = %v", err)
+	}
+	if saved.ComposeProjectName != "wp" || saved.ComposeNetwork != "wp_default" {
+		t.Fatalf("saved compose identity = %q/%q, want wp/wp_default", saved.ComposeProjectName, saved.ComposeNetwork)
+	}
+}
+
 func TestComposeTemplateNeedsInitDetectsMissingArtifacts(t *testing.T) {
 	projectDir := t.TempDir()
 	ctx := &config.Context{ProjectDir: projectDir, DockerHostType: config.ContextLocal}

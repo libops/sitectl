@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
@@ -24,6 +25,9 @@ type StandardComposeWebHealthcheckOptions struct {
 	HTTPName                string
 	DefaultScheme           string
 	DefaultDomain           string
+	URLVariables            []string
+	DomainVariables         []string
+	HTTPSVariables          []string
 	DatabaseService         string
 	CheckDatabaseDependency bool
 	SolrService             string
@@ -75,12 +79,15 @@ func (r standardComposeWebHealthcheckRunner) Run(cmd *cobra.Command, ctx *config
 	appService := firstHealthcheckValue(r.opts.AppService, "app")
 	databaseService := firstHealthcheckValue(r.opts.DatabaseService, "mariadb")
 	targetURL := corehealthcheck.PublicURLFromEnv(ctx, firstHealthcheckValue(r.opts.DefaultScheme, "http"), firstHealthcheckValue(r.opts.DefaultDomain, "localhost"))
+	if serviceURL := healthcheckURLFromServiceEnvironment(ctx, appService, r.opts); serviceURL != "" {
+		targetURL = serviceURL
+	}
 	if traefikURL, ok, err := corehealthcheck.PublicURLFromTraefik(ctx, corehealthcheck.TraefikRouteOptions{
 		AppService:    appService,
 		Router:        r.opts.TraefikRouter,
 		DefaultScheme: firstHealthcheckValue(r.opts.DefaultScheme, "http"),
 		DefaultDomain: firstHealthcheckValue(r.opts.DefaultDomain, "localhost"),
-	}); err == nil && ok {
+	}); err == nil && ok && shouldPreferTraefikHealthcheckURL(targetURL, traefikURL) {
 		targetURL = traefikURL
 	}
 	results := []sitevalidate.Result{
@@ -99,6 +106,71 @@ func (r standardComposeWebHealthcheckRunner) Run(cmd *cobra.Command, ctx *config
 		results = append(results, checker.CheckSolrCore(cmd.Context(), firstHealthcheckValue(r.opts.SolrService, "solr"), firstHealthcheckValue(r.opts.SolrCore, "default")))
 	}
 	return results, nil
+}
+
+func healthcheckURLFromServiceEnvironment(ctx *config.Context, appService string, opts StandardComposeWebHealthcheckOptions) string {
+	if len(opts.URLVariables) == 0 && len(opts.DomainVariables) == 0 && len(opts.HTTPSVariables) == 0 {
+		return ""
+	}
+	env, err := ContextServiceEnvironment(ctx, appService)
+	if err != nil {
+		return ""
+	}
+	scheme := firstHealthcheckValue(opts.DefaultScheme, "http")
+	domain := firstHealthcheckValue(opts.DefaultDomain, "localhost")
+	for _, key := range opts.URLVariables {
+		parsedScheme, parsedDomain := schemeDomainFromURL(env[strings.TrimSpace(key)])
+		if parsedDomain != "" {
+			scheme = firstHealthcheckValue(parsedScheme, scheme)
+			domain = parsedDomain
+			break
+		}
+	}
+	if domain == firstHealthcheckValue(opts.DefaultDomain, "localhost") {
+		for _, key := range opts.DomainVariables {
+			if value := strings.TrimSpace(env[strings.TrimSpace(key)]); value != "" {
+				domain = value
+				break
+			}
+		}
+	}
+	for _, key := range opts.HTTPSVariables {
+		if strings.EqualFold(strings.TrimSpace(env[strings.TrimSpace(key)]), "true") {
+			scheme = "https"
+			break
+		}
+	}
+	if strings.TrimSpace(domain) == "" {
+		return ""
+	}
+	return (&url.URL{Scheme: scheme, Host: domain, Path: "/"}).String()
+}
+
+func shouldPreferTraefikHealthcheckURL(envURL, traefikURL string) bool {
+	envHost := healthcheckURLHostname(envURL)
+	traefikHost := healthcheckURLHostname(traefikURL)
+	if envHost != "" && !healthcheckLocalHost(envHost) && healthcheckLocalHost(traefikHost) {
+		return false
+	}
+	return true
+}
+
+func healthcheckURLHostname(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+func healthcheckLocalHost(host string) bool {
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
 }
 
 func firstHealthcheckValue(values ...string) string {
