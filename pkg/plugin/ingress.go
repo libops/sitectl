@@ -107,26 +107,34 @@ func (p standardComposeWebIngressRouteProvider) Routes(cmd *cobra.Command, ctx *
 	}
 	scheme := "http"
 	domain := "localhost"
-	for _, key := range p.opts.URLVariables {
-		parsedScheme, parsedDomain := schemeDomainFromURL(env[strings.TrimSpace(key)])
-		if parsedDomain != "" {
-			scheme = firstIngressValue(parsedScheme, scheme)
-			domain = parsedDomain
-			break
-		}
+	usedIngressEnv := false
+	if ingressScheme, ingressDomain, ok := ingressSchemeDomainFromEnv(env, scheme, domain); ok {
+		scheme = ingressScheme
+		domain = ingressDomain
+		usedIngressEnv = true
 	}
-	if domain == "localhost" {
-		for _, key := range p.opts.DomainVariables {
-			if value := strings.TrimSpace(env[strings.TrimSpace(key)]); value != "" {
-				domain = value
+	if !usedIngressEnv {
+		for _, key := range p.opts.URLVariables {
+			parsedScheme, parsedDomain := schemeDomainFromURL(env[strings.TrimSpace(key)])
+			if parsedDomain != "" {
+				scheme = firstIngressValue(parsedScheme, scheme)
+				domain = parsedDomain
 				break
 			}
 		}
-	}
-	for _, key := range p.opts.HTTPSVariables {
-		if strings.EqualFold(strings.TrimSpace(env[strings.TrimSpace(key)]), "true") {
-			scheme = "https"
-			break
+		if domain == "localhost" {
+			for _, key := range p.opts.DomainVariables {
+				if value := strings.TrimSpace(env[strings.TrimSpace(key)]); value != "" {
+					domain = value
+					break
+				}
+			}
+		}
+		for _, key := range p.opts.HTTPSVariables {
+			if strings.EqualFold(strings.TrimSpace(env[strings.TrimSpace(key)]), "true") {
+				scheme = "https"
+				break
+			}
 		}
 	}
 	return IngressRoutes{
@@ -284,6 +292,25 @@ func schemeDomainFromURL(value string) (string, string) {
 		return "", ""
 	}
 	return strings.TrimSpace(parsed.Scheme), strings.TrimSpace(parsed.Host)
+}
+
+func ingressSchemeDomainFromEnv(env map[string]string, defaultScheme, defaultDomain string) (string, string, bool) {
+	scheme := firstIngressValue(env["INGRESS_SCHEME"], defaultScheme, "http")
+	domain := firstIngressHostname(env["INGRESS_HOSTNAMES"])
+	if domain == "" {
+		domain = firstIngressValue(defaultDomain, "localhost")
+	}
+	return scheme, domain, strings.TrimSpace(env["INGRESS_SCHEME"]) != "" || strings.TrimSpace(env["INGRESS_HOSTNAMES"]) != ""
+}
+
+func firstIngressHostname(value string) string {
+	for _, hostname := range strings.Split(value, ",") {
+		hostname = strings.TrimSpace(hostname)
+		if hostname != "" {
+			return hostname
+		}
+	}
+	return ""
 }
 
 func firstIngressValue(values ...string) string {

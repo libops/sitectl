@@ -675,11 +675,11 @@ func PublicURLFromEnv(ctx *config.Context, defaultScheme, defaultDomain string) 
 	if siteURL := strings.TrimSpace(env["SITE_URL"]); siteURL != "" {
 		return siteURL
 	}
-	scheme := firstNonEmpty(defaultScheme, "http")
+	scheme := firstNonEmpty(env["INGRESS_SCHEME"], defaultScheme, "http")
 	if ctx != nil {
 		scheme = ctx.ComposePublicScheme(scheme)
 	}
-	domain := firstNonEmpty(env["DOMAIN"], defaultDomain, "localhost")
+	domain := firstNonEmpty(firstIngressHostname(env["INGRESS_HOSTNAMES"]), env["DOMAIN"], defaultDomain, "localhost")
 	port := ""
 	if ctx != nil {
 		target := 80
@@ -695,6 +695,16 @@ func PublicURLFromEnv(ctx *config.Context, defaultScheme, defaultDomain string) 
 		host = domain + ":" + port
 	}
 	return (&url.URL{Scheme: scheme, Host: host, Path: "/"}).String()
+}
+
+func firstIngressHostname(value string) string {
+	for _, hostname := range strings.Split(value, ",") {
+		hostname = strings.TrimSpace(hostname)
+		if hostname != "" {
+			return hostname
+		}
+	}
+	return ""
 }
 
 // ProjectEnv reads the project's .env file. Missing or unparsable files return
