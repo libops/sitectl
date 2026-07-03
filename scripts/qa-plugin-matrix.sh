@@ -9,6 +9,7 @@ qa_phases="${SITECTL_QA_PHASES:-default-http domain-http mkcert letsencrypt clou
 qa_remote_host="${SITECTL_QA_REMOTE_HOST:-}"
 qa_remote_user="${SITECTL_QA_REMOTE_USER:-root}"
 qa_remote_port="${SITECTL_QA_REMOTE_PORT:-22}"
+qa_remote_key="${SITECTL_QA_SSH_KEY:-}"
 qa_remote_base="${SITECTL_QA_REMOTE_BASE:-/root/sitectl-plugin-qa}"
 qa_local_base="${SITECTL_QA_LOCAL_BASE:-${TMPDIR:-/tmp}/sitectl-plugin-qa}"
 qa_domain="${SITECTL_QA_DOMAIN:-qa-origin.libops.io}"
@@ -33,6 +34,7 @@ Environment:
   SITECTL_QA_TARGET=remote|local
   SITECTL_QA_REMOTE_HOST=172.239.194.15
   SITECTL_QA_REMOTE_USER=root
+  SITECTL_QA_SSH_KEY=$HOME/.ssh/id_rsa
   SITECTL_QA_DOMAIN=qa-origin.libops.io
   SITECTL_QA_ACME_EMAIL=admin@example.org
   SITECTL_QA_PHASES="default-http domain-http mkcert letsencrypt cloudflare custom"
@@ -105,10 +107,14 @@ create_stack() {
 		--site "$ctx"
 		--environment qa
 		--project-name "$ctx"
+		--compose-project-name "$app"
 		--yolo
 	)
 	if [ "$qa_target" = "remote" ]; then
 		args+=(--ssh-hostname "$qa_remote_host" --ssh-user "$qa_remote_user" --ssh-port "$qa_remote_port")
+		if [ -n "$qa_remote_key" ]; then
+			args+=(--ssh-key "$qa_remote_key")
+		fi
 	fi
 	while IFS= read -r arg; do
 		[ -n "$arg" ] && args+=("$arg")
