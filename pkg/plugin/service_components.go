@@ -367,6 +367,9 @@ func (r serviceComponentRegistry) set(cmd *cobra.Command, name, argDisposition, 
 		return fmt.Errorf("unknown component %q", name)
 	}
 	def := component.Definition()
+	if shouldEnableDevModeForAssistant(def, argDisposition, stateFlag, dispositionFlag, followUps) {
+		argDisposition = string(corecomponent.DispositionEnabled)
+	}
 	state, disposition, err := resolveServiceSetState(def, argDisposition, stateFlag, dispositionFlag)
 	if err != nil {
 		return fmt.Errorf("resolve component %q state: %w", component.Name(), err)
@@ -398,6 +401,16 @@ func (r serviceComponentRegistry) set(cmd *cobra.Command, name, argDisposition, 
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", component.Name(), disposition)
 	return nil
+}
+
+func shouldEnableDevModeForAssistant(def corecomponent.Definition, argDisposition, stateFlag, dispositionFlag string, followUps map[string]string) bool {
+	if def.Name != "dev-mode" {
+		return false
+	}
+	if strings.TrimSpace(argDisposition) != "" || strings.TrimSpace(stateFlag) != "" || strings.TrimSpace(dispositionFlag) != "" {
+		return false
+	}
+	return corecomponent.ParseFollowUpBool(followUps["assistant"])
 }
 
 func warnRemoteComponentMutation(cmd *cobra.Command, ctx *config.Context) {
@@ -499,7 +512,9 @@ func normalizeComponentReportFormat(format string) string {
 
 type serviceFollowUpFlagValue struct {
 	name   string
+	bool   bool
 	multi  bool
+	bvalue bool
 	single string
 	values []string
 }
@@ -522,8 +537,10 @@ func bindServiceFollowUpFlags(cmd *cobra.Command, defs []corecomponent.Definitio
 				continue
 			}
 			seen[flagName] = true
-			holder := &serviceFollowUpFlagValue{name: followUp.Name, multi: followUp.MultiValue}
-			if followUp.MultiValue {
+			holder := &serviceFollowUpFlagValue{name: followUp.Name, bool: followUp.BoolValue, multi: followUp.MultiValue}
+			if followUp.BoolValue {
+				holder.bvalue = corecomponent.FollowUpBoolDefault(followUp)
+			} else if followUp.MultiValue {
 				holder.values = corecomponent.SplitFollowUpValues(followUp.DefaultValue)
 			} else {
 				holder.single = strings.TrimSpace(followUp.DefaultValue)
@@ -533,7 +550,9 @@ func bindServiceFollowUpFlags(cmd *cobra.Command, defs []corecomponent.Definitio
 			if usage == "" {
 				usage = fmt.Sprintf("%s option", followUp.Name)
 			}
-			if followUp.MultiValue {
+			if followUp.BoolValue {
+				cmd.Flags().BoolVar(&holder.bvalue, flagName, holder.bvalue, usage)
+			} else if followUp.MultiValue {
 				cmd.Flags().StringArrayVar(&holder.values, flagName, append([]string{}, holder.values...), usage)
 			} else {
 				cmd.Flags().StringVar(&holder.single, flagName, holder.single, usage)
@@ -551,6 +570,10 @@ func collectServiceFollowUps(values map[string]*serviceFollowUpFlagValue) map[st
 		name := strings.TrimSpace(value.name)
 		if name == "" {
 			name = fallbackName
+		}
+		if value.bool {
+			out[name] = corecomponent.FormatFollowUpBool(value.bvalue)
+			continue
 		}
 		if value.multi {
 			out[name] = corecomponent.JoinFollowUpValues(value.values)

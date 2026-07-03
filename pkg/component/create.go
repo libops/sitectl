@@ -71,7 +71,9 @@ func AddCreateFlags(cmd *cobra.Command, options ...CreateOption) {
 				continue
 			}
 			seenFollowUpFlags[flagName] = true
-			if followUp.MultiValue {
+			if followUp.BoolValue {
+				cmd.Flags().Bool(flagName, FollowUpBoolDefault(followUp), createFollowUpUsage(option.Name, followUp))
+			} else if followUp.MultiValue {
 				cmd.Flags().StringArray(flagName, SplitFollowUpValues(followUp.DefaultValue), createFollowUpUsage(option.Name, followUp))
 			} else {
 				cmd.Flags().String(flagName, strings.TrimSpace(followUp.DefaultValue), createFollowUpUsage(option.Name, followUp))
@@ -164,7 +166,13 @@ func PromptCreateFollowUps(cmd *cobra.Command, option CreateOption, decision *Re
 	for _, followUp := range followUpsForDisposition(option.FollowUps, decision.Disposition, decision.State) {
 		flagName := followUpFlagName(option.Name, followUp)
 		if flagName != "" && cmd != nil && cmd.Flags().Lookup(flagName) != nil && cmd.Flags().Changed(flagName) {
-			if followUp.MultiValue {
+			if followUp.BoolValue {
+				value, err := cmd.Flags().GetBool(flagName)
+				if err != nil {
+					return fmt.Errorf("get %s flag: %w", flagName, err)
+				}
+				decision.Options[followUp.Name] = FormatFollowUpBool(value)
+			} else if followUp.MultiValue {
 				values, err := cmd.Flags().GetStringArray(flagName)
 				if err != nil {
 					return fmt.Errorf("get %s flag: %w", flagName, err)
@@ -181,7 +189,9 @@ func PromptCreateFollowUps(cmd *cobra.Command, option CreateOption, decision *Re
 		}
 		if !followUp.PromptOnCreate {
 			if defaultValue := strings.TrimSpace(followUp.DefaultValue); defaultValue != "" {
-				if followUp.MultiValue {
+				if followUp.BoolValue {
+					decision.Options[followUp.Name] = FormatFollowUpBool(FollowUpBoolDefault(followUp))
+				} else if followUp.MultiValue {
 					decision.Options[followUp.Name] = NormalizeFollowUpValue(defaultValue)
 				} else {
 					decision.Options[followUp.Name] = defaultValue

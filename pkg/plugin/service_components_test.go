@@ -113,6 +113,50 @@ func TestServiceComponentSetDoesNotRegisterDrupalRootfsFlag(t *testing.T) {
 	}
 }
 
+func TestServiceComponentSetRegistersBoolFollowUpFlags(t *testing.T) {
+	t.Parallel()
+
+	component := testComposeServiceComponentWithFollowUps(t, "dev-mode", []corecomponent.FollowUpSpec{{
+		Name:         "assistant",
+		FlagName:     "assistant",
+		DefaultValue: "false",
+		BoolValue:    true,
+		AppliesTo:    corecomponent.StateOn,
+	}})
+	registry := serviceComponentRegistry{
+		sdk:         &SDK{Metadata: Metadata{Name: "wp"}},
+		displayName: "WordPress",
+		components:  []corecomponent.ComposeServiceComponent{component},
+	}
+
+	set := childCommand(registry.command(), "set")
+	if set == nil {
+		t.Fatal("expected set command")
+	}
+	flag := set.Flags().Lookup("assistant")
+	if flag == nil {
+		t.Fatal("expected --assistant flag")
+	}
+	if flag.Value.Type() != "bool" {
+		t.Fatalf("expected --assistant to be bool, got %q", flag.Value.Type())
+	}
+}
+
+func TestServiceComponentAssistantFlagImpliesEnabledDevMode(t *testing.T) {
+	t.Parallel()
+
+	def := corecomponent.Definition{Name: "dev-mode"}
+	if !shouldEnableDevModeForAssistant(def, "", "", "", map[string]string{"assistant": "true"}) {
+		t.Fatal("expected --assistant to imply enabled dev-mode")
+	}
+	if shouldEnableDevModeForAssistant(def, "disabled", "", "", map[string]string{"assistant": "true"}) {
+		t.Fatal("expected explicit disposition to win over --assistant")
+	}
+	if shouldEnableDevModeForAssistant(corecomponent.Definition{Name: "ingress"}, "", "", "", map[string]string{"assistant": "true"}) {
+		t.Fatal("expected --assistant to affect only dev-mode")
+	}
+}
+
 func TestComponentRootfsFlagValueRejectsConflictingAliases(t *testing.T) {
 	t.Parallel()
 
@@ -273,6 +317,21 @@ func testComposeServiceComponentFromYAML(t *testing.T, name string, composeYAML 
 		Name:         name,
 		ComposeYAML:  composeYAML,
 		DefaultState: defaultState,
+	})
+	if err != nil {
+		t.Fatalf("NewComposeServiceComponent() error = %v", err)
+	}
+	return component
+}
+
+func testComposeServiceComponentWithFollowUps(t *testing.T, name string, followUps []corecomponent.FollowUpSpec) corecomponent.ComposeServiceComponent {
+	t.Helper()
+
+	component, err := corecomponent.NewComposeServiceComponent(corecomponent.ComposeServiceComponentOptions{
+		Name:         name,
+		ComposeYAML:  []byte("services:\n  app:\n    image: example/app\n"),
+		DefaultState: corecomponent.StateOff,
+		FollowUps:    followUps,
 	})
 	if err != nil {
 		t.Fatalf("NewComposeServiceComponent() error = %v", err)

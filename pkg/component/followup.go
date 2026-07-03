@@ -2,6 +2,7 @@ package component
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
@@ -37,6 +38,27 @@ func NormalizeFollowUpValue(value string) string {
 
 func FollowUpValuePresent(value string) bool {
 	return len(SplitFollowUpValues(value)) > 0
+}
+
+func FollowUpBoolDefault(spec FollowUpSpec) bool {
+	value := strings.TrimSpace(spec.DefaultValue)
+	if value == "" {
+		return false
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false
+	}
+	return parsed
+}
+
+func FormatFollowUpBool(value bool) string {
+	return strconv.FormatBool(value)
+}
+
+func ParseFollowUpBool(value string) bool {
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	return err == nil && parsed
 }
 
 func followUpsForDisposition(specs []FollowUpSpec, disposition Disposition, state State) []FollowUpSpec {
