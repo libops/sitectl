@@ -3,12 +3,13 @@ module github.com/libops/sitectl
 go 1.26.1
 
 require (
-	charm.land/bubbles/v2 v2.1.0
-	charm.land/bubbletea/v2 v2.0.7
+	charm.land/bubbles/v2 v2.1.1
+	charm.land/bubbletea/v2 v2.0.8
 	charm.land/fang/v2 v2.0.1
 	charm.land/glamour/v2 v2.0.1
-	charm.land/lipgloss/v2 v2.0.4
+	charm.land/lipgloss/v2 v2.0.5
 	github.com/NimbleMarkets/ntcharts/v2 v2.2.0
+	github.com/docker/go-connections v0.7.0
 	github.com/joho/godotenv v1.5.1
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/lrstanley/bubblezone/v2 v2.0.0
@@ -30,7 +31,6 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.2.2 // indirect
-	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -57,7 +57,7 @@ require (
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
-	github.com/charmbracelet/ultraviolet v0.0.0-20260622092850-f39628c8a989 // indirect
+	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7 // indirect
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260622092256-25656177ba8e // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20260622092256-25656177ba8e // indirect

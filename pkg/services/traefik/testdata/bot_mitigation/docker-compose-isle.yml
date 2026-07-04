@@ -26,4 +26,4 @@ services:
       TRAEFIK_LOG_LEVEL: INFO
   drupal:
     <<: *common
-    image: drupal@sha256:ed37f404790e9895ad2cd6e7336851c32b48aa0912622685ff960484ad9efb68
+    image: drupal@sha256:e29d76a8b01d1424a4f717e5a2179831d9563c2c7b2de2e2a9ffea907284da9e
