@@ -426,6 +426,73 @@ func TestApplyIngressUploadTimeoutCoversTraefikNginxAndPHP(t *testing.T) {
 	}
 }
 
+func TestApplyIngressComposeCanDisableDefaultAppRuntimeEnvironment(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "docker-compose.yml")
+	input := `services:
+  traefik:
+    image: traefik:v3
+  app:
+    image: example/app
+    environment:
+      KEEP_ME: "true"
+      PHP_UPLOAD_MAX_FILESIZE: 1G
+      PHP_MAX_EXECUTION_TIME: "300"
+      NGINX_CLIENT_MAX_BODY_SIZE: 1G
+      NGINX_SET_REAL_IP_FROM: 10.0.0.0/8
+      NGINX_SET_REAL_IP_FROM2: 192.0.2.0/24
+      NGINX_REAL_IP_RECURSIVE: "on"
+`
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	compose, err := corecomponent.LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile() error = %v", err)
+	}
+	settings, err := resolveIngressSettings(map[string]string{
+		ingressDomainName:    "app.example.org",
+		uploadSizeName:       "2G",
+		uploadTimeoutName:    "10m",
+		ingressTrustedIPName: "203.0.113.0/24",
+	})
+	if err != nil {
+		t.Fatalf("resolveIngressSettings() error = %v", err)
+	}
+	opts := normalizeIngressOptions(IngressOptions{
+		AppService:                     "app",
+		NoDefaultAppRuntimeEnvironment: true,
+	})
+	if err := applyIngressCompose(nil, compose, opts, settings); err != nil {
+		t.Fatalf("applyIngressCompose() error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		`--entryPoints.http.transport.respondingTimeouts.readTimeout=10m`,
+		`--entryPoints.http.forwardedHeaders.trustedIPs=203.0.113.0/24`,
+		`INGRESS_HOSTNAMES: "app.example.org,localhost,127.0.0.1,::1"`,
+		`INGRESS_SCHEME: "http"`,
+		`KEEP_ME: "true"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected ingress setting %q:\n%s", want, got)
+		}
+	}
+	for _, notWant := range []string{"PHP_", "NGINX_"} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("expected app runtime setting %q to be removed:\n%s", notWant, got)
+		}
+	}
+}
+
 func TestIngressPHPTimeoutSecondsRoundsSubsecondValuesUp(t *testing.T) {
 	t.Parallel()
 

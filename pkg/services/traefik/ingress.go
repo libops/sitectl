@@ -68,19 +68,23 @@ var redirectHTTPToHTTPSYAML string
 
 // IngressOptions configures the reusable Traefik ingress component for a stack.
 type IngressOptions struct {
-	AppService          string
-	NoAppService        bool
-	TraefikService      string
-	HTTPEntrypoint      string
-	HTTPSEntrypoint     string
-	Entrypoints         []string
-	TraefikConfigDir    string
-	RouterFiles         []string
-	RouterHosts         map[string]string
-	ServiceEnvTemplates map[string]map[string]string
-	AppEnvDeletes       []string
-	AppUpdate           IngressAppUpdateFunc
-	TrustedIPLimit      int
+	AppService   string
+	NoAppService bool
+	// NoDefaultAppRuntimeEnvironment removes the shared PHP/nginx upload,
+	// timeout, and trusted-proxy variables while retaining Traefik and generic
+	// ingress environment updates for application runtimes that do not use them.
+	NoDefaultAppRuntimeEnvironment bool
+	TraefikService                 string
+	HTTPEntrypoint                 string
+	HTTPSEntrypoint                string
+	Entrypoints                    []string
+	TraefikConfigDir               string
+	RouterFiles                    []string
+	RouterHosts                    map[string]string
+	ServiceEnvTemplates            map[string]map[string]string
+	AppEnvDeletes                  []string
+	AppUpdate                      IngressAppUpdateFunc
+	TrustedIPLimit                 int
 }
 
 // IngressAppUpdate describes a resolved ingress change for plugin-owned
@@ -867,6 +871,33 @@ func applyIngressServiceEnvironment(ctx *config.Context, compose *corecomponent.
 
 func applyIngressUploadEnvironment(compose *corecomponent.ComposeFile, opts IngressOptions, settings ingressSettings) error {
 	if opts.AppService == "" {
+		return nil
+	}
+	defaultKeys := []string{
+		"PHP_UPLOAD_MAX_FILESIZE",
+		"PHP_POST_MAX_SIZE",
+		"PHP_MAX_INPUT_TIME",
+		"PHP_MAX_EXECUTION_TIME",
+		"PHP_REQUEST_TERMINATE_TIMEOUT",
+		"NGINX_CLIENT_MAX_BODY_SIZE",
+		"NGINX_CLIENT_BODY_TIMEOUT",
+		"NGINX_FASTCGI_READ_TIMEOUT",
+		"NGINX_FASTCGI_SEND_TIMEOUT",
+		"NGINX_REAL_IP_RECURSIVE",
+	}
+	for i := 1; i <= opts.TrustedIPLimit; i++ {
+		key := "NGINX_SET_REAL_IP_FROM"
+		if i > 1 {
+			key = fmt.Sprintf("NGINX_SET_REAL_IP_FROM%d", i)
+		}
+		defaultKeys = append(defaultKeys, key)
+	}
+	if opts.NoDefaultAppRuntimeEnvironment {
+		for _, key := range defaultKeys {
+			if err := compose.DeleteServiceEnv(opts.AppService, key); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	phpTimeoutSeconds, err := ingressPHPTimeoutSeconds(settings.ReadTimeout)

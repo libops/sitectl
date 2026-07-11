@@ -26,7 +26,8 @@ var deployCmd = &cobra.Command{
 
 The deploy sequence runs:
   1. git pull --ff-only for the current upstream branch (unless --skip-git is set)
-  2. Pull images while the current site is still running (unless --no-pull is set)
+  2. Pull images and build application images while the current site is still
+     running (explicit pulls are skipped when --no-pull is set)
   3. Plugin pre-down hooks (if the context plugin registers a deploy runner)
   4. docker compose down --remove-orphans
   5. The plugin's remaining application-aware rollout commands when declared;
@@ -95,24 +96,23 @@ func runDeployCycle(cmd *cobra.Command, contextName string, ctx config.Context, 
 	if err != nil {
 		return fmt.Errorf("resolve compose rollout failed: %w", err)
 	}
-	rolloutPullCommands, rolloutCommands := splitLeadingComposePullCommands(rolloutCommands)
+	preparationCommands, rolloutCommands := splitLeadingComposePreparationCommands(rolloutCommands)
 
-	// Pull while the healthy site is still online. Registry authentication,
-	// connectivity, and missing-image failures must not turn an update failure
-	// into an outage.
-	if !opts.NoPull {
-		if hasRollout {
-			if len(rolloutPullCommands) > 0 {
-				slog.Debug("running plugin compose pull preflight", "context", contextName, "plugin", pluginName)
-				if err := deployRunComposeRollout(cmd, &ctx, rolloutPullCommands, false); err != nil {
-					return fmt.Errorf("compose pull preflight failed: %w", err)
-				}
+	// Pull and build while the healthy site is still online. Registry,
+	// connectivity, missing-image, and build failures must not turn an update
+	// failure into an outage. The rollout runner still honors --no-pull while
+	// allowing build preparation to run.
+	if hasRollout {
+		if len(preparationCommands) > 0 {
+			slog.Debug("running plugin compose preparation", "context", contextName, "plugin", pluginName)
+			if err := deployRunComposeRollout(cmd, &ctx, preparationCommands, opts.NoPull); err != nil {
+				return fmt.Errorf("compose preparation failed: %w", err)
 			}
-		} else {
-			slog.Debug("running compose pull preflight", "context", contextName)
-			if err := deployRunContextCompose(cmd, ctx, []string{"pull"}); err != nil {
-				return fmt.Errorf("compose pull preflight failed: %w", err)
-			}
+		}
+	} else if !opts.NoPull {
+		slog.Debug("running compose pull preflight", "context", contextName)
+		if err := deployRunContextCompose(cmd, ctx, []string{"pull"}); err != nil {
+			return fmt.Errorf("compose pull preflight failed: %w", err)
 		}
 	}
 

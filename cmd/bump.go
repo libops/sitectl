@@ -16,7 +16,9 @@ import (
 	"github.com/spf13/pflag"
 )
 
-const defaultRenovateImage = "renovate/renovate:latest"
+// Keep the reviewed release and its multi-platform manifest digest together:
+// this container receives the caller's Renovate or GitHub token.
+const defaultRenovateImage = "renovate/renovate:43.259.2@sha256:119e8b9fd8fcad14152ca42e0f3ba9cbf14ec33dee2ad6a0b46146a98e6fa753"
 
 var bumpExecCommandContext = exec.CommandContext
 

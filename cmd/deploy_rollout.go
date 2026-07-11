@@ -65,11 +65,12 @@ func runDeployComposeRollout(cmd *cobra.Command, ctx *config.Context, commands [
 	return nil
 }
 
-// splitLeadingComposePullCommands separates the pull-only preflight prefix
-// from commands that require the deployment outage window. Blank entries in
-// the prefix are ignored because the rollout runner ignores them as well.
-func splitLeadingComposePullCommands(commands []string) ([]string, []string) {
-	var pulls []string
+// splitLeadingComposePreparationCommands separates the pull-and-build
+// preparation prefix from commands that require the deployment outage window.
+// Blank entries in the prefix are ignored because the rollout runner ignores
+// them as well.
+func splitLeadingComposePreparationCommands(commands []string) ([]string, []string) {
+	var preparation []string
 	index := 0
 	for index < len(commands) {
 		command := strings.TrimSpace(commands[index])
@@ -77,13 +78,30 @@ func splitLeadingComposePullCommands(commands []string) ([]string, []string) {
 			index++
 			continue
 		}
-		if !isDockerComposeSubcommand(command, "pull") {
+		if !isDockerComposePreparationCommand(command) {
 			break
 		}
-		pulls = append(pulls, commands[index])
+		preparation = append(preparation, commands[index])
 		index++
 	}
-	return pulls, append([]string{}, commands[index:]...)
+	return preparation, append([]string{}, commands[index:]...)
+}
+
+// isDockerComposePreparationCommand accepts shell lists only when every
+// command in the list is a Compose pull or build. This keeps a compound
+// build-and-up or build-and-migrate command inside the outage window.
+func isDockerComposePreparationCommand(command string) bool {
+	command = strings.ReplaceAll(command, "&&", "||")
+	for _, command := range strings.Split(command, "||") {
+		command = strings.TrimSpace(command)
+		if command == "" || strings.Contains(command, "$(") || strings.ContainsAny(command, "\r\n;&|`") {
+			return false
+		}
+		if !isDockerComposeSubcommand(command, "pull") && !isDockerComposeSubcommand(command, "build") {
+			return false
+		}
+	}
+	return true
 }
 
 // isDockerComposeSubcommand classifies a command by the first Compose

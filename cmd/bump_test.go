@@ -149,6 +149,11 @@ func TestBuildRenovateInvocationDryRunUsesLocalPlatform(t *testing.T) {
 	if !slices.Contains(invocation.Args, "-v") || !slices.Contains(invocation.Args, "/tmp/repo:/workspace") {
 		t.Fatalf("expected dry-run invocation to mount project dir, got %#v", invocation.Args)
 	}
+	if !slices.Contains(invocation.Args, defaultRenovateImage) ||
+		!strings.Contains(defaultRenovateImage, "@sha256:") ||
+		strings.Contains(defaultRenovateImage, ":latest") {
+		t.Fatalf("expected immutable Renovate image, got %q", defaultRenovateImage)
+	}
 	cfg := renovateConfigFromEnv(t, invocation.Env)
 	if cfg.Platform != "local" || cfg.DryRun != "lookup" || len(cfg.Repositories) != 0 {
 		t.Fatalf("unexpected dry-run config: %#v", cfg)

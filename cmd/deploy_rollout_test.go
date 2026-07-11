@@ -52,21 +52,71 @@ func TestRunDeployComposeRolloutNoPullSkipsOnlyComposePull(t *testing.T) {
 	}
 }
 
-func TestSplitLeadingComposePullCommands(t *testing.T) {
+func TestSplitLeadingComposePreparationCommands(t *testing.T) {
 	t.Parallel()
-	commands := []string{
-		"",
-		"docker compose pull --ignore-buildable",
-		"docker compose -f compose.yml pull db",
-		"docker compose build --pull",
-		"docker compose pull app",
+	tests := []struct {
+		name            string
+		commands        []string
+		wantPreparation []string
+		wantRemaining   []string
+	}{
+		{
+			name: "pull and build prefix",
+			commands: []string{
+				"",
+				"docker compose pull --ignore-buildable",
+				"docker compose -f compose.yml build --pull app",
+				"docker compose up -d",
+			},
+			wantPreparation: []string{
+				"docker compose pull --ignore-buildable",
+				"docker compose -f compose.yml build --pull app",
+			},
+			wantRemaining: []string{"docker compose up -d"},
+		},
+		{
+			name:            "build only",
+			commands:        []string{"docker compose build --pull", "docker compose up -d"},
+			wantPreparation: []string{"docker compose build --pull"},
+			wantRemaining:   []string{"docker compose up -d"},
+		},
+		{
+			name:            "pull only",
+			commands:        []string{"docker compose pull --ignore-buildable"},
+			wantPreparation: []string{"docker compose pull --ignore-buildable"},
+			wantRemaining:   []string{},
+		},
+		{
+			name:            "pull fallback",
+			commands:        []string{"docker compose pull --quiet || docker compose pull", "docker compose up -d"},
+			wantPreparation: []string{"docker compose pull --quiet || docker compose pull"},
+			wantRemaining:   []string{"docker compose up -d"},
+		},
+		{
+			name:            "non-prefix build remains",
+			commands:        []string{"docker compose pull", "docker compose up -d db", "docker compose build app"},
+			wantPreparation: []string{"docker compose pull"},
+			wantRemaining:   []string{"docker compose up -d db", "docker compose build app"},
+		},
+		{
+			name:            "compound build and up remains",
+			commands:        []string{"docker compose build app && docker compose up -d"},
+			wantPreparation: nil,
+			wantRemaining:   []string{"docker compose build app && docker compose up -d"},
+		},
 	}
-	pulls, remaining := splitLeadingComposePullCommands(commands)
-	if want := []string{"docker compose pull --ignore-buildable", "docker compose -f compose.yml pull db"}; !reflect.DeepEqual(pulls, want) {
-		t.Fatalf("pull commands = %#v, want %#v", pulls, want)
-	}
-	if want := commands[3:]; !reflect.DeepEqual(remaining, want) {
-		t.Fatalf("remaining commands = %#v, want %#v", remaining, want)
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			preparation, remaining := splitLeadingComposePreparationCommands(test.commands)
+			if !reflect.DeepEqual(preparation, test.wantPreparation) {
+				t.Fatalf("preparation commands = %#v, want %#v", preparation, test.wantPreparation)
+			}
+			if !reflect.DeepEqual(remaining, test.wantRemaining) {
+				t.Fatalf("remaining commands = %#v, want %#v", remaining, test.wantRemaining)
+			}
+		})
 	}
 }
 
