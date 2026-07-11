@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	corecomponent "github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
@@ -53,6 +55,9 @@ var (
 	hostRuleWithTrailingOperatorPattern = regexp.MustCompile(hostRuleExpr + `\s*(?:&&|\|\|)\s*`)
 	operatorWithTrailingHostRulePattern = regexp.MustCompile(`\s*(?:&&|\|\|)\s*` + hostRuleExpr)
 	pathRulePattern                     = regexp.MustCompile(`\bPath(?:Prefix)?\s*\(`)
+	ingressHostnameLabelPattern         = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+	ingressUploadSizePattern            = regexp.MustCompile(`^[0-9]+[kKmMgG]?$`)
+	ingressTimeoutPattern               = regexp.MustCompile(`^[0-9]+(?:ms|s|m|h)$`)
 )
 
 //go:embed assets/ingress/default-tls.yml
@@ -185,7 +190,7 @@ func Ingress(opts IngressOptions) (corecomponent.ComposeServiceComponent, error)
 				Name:                 uploadTimeoutName,
 				Label:                "Upload timeout",
 				FlagName:             uploadTimeoutName,
-				FlagUsage:            "Upload/read timeout, such as 300s or 10m.",
+				FlagUsage:            "End-to-end upload/read timeout for Traefik, nginx, and PHP, such as 300s or 10m.",
 				Question:             "Enter the upload/read timeout.",
 				DefaultValue:         DefaultUploadTimeout,
 				AppliesToDisposition: corecomponent.DispositionEnabled,
@@ -446,6 +451,15 @@ func resolveIngressSettings(values map[string]string) (ingressSettings, error) {
 	if settings.ReadTimeout == "" {
 		settings.ReadTimeout = DefaultUploadTimeout
 	}
+	if err := validateIngressDomain(settings.Domain); err != nil {
+		return ingressSettings{}, fmt.Errorf("invalid ingress domain %q: %w", settings.Domain, err)
+	}
+	if !ingressUploadSizePattern.MatchString(settings.UploadSize) {
+		return ingressSettings{}, fmt.Errorf("invalid maximum upload size %q: expected digits with an optional K, M, or G suffix (case-insensitive)", settings.UploadSize)
+	}
+	if !ingressTimeoutPattern.MatchString(settings.ReadTimeout) {
+		return ingressSettings{}, fmt.Errorf("invalid upload timeout %q: expected digits followed by ms, s, m, or h", settings.ReadTimeout)
+	}
 	switch settings.Mode {
 	case IngressModeHTTP:
 		settings.Scheme = "http"
@@ -459,8 +473,12 @@ func resolveIngressSettings(values map[string]string) (ingressSettings, error) {
 		if settings.ACMEEmail == "" {
 			return ingressSettings{}, fmt.Errorf("--%s is required with --%s %s", ingressACMEEmailName, ingressModeName, IngressModeHTTPSLetsEncrypt)
 		}
-		if _, err := mail.ParseAddress(settings.ACMEEmail); err != nil {
+		address, err := mail.ParseAddress(settings.ACMEEmail)
+		if err != nil {
 			return ingressSettings{}, fmt.Errorf("invalid ACME email %q: %w", settings.ACMEEmail, err)
+		}
+		if address.Name != "" || address.Address != settings.ACMEEmail {
+			return ingressSettings{}, fmt.Errorf("invalid ACME email %q: expected a bare email address without a display name", settings.ACMEEmail)
 		}
 	case IngressModeHTTPSMkcert:
 		settings.Scheme = "https"
@@ -475,6 +493,41 @@ func resolveIngressSettings(values map[string]string) (ingressSettings, error) {
 		}
 	}
 	return settings, nil
+}
+
+func validateIngressDomain(domain string) error {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return fmt.Errorf("domain cannot be empty")
+	}
+	if len(domain) > 253 {
+		return fmt.Errorf("domain exceeds 253 characters")
+	}
+	for _, r := range domain {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("domain contains a control character")
+		}
+	}
+
+	if strings.HasPrefix(domain, "[") || strings.HasSuffix(domain, "]") {
+		if !strings.HasPrefix(domain, "[") || !strings.HasSuffix(domain, "]") || net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(domain, "["), "]")) == nil {
+			return fmt.Errorf("expected a bracketed IPv6 address")
+		}
+		return nil
+	}
+	if ip := net.ParseIP(domain); ip != nil {
+		if strings.Contains(domain, ":") {
+			return fmt.Errorf("IPv6 addresses must be enclosed in brackets")
+		}
+		return nil
+	}
+
+	for _, label := range strings.Split(domain, ".") {
+		if !ingressHostnameLabelPattern.MatchString(label) {
+			return fmt.Errorf("expected a DNS hostname or IP address")
+		}
+	}
+	return nil
 }
 
 func validateIngressSettingsForContext(ctx *config.Context, settings ingressSettings) error {
@@ -539,7 +592,11 @@ func ensureIngressMkcertCertificates(runCtx context.Context, ctx *config.Context
 }
 
 func mkcertHosts(settings ingressSettings) []string {
-	hosts := appendUniqueStrings(nil, settings.Domain)
+	domain := settings.Domain
+	if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
+		domain = strings.TrimSuffix(strings.TrimPrefix(domain, "["), "]")
+	}
+	hosts := appendUniqueStrings(nil, domain)
 	if strings.EqualFold(settings.Domain, DefaultIngressDomain) {
 		hosts = appendUniqueStrings(hosts, "127.0.0.1", "::1")
 	} else {
@@ -607,6 +664,7 @@ func normalizeTraefikFileProvider(compose *corecomponent.ComposeFile, opts Ingre
 	for _, prefix := range []string{
 		"--providers.file.filename=",
 		"--providers.file.directory=",
+		"--providers.docker",
 	} {
 		if err := compose.RemoveServiceStringsByPrefix(opts.TraefikService, "command", prefix); err != nil {
 			return err
@@ -618,13 +676,17 @@ func normalizeTraefikFileProvider(compose *corecomponent.ComposeFile, opts Ingre
 	if err := compose.AppendUniqueServiceString(opts.TraefikService, "command", "--providers.file.watch=true"); err != nil {
 		return err
 	}
+	if err := compose.RemoveServiceVolumesBySource(opts.TraefikService, "/var/run/docker.sock"); err != nil {
+		return err
+	}
 	for _, value := range []string{
 		"./conf/traefik:/etc/traefik/dynamic:ro",
+		"./conf/traefik:/etc/traefik/dynamic:ro,z",
 		"./conf/traefik:/etc/traefik/dynamic:ro,Z",
 	} {
 		removeServiceStringVariants(compose, opts.TraefikService, "volumes", value)
 	}
-	return compose.AppendUniqueServiceString(opts.TraefikService, "volumes", "./conf/traefik:/etc/traefik/dynamic:ro")
+	return compose.AppendUniqueServiceString(opts.TraefikService, "volumes", "./conf/traefik:/etc/traefik/dynamic:ro,z")
 }
 
 func applyIngressTraefikCommands(compose *corecomponent.ComposeFile, opts IngressOptions, settings ingressSettings) error {
@@ -717,9 +779,17 @@ func applyIngressPortsAndVolumes(compose *corecomponent.ComposeFile, opts Ingres
 	if err := compose.AppendUniqueServiceString(opts.TraefikService, "ports", `"80:80"`); err != nil {
 		return err
 	}
-	for _, volume := range []string{"./certs:/certs:rw", "./certs:/certs:ro", "./certs:/certs:rw,Z", "./certs:/certs:ro,Z", "acme-data:/acme:rw"} {
-		removeServiceStringVariants(compose, opts.TraefikService, "volumes", volume)
+	for _, mount := range []string{
+		"./certs:/certs",
+		"./certs/cert.pem:/certs/cert.pem",
+		"./certs/privkey.pem:/certs/privkey.pem",
+	} {
+		removeServiceStringVariants(compose, opts.TraefikService, "volumes", mount)
+		for _, mode := range []string{"rw", "ro", "z", "Z", "rw,z", "ro,z", "rw,Z", "ro,Z"} {
+			removeServiceStringVariants(compose, opts.TraefikService, "volumes", mount+":"+mode)
+		}
 	}
+	removeServiceStringVariants(compose, opts.TraefikService, "volumes", "acme-data:/acme:rw")
 	if settings.HTTPS {
 		if err := compose.AppendUniqueServiceString(opts.TraefikService, "ports", `"443:443"`); err != nil {
 			return err
@@ -735,7 +805,10 @@ func applyIngressPortsAndVolumes(compose *corecomponent.ComposeFile, opts Ingres
 		return err
 	}
 	if settings.HTTPS {
-		return compose.AppendUniqueServiceString(opts.TraefikService, "volumes", "./certs:/certs:ro")
+		if err := compose.AppendUniqueServiceString(opts.TraefikService, "volumes", "./certs/cert.pem:/certs/cert.pem:ro,z"); err != nil {
+			return err
+		}
+		return compose.AppendUniqueServiceString(opts.TraefikService, "volumes", "./certs/privkey.pem:/certs/privkey.pem:ro,z")
 	}
 	return nil
 }
@@ -796,13 +869,20 @@ func applyIngressUploadEnvironment(compose *corecomponent.ComposeFile, opts Ingr
 	if opts.AppService == "" {
 		return nil
 	}
+	phpTimeoutSeconds, err := ingressPHPTimeoutSeconds(settings.ReadTimeout)
+	if err != nil {
+		return err
+	}
 	env := map[string]string{
-		"PHP_UPLOAD_MAX_FILESIZE":    settings.UploadSize,
-		"PHP_POST_MAX_SIZE":          settings.UploadSize,
-		"NGINX_CLIENT_MAX_BODY_SIZE": settings.UploadSize,
-		"NGINX_CLIENT_BODY_TIMEOUT":  settings.ReadTimeout,
-		"NGINX_FASTCGI_READ_TIMEOUT": settings.ReadTimeout,
-		"NGINX_FASTCGI_SEND_TIMEOUT": settings.ReadTimeout,
+		"PHP_UPLOAD_MAX_FILESIZE":       settings.UploadSize,
+		"PHP_POST_MAX_SIZE":             settings.UploadSize,
+		"PHP_MAX_INPUT_TIME":            phpTimeoutSeconds,
+		"PHP_MAX_EXECUTION_TIME":        phpTimeoutSeconds,
+		"PHP_REQUEST_TERMINATE_TIMEOUT": phpTimeoutSeconds,
+		"NGINX_CLIENT_MAX_BODY_SIZE":    settings.UploadSize,
+		"NGINX_CLIENT_BODY_TIMEOUT":     settings.ReadTimeout,
+		"NGINX_FASTCGI_READ_TIMEOUT":    settings.ReadTimeout,
+		"NGINX_FASTCGI_SEND_TIMEOUT":    settings.ReadTimeout,
 	}
 	keys := make([]string, 0, len(env))
 	for key := range env {
@@ -842,6 +922,21 @@ func applyIngressUploadEnvironment(compose *corecomponent.ComposeFile, opts Ingr
 		}
 	}
 	return compose.SetServiceEnv(opts.AppService, "NGINX_REAL_IP_RECURSIVE", "on")
+}
+
+func ingressPHPTimeoutSeconds(value string) (string, error) {
+	duration, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil {
+		return "", fmt.Errorf("invalid upload timeout %q: %w", value, err)
+	}
+	if duration < 0 {
+		return "", fmt.Errorf("invalid upload timeout %q: duration must not be negative", value)
+	}
+	seconds := duration / time.Second
+	if duration%time.Second != 0 {
+		seconds++
+	}
+	return strconv.FormatInt(int64(seconds), 10), nil
 }
 
 func applyIngressRouterFiles(ctx *config.Context, opts IngressOptions, settings ingressSettings) error {

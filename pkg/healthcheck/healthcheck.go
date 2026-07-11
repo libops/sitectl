@@ -52,6 +52,11 @@ type composeDependencyConfigService struct {
 	DependsOn json.RawMessage `json:"depends_on"`
 }
 
+type composeDependencyConfig struct {
+	Condition string `json:"condition"`
+	Required  *bool  `json:"required"`
+}
+
 // NewDockerChecker creates a Docker-backed checker for the given context.
 func NewDockerChecker(ctx *config.Context) (*DockerChecker, error) {
 	if ctx == nil {
@@ -72,8 +77,9 @@ func (c *DockerChecker) Close() error {
 	return c.Client.Close()
 }
 
-// CheckComposeServices verifies compose service containers are present,
-// running, and either healthy or without a Docker healthcheck.
+// CheckComposeServices verifies compose service containers are present and
+// either running and healthy or successfully completed as a required one-shot
+// dependency in the effective Compose model.
 func (c *DockerChecker) CheckComposeServices(ctx context.Context, services ...string) ([]sitevalidate.Result, error) {
 	if c == nil || c.Context == nil || c.Client == nil {
 		return nil, fmt.Errorf("docker checker is not initialized")
@@ -86,6 +92,25 @@ func (c *DockerChecker) CheckComposeServices(ctx context.Context, services ...st
 	if len(services) == 0 {
 		services = sortedServiceNames(byService)
 	}
+	var completedSuccessfully map[string]struct{}
+	var completedSuccessfullyErr error
+	completionConfigRead := false
+	isRequiredSuccessfulCompletion := func(service string) (bool, error) {
+		if !completionConfigRead {
+			completionConfigRead = true
+			configDoc, err := c.readComposeDependencyConfig(ctx)
+			if err != nil {
+				completedSuccessfullyErr = err
+			} else {
+				completedSuccessfully = requiredSuccessfulCompletionServices(configDoc)
+			}
+		}
+		if completedSuccessfullyErr != nil {
+			return false, completedSuccessfullyErr
+		}
+		_, ok := completedSuccessfully[service]
+		return ok, nil
+	}
 
 	results := make([]sitevalidate.Result, 0, len(services))
 	for _, service := range services {
@@ -93,7 +118,7 @@ func (c *DockerChecker) CheckComposeServices(ctx context.Context, services ...st
 		if service == "" {
 			continue
 		}
-		results = append(results, c.checkComposeService(ctx, service, byService[service]))
+		results = append(results, c.checkComposeService(ctx, service, byService[service], isRequiredSuccessfulCompletion))
 	}
 	return results, nil
 }
@@ -621,9 +646,7 @@ func composeDependencyCondition(raw json.RawMessage, dependency string) (string,
 	if len(bytes.TrimSpace(raw)) == 0 || dependency == "" {
 		return "", false
 	}
-	var longForm map[string]struct {
-		Condition string `json:"condition"`
-	}
+	var longForm map[string]composeDependencyConfig
 	if err := json.Unmarshal(raw, &longForm); err == nil && longForm != nil {
 		if dep, ok := longForm[dependency]; ok {
 			return firstNonEmpty(dep.Condition, "service_started"), true
@@ -639,6 +662,29 @@ func composeDependencyCondition(raw json.RawMessage, dependency string) (string,
 		}
 	}
 	return "", false
+}
+
+func requiredSuccessfulCompletionServices(document composeDependencyConfigDocument) map[string]struct{} {
+	services := map[string]struct{}{}
+	for _, service := range document.Services {
+		var dependencies map[string]composeDependencyConfig
+		if err := json.Unmarshal(service.DependsOn, &dependencies); err != nil {
+			continue
+		}
+		for dependency, config := range dependencies {
+			dependency = strings.TrimSpace(dependency)
+			if dependency == "" || strings.TrimSpace(config.Condition) != "service_completed_successfully" {
+				continue
+			}
+			if config.Required != nil && !*config.Required {
+				continue
+			}
+			if _, defined := document.Services[dependency]; defined {
+				services[dependency] = struct{}{}
+			}
+		}
+	}
+	return services
 }
 
 func isLocalHost(host string) bool {
@@ -757,7 +803,7 @@ func (c *DockerChecker) composeContainers(ctx context.Context) ([]dockercontaine
 	return filtered, nil
 }
 
-func (c *DockerChecker) checkComposeService(ctx context.Context, service string, containers []dockercontainer.Summary) sitevalidate.Result {
+func (c *DockerChecker) checkComposeService(ctx context.Context, service string, containers []dockercontainer.Summary, isRequiredSuccessfulCompletion func(string) (bool, error)) sitevalidate.Result {
 	if len(containers) == 0 {
 		return failed("service:"+service, "no compose container found")
 	}
@@ -777,6 +823,18 @@ func (c *DockerChecker) checkComposeService(ctx context.Context, service string,
 			continue
 		}
 		if !state.Running {
+			if state.Status == dockercontainer.StateExited && state.ExitCode == 0 && isRequiredSuccessfulCompletion != nil {
+				completedSuccessfully, completionErr := isRequiredSuccessfulCompletion(service)
+				if completionErr != nil {
+					ok = false
+					details = append(details, fmt.Sprintf("%s: cannot verify service_completed_successfully: %v", containerName(container), completionErr))
+					continue
+				}
+				if completedSuccessfully {
+					details = append(details, containerName(container)+": completed successfully (exit=0)")
+					continue
+				}
+			}
 			ok = false
 			detail := fmt.Sprintf("%s: %s", containerName(container), state.Status)
 			if state.ExitCode != 0 {

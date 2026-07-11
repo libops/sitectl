@@ -205,12 +205,18 @@ func buildRPCMethodRegistry() map[string]rpcMethodSpec {
 			if err != nil {
 				return RPCResponse{}, fmt.Errorf("build %s argv: %w", req.Method, err)
 			}
+			if s.setCmd == nil && rpcCommandHasSubcommand(s.componentRootCmd, "set") {
+				return s.rpcCommand(cmd, req.Method, s.componentRootCmd, append([]string{"set"}, args...))
+			}
 			return s.rpcCommand(cmd, req.Method, s.setCmd, args)
 		}),
 		MethodConvergeRun: rpcMethodWithParams[ConvergeRunParams](func(s *SDK, cmd *cobra.Command, req RPCRequest, params ConvergeRunParams) (RPCResponse, error) {
 			args, err := flagOnlyRPCArgs(s.convergeCmd, params, req.Args)
 			if err != nil {
 				return RPCResponse{}, fmt.Errorf("build %s argv: %w", req.Method, err)
+			}
+			if s.convergeCmd == nil && rpcCommandHasSubcommand(s.componentRootCmd, "reconcile") {
+				return s.rpcCommand(cmd, req.Method, s.componentRootCmd, append([]string{"reconcile"}, args...))
 			}
 			return s.rpcCommand(cmd, req.Method, s.convergeCmd, args)
 		}),
@@ -253,8 +259,8 @@ func (s *SDK) discoveryMetadata() PluginMetadata {
 		CreateDefinitions: s.CreateDefinitions(),
 		DeployDefinitions: s.DeployDefinitions(),
 		CanDebug:          s.hasDebug,
-		CanConverge:       s.hasConverge,
-		CanSet:            s.hasSet,
+		CanConverge:       s.hasConverge || rpcCommandHasSubcommand(s.componentRootCmd, "reconcile"),
+		CanSet:            s.hasSet || rpcCommandHasSubcommand(s.componentRootCmd, "set"),
 		CanValidate:       s.hasValidate,
 		CanHealthcheck:    s.hasHealthcheck,
 		CanIngressRoutes:  s.hasIngressRoutes,

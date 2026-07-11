@@ -207,6 +207,108 @@ func TestRegisterServiceComponentsMergesMultipleCalls(t *testing.T) {
 	}
 }
 
+func TestRegisterServiceComponentsExposesTopLevelSetAndConverge(t *testing.T) {
+	t.Parallel()
+
+	sdk := NewSDK(Metadata{Name: "app"})
+	sdk.RegisterServiceComponents(ServiceComponentRegistryOptions{
+		DisplayName: "App",
+		Components: []corecomponent.ComposeServiceComponent{
+			testComposeServiceComponentFromYAML(t, "queue", []byte("services:\n  queue:\n    image: example/queue\n"), corecomponent.StateOn),
+		},
+	})
+
+	metadata := sdk.discoveryMetadata()
+	if !metadata.CanSet || !metadata.CanConverge {
+		t.Fatalf("service component metadata = CanSet:%t CanConverge:%t, want both true", metadata.CanSet, metadata.CanConverge)
+	}
+}
+
+func TestServiceComponentTopLevelSetFallsBackToComponentRPC(t *testing.T) {
+	projectDir := t.TempDir()
+	composePath := filepath.Join(projectDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte("services:\n  queue:\n    image: example/queue\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(compose) error = %v", err)
+	}
+
+	sdk := NewSDK(Metadata{Name: "app"})
+	sdk.RegisterServiceComponents(ServiceComponentRegistryOptions{
+		DisplayName: "App",
+		Components: []corecomponent.ComposeServiceComponent{
+			testComposeServiceComponentFromYAML(t, "queue", []byte("services:\n  queue:\n    image: example/queue\n"), corecomponent.StateOn),
+		},
+	})
+	sdk.contextCache = &config.Context{
+		Name:           "app-local",
+		Plugin:         "app",
+		DockerHostType: config.ContextLocal,
+		ProjectDir:     projectDir,
+	}
+
+	req, err := NewSetRunRequest(SetRunParams{}, "queue", "disabled", "--yolo")
+	if err != nil {
+		t.Fatalf("NewSetRunRequest() error = %v", err)
+	}
+	resp, err := sdk.handleRPC(&cobra.Command{Use: "rpc"}, req)
+	if err != nil {
+		t.Fatalf("handleRPC(set.run) error = %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("set.run response = %#v", resp)
+	}
+	data, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("ReadFile(compose) error = %v", err)
+	}
+	if strings.Contains(string(data), "queue:") {
+		t.Fatalf("top-level set did not remove queue service:\n%s", data)
+	}
+}
+
+func TestServiceComponentConvergePreservesValidDisabledState(t *testing.T) {
+	projectDir := t.TempDir()
+	composePath := filepath.Join(projectDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte("services:\n  app:\n    image: example/app\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(compose) error = %v", err)
+	}
+
+	sdk := NewSDK(Metadata{Name: "app"})
+	sdk.RegisterServiceComponents(ServiceComponentRegistryOptions{
+		DisplayName: "App",
+		Components: []corecomponent.ComposeServiceComponent{
+			testComposeServiceComponentFromYAML(t, "queue", []byte("services:\n  queue:\n    image: example/queue\n"), corecomponent.StateOn),
+		},
+	})
+	sdk.contextCache = &config.Context{
+		Name:           "app-local",
+		Plugin:         "app",
+		DockerHostType: config.ContextLocal,
+		ProjectDir:     projectDir,
+	}
+
+	req, err := NewConvergeRunRequest(ConvergeRunParams{}, "--yolo")
+	if err != nil {
+		t.Fatalf("NewConvergeRunRequest() error = %v", err)
+	}
+	resp, err := sdk.handleRPC(&cobra.Command{Use: "rpc"}, req)
+	if err != nil {
+		t.Fatalf("handleRPC(converge.run) error = %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("converge.run response = %#v", resp)
+	}
+	if !strings.Contains(resp.Output, "No component drift detected") {
+		t.Fatalf("converge output = %q", resp.Output)
+	}
+	data, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("ReadFile(compose) error = %v", err)
+	}
+	if strings.Contains(string(data), "queue:") {
+		t.Fatalf("converge restored an intentionally disabled service:\n%s", data)
+	}
+}
+
 func TestReconcileCreateServiceComponentsDispatchesStates(t *testing.T) {
 	tests := []struct {
 		name          string

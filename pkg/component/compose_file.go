@@ -3,9 +3,11 @@ package component
 import (
 	"fmt"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
+	"gopkg.in/yaml.v3"
 )
 
 type ComposeFile struct {
@@ -262,6 +264,83 @@ func (c *ComposeFile) RemoveServiceStringsByPrefix(service, key, prefix string) 
 	})
 }
 
+// RemoveServiceVolumesBySource removes short- and long-syntax service volume
+// entries whose source exactly matches sourcePath while preserving other Compose
+// text and list entries.
+func (c *ComposeFile) RemoveServiceVolumesBySource(service, sourcePath string) error {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return nil
+	}
+	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
+	if err != nil || !ok {
+		return err
+	}
+	volumesLocation, ok := c.flexibleMappingChild(serviceLocation, "volumes")
+	if !ok || !flexibleMappingLineCanHaveChildren(c.lines[volumesLocation.index], "volumes") {
+		return nil
+	}
+
+	end := findBlockEnd(c.lines, volumesLocation.index, volumesLocation.indent)
+	itemIndent := flexibleDirectChildIndent(c.lines, volumesLocation.index, volumesLocation.indent, volumesLocation.step)
+	filtered := make([]string, 0, end-volumesLocation.index-1)
+	for index := volumesLocation.index + 1; index < end; {
+		if !composeSequenceItemAtIndent(c.lines[index], itemIndent) {
+			filtered = append(filtered, c.lines[index])
+			index++
+			continue
+		}
+
+		itemEnd := index + 1
+		for itemEnd < end && !composeSequenceItemAtIndent(c.lines[itemEnd], itemIndent) {
+			itemEnd++
+		}
+		if path.Clean(composeVolumeSource(c.lines[index:itemEnd])) != path.Clean(sourcePath) {
+			filtered = append(filtered, c.lines[index:itemEnd]...)
+		}
+		index = itemEnd
+	}
+	c.lines = append(c.lines[:volumesLocation.index+1], append(filtered, c.lines[end:]...)...)
+	return nil
+}
+
+func composeSequenceItemAtIndent(line string, indent int) bool {
+	if leadingSpaces(line) != indent {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	return trimmed == "-" || strings.HasPrefix(trimmed, "- ")
+}
+
+func composeVolumeSource(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	indent := leadingSpaces(lines[0])
+	fragment := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if len(line) >= indent {
+			line = line[indent:]
+		}
+		fragment = append(fragment, line)
+	}
+	var entries []any
+	if err := yaml.Unmarshal([]byte(strings.Join(fragment, "\n")), &entries); err != nil || len(entries) != 1 {
+		return ""
+	}
+	switch entry := entries[0].(type) {
+	case string:
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) == 2 {
+			return strings.TrimSpace(parts[0])
+		}
+	case map[string]any:
+		source, _ := entry["source"].(string)
+		return strings.TrimSpace(source)
+	}
+	return ""
+}
+
 func (c *ComposeFile) removeServiceStrings(service, key string, remove func(string) bool) error {
 	if remove == nil {
 		return nil
@@ -321,33 +400,103 @@ func (c *ComposeFile) removeServiceStrings(service, key string, remove func(stri
 }
 
 func (c *ComposeFile) DeleteServiceKey(service, key string) error {
-	serviceIdx, ok := c.findService(service)
+	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return nil
 	}
-	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
-	if !ok {
-		return nil
-	}
-	end := findBlockEnd(c.lines, keyIdx, 4)
-	c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
+	c.deleteFlexibleMappingChild(serviceLocation, key)
 	return nil
 }
 
 func (c *ComposeFile) SetServiceScalar(service, key, value string) error {
-	serviceIdx, ok := c.findService(service)
+	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return fmt.Errorf("service %q not found in compose file", service)
 	}
-	line := fmt.Sprintf("    %s: %s", key, value)
-	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
+	return c.setFlexibleMappingScalar(serviceLocation, key, value)
+}
+
+// SetServiceOverrideScalar sets a service scalar while creating missing
+// services and preserving all unrelated Compose text.
+func (c *ComposeFile) SetServiceOverrideScalar(service, key, value string) error {
+	serviceLocation, _, err := c.flexibleServiceLocation(service, true)
+	if err != nil {
+		return err
+	}
+	return c.setFlexibleMappingScalar(serviceLocation, key, value)
+}
+
+// SetServiceBuildArg sets a nested services.<service>.build.args value without
+// reformatting the rest of the Compose file. Scalar build contexts are
+// expanded to build.context before args are added.
+func (c *ComposeFile) SetServiceBuildArg(service, name, value string) error {
+	serviceLocation, _, err := c.flexibleServiceLocation(service, true)
+	if err != nil {
+		return err
+	}
+	buildLocation, err := c.ensureFlexibleMappingChild(serviceLocation, "build", true)
+	if err != nil {
+		return fmt.Errorf("service %q build: %w", service, err)
+	}
+	argsLocation, err := c.ensureFlexibleMappingChild(buildLocation, "args", false)
+	if err != nil {
+		return fmt.Errorf("service %q build args: %w", service, err)
+	}
+	return c.setFlexibleMappingScalar(argsLocation, name, fmt.Sprintf("%q", value))
+}
+
+// DeleteServiceBuildArgs removes the build.args mapping while preserving
+// build.context, dockerfile, and other service settings.
+func (c *ComposeFile) DeleteServiceBuildArgs(service string) error {
+	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
+	if err != nil || !ok {
+		return err
+	}
+	buildLocation, ok := c.flexibleMappingChild(serviceLocation, "build")
 	if !ok {
-		insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, serviceIdx, 2))
-		c.lines = insertLines(c.lines, insertAt, []string{line})
 		return nil
 	}
-	end := findBlockEnd(c.lines, keyIdx, 4)
-	c.lines = append(c.lines[:keyIdx], append([]string{line}, c.lines[end:]...)...)
+	if !flexibleMappingLineCanHaveChildren(c.lines[buildLocation.index], "build") {
+		return nil
+	}
+	if !c.deleteFlexibleMappingChild(buildLocation, "args") {
+		return nil
+	}
+	if !c.flexibleMappingHasContent(buildLocation) {
+		c.deleteFlexibleMappingChild(serviceLocation, "build")
+	}
+	return nil
+}
+
+// PruneEmptyService removes a service and then services when neither contains
+// any YAML values after an override is cleared.
+func (c *ComposeFile) PruneEmptyService(service string) error {
+	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
+	if err != nil || !ok {
+		return err
+	}
+	if c.flexibleMappingHasContent(serviceLocation) {
+		return nil
+	}
+	serviceEnd := findBlockEnd(c.lines, serviceLocation.index, serviceLocation.indent)
+	c.lines = append(c.lines[:serviceLocation.index], c.lines[serviceEnd:]...)
+
+	servicesIndex, ok := findMapKey(c.lines, 0, "services", 0)
+	if !ok {
+		return nil
+	}
+	servicesLocation := flexibleMapLocation{index: servicesIndex, indent: 0, step: flexibleChildStep(c.lines, servicesIndex, 0, 2)}
+	if c.flexibleMappingHasContent(servicesLocation) {
+		return nil
+	}
+	servicesEnd := findBlockEnd(c.lines, servicesIndex, 0)
+	c.lines = append(c.lines[:servicesIndex], c.lines[servicesEnd:]...)
 	return nil
 }
 
@@ -484,6 +633,236 @@ func (c *ComposeFile) sectionEntryBlock(section, key string) (string, bool) {
 	}
 	end := findBlockEnd(c.lines, entryIdx, 2)
 	return strings.Join(c.lines[entryIdx:end], "\n"), true
+}
+
+type flexibleMapLocation struct {
+	index  int
+	indent int
+	step   int
+	key    string
+}
+
+func (c *ComposeFile) flexibleServiceLocation(service string, create bool) (flexibleMapLocation, bool, error) {
+	service = strings.TrimSpace(service)
+	if service == "" {
+		return flexibleMapLocation{}, false, fmt.Errorf("service name is empty")
+	}
+	servicesIndex, ok := findMapKey(c.lines, 0, "services", 0)
+	if !ok {
+		if !create {
+			return flexibleMapLocation{}, false, nil
+		}
+		c.lines = append(c.lines, "services:")
+		servicesIndex = len(c.lines) - 1
+	}
+	servicesLocation := flexibleMapLocation{
+		index:  servicesIndex,
+		indent: 0,
+		step:   flexibleChildStep(c.lines, servicesIndex, 0, 2),
+		key:    "services",
+	}
+	if _, err := c.normalizeFlexibleMappingParent(servicesLocation, false); err != nil {
+		return flexibleMapLocation{}, false, err
+	}
+
+	serviceIndent := flexibleDirectChildIndent(c.lines, servicesIndex, 0, servicesLocation.step)
+	serviceIndex, ok := findMapKey(c.lines, servicesIndex+1, service, serviceIndent)
+	if !ok {
+		if !create {
+			return flexibleMapLocation{}, false, nil
+		}
+		insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, servicesIndex, 0))
+		c.lines = insertLines(c.lines, insertAt, []string{strings.Repeat(" ", serviceIndent) + service + ":"})
+		serviceIndex = insertAt
+	}
+	location := flexibleMapLocation{
+		index:  serviceIndex,
+		indent: serviceIndent,
+		step:   flexibleChildStep(c.lines, serviceIndex, serviceIndent, servicesLocation.step),
+		key:    service,
+	}
+	if _, err := c.normalizeFlexibleMappingParent(location, false); err != nil {
+		return flexibleMapLocation{}, false, err
+	}
+	return location, true, nil
+}
+
+func (c *ComposeFile) ensureFlexibleMappingChild(parent flexibleMapLocation, key string, allowScalarContext bool) (flexibleMapLocation, error) {
+	if _, err := c.normalizeFlexibleMappingParent(parent, false); err != nil {
+		return flexibleMapLocation{}, err
+	}
+	if location, ok := c.flexibleMappingChild(parent, key); ok {
+		scalar, err := c.normalizeFlexibleMappingParent(location, allowScalarContext)
+		if err != nil {
+			return flexibleMapLocation{}, err
+		}
+		if scalar != "" {
+			contextLine := strings.Repeat(" ", location.indent+location.step) + "context: " + scalar
+			c.lines = insertLines(c.lines, location.index+1, []string{contextLine})
+		}
+		location.step = flexibleChildStep(c.lines, location.index, location.indent, location.step)
+		return location, nil
+	}
+
+	childIndent := flexibleDirectChildIndent(c.lines, parent.index, parent.indent, parent.step)
+	insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, parent.index, parent.indent))
+	c.lines = insertLines(c.lines, insertAt, []string{strings.Repeat(" ", childIndent) + key + ":"})
+	return flexibleMapLocation{index: insertAt, indent: childIndent, step: parent.step, key: key}, nil
+}
+
+func (c *ComposeFile) flexibleMappingChild(parent flexibleMapLocation, key string) (flexibleMapLocation, bool) {
+	childIndent := flexibleDirectChildIndent(c.lines, parent.index, parent.indent, parent.step)
+	childIndex, ok := findMapKey(c.lines, parent.index+1, key, childIndent)
+	if !ok {
+		return flexibleMapLocation{}, false
+	}
+	return flexibleMapLocation{
+		index:  childIndex,
+		indent: childIndent,
+		step:   flexibleChildStep(c.lines, childIndex, childIndent, parent.step),
+		key:    key,
+	}, true
+}
+
+func (c *ComposeFile) setFlexibleMappingScalar(parent flexibleMapLocation, key, value string) error {
+	if _, err := c.normalizeFlexibleMappingParent(parent, false); err != nil {
+		return err
+	}
+	childIndent := flexibleDirectChildIndent(c.lines, parent.index, parent.indent, parent.step)
+	line := strings.Repeat(" ", childIndent) + key + ": " + value
+	if childIndex, ok := findMapKey(c.lines, parent.index+1, key, childIndent); ok {
+		_, comment, _ := flexibleMappingLineParts(c.lines[childIndex], key)
+		line += comment
+		end := findBlockEnd(c.lines, childIndex, childIndent)
+		c.lines = append(c.lines[:childIndex], append([]string{line}, c.lines[end:]...)...)
+		return nil
+	}
+	insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, parent.index, parent.indent))
+	c.lines = insertLines(c.lines, insertAt, []string{line})
+	return nil
+}
+
+func (c *ComposeFile) deleteFlexibleMappingChild(parent flexibleMapLocation, key string) bool {
+	location, ok := c.flexibleMappingChild(parent, key)
+	if !ok {
+		return false
+	}
+	end := findBlockEnd(c.lines, location.index, location.indent)
+	c.lines = append(c.lines[:location.index], c.lines[end:]...)
+	return true
+}
+
+func (c *ComposeFile) flexibleMappingHasContent(location flexibleMapLocation) bool {
+	end := findBlockEnd(c.lines, location.index, location.indent)
+	for _, line := range c.lines[location.index+1 : end] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *ComposeFile) normalizeFlexibleMappingParent(location flexibleMapLocation, allowScalarContext bool) (string, error) {
+	value, comment, ok := flexibleMappingLineParts(c.lines[location.index], location.key)
+	if !ok {
+		return "", fmt.Errorf("mapping key %q is malformed", location.key)
+	}
+	switch {
+	case value == "":
+		return "", nil
+	case value == "{}" || value == "{ }":
+		c.lines[location.index] = strings.Repeat(" ", location.indent) + location.key + ":" + comment
+		return "", nil
+	case strings.HasPrefix(value, "&") || strings.HasPrefix(value, "!"):
+		return "", nil
+	case allowScalarContext:
+		c.lines[location.index] = strings.Repeat(" ", location.indent) + location.key + ":" + comment
+		return value, nil
+	default:
+		return "", fmt.Errorf("mapping key %q has scalar value %q", location.key, value)
+	}
+}
+
+func flexibleMappingLineCanHaveChildren(line, key string) bool {
+	value, _, ok := flexibleMappingLineParts(line, key)
+	return ok && (value == "" || value == "{}" || value == "{ }" || strings.HasPrefix(value, "&") || strings.HasPrefix(value, "!"))
+}
+
+func flexibleMappingLineParts(line, key string) (string, string, bool) {
+	trimmed := strings.TrimLeft(line, " ")
+	prefix := key + ":"
+	if !strings.HasPrefix(trimmed, prefix) {
+		return "", "", false
+	}
+	value, comment := splitFlexibleInlineComment(strings.TrimPrefix(trimmed, prefix))
+	return strings.TrimSpace(value), comment, true
+}
+
+func splitFlexibleInlineComment(value string) (string, string) {
+	inSingle := false
+	inDouble := false
+	escaped := false
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if inDouble && escaped {
+			escaped = false
+			continue
+		}
+		if inDouble && character == '\\' {
+			escaped = true
+			continue
+		}
+		switch character {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '#':
+			if inSingle || inDouble || (index > 0 && value[index-1] != ' ' && value[index-1] != '\t') {
+				continue
+			}
+			commentStart := index
+			for commentStart > 0 && (value[commentStart-1] == ' ' || value[commentStart-1] == '\t') {
+				commentStart--
+			}
+			return value[:commentStart], value[commentStart:]
+		}
+	}
+	return value, ""
+}
+
+func flexibleDirectChildIndent(lines []string, parentIndex, parentIndent, fallbackStep int) int {
+	end := findBlockEnd(lines, parentIndex, parentIndent)
+	for _, line := range lines[parentIndex+1 : end] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := leadingSpaces(line)
+		if indent > parentIndent {
+			return indent
+		}
+	}
+	if fallbackStep <= 0 {
+		fallbackStep = 2
+	}
+	return parentIndent + fallbackStep
+}
+
+func flexibleChildStep(lines []string, parentIndex, parentIndent, fallbackStep int) int {
+	childIndent := flexibleDirectChildIndent(lines, parentIndex, parentIndent, fallbackStep)
+	if step := childIndent - parentIndent; step > 0 {
+		return step
+	}
+	if fallbackStep > 0 {
+		return fallbackStep
+	}
+	return 2
 }
 
 type envBlockStyle int

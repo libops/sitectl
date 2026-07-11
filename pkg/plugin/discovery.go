@@ -63,7 +63,7 @@ type InstalledPlugin struct {
 }
 
 var builtinTemplateRepos = map[string]string{
-	"isle": "https://github.com/islandora-devops/isle-site-template",
+	"isle": "https://github.com/libops/isle",
 }
 
 const maxConcurrentPluginInspections = 8

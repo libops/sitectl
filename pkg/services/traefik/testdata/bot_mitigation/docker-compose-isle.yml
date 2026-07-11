@@ -14,14 +14,13 @@ services:
       --entryPoints.https.forwardedHeaders.trustedIPs=${FRONTEND_IP_1},${FRONTEND_IP_2},${FRONTEND_IP_3}
       --entryPoints.https.transport.respondingTimeouts.readTimeout=60
       --providers.file.directory=/etc/traefik/dynamic
-      --providers.docker=true
-      --providers.docker.network=default
-      --providers.docker.exposedByDefault=false
       --api.insecure=${DEVELOPMENT_ENVIRONMENT:-false}
       --api.dashboard=${DEVELOPMENT_ENVIRONMENT:-false}
       --api.debug=${DEVELOPMENT_ENVIRONMENT:-false}
     volumes:
-      - ./certs:/certs:ro
+      - ./certs/cert.pem:/certs/cert.pem:ro,z
+      - ./certs/privkey.pem:/certs/privkey.pem:ro,z
+      - ./conf/traefik:/etc/traefik/dynamic:ro,z
     environment:
       TRAEFIK_LOG_LEVEL: INFO
   drupal:

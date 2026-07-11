@@ -75,7 +75,7 @@ var imageClearCmd = &cobra.Command{
 
 func init() {
 	imageSetCmd.Flags().StringArray("tag", []string{}, "Set a LibOps image tag for a known Compose service as SERVICE=TAG; may be passed more than once.")
-	imageSetCmd.Flags().StringArray("image", []string{}, "Override a Compose service image as SERVICE=IMAGE; may be passed more than once.")
+	imageSetCmd.Flags().StringArray("image", []string{}, "Override a non-buildable Compose service image as SERVICE=IMAGE; may be passed more than once.")
 	imageSetCmd.Flags().StringArray("build-arg", []string{}, "Override a Compose service build arg as SERVICE.ARG=VALUE; may be passed more than once.")
 	imageCmd.AddCommand(imageSetCmd)
 	imageCmd.AddCommand(imageClearCmd)

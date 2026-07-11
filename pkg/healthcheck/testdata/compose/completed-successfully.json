@@ -1,0 +1,28 @@
+{
+  "services": {
+    "app": {
+      "depends_on": {
+        "database-init": {
+          "condition": "service_completed_successfully",
+          "required": true
+        },
+        "default-required-init": {
+          "condition": "service_completed_successfully"
+        },
+        "mariadb": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "optional-init": {
+          "condition": "service_completed_successfully",
+          "required": false
+        }
+      }
+    },
+    "database-init": {},
+    "default-required-init": {},
+    "mariadb": {},
+    "optional-init": {},
+    "orphan-job": {}
+  }
+}

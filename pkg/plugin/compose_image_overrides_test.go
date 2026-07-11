@@ -11,18 +11,19 @@ func TestResolveComposeImageOverridesTagUsesApplicationBaseImages(t *testing.T) 
 	cases := []struct {
 		plugin  string
 		service string
+		tag     string
 		image   string
 	}{
-		{plugin: "drupal", service: "drupal", image: "libops/drupal:nginx-1.30.2-php84"},
-		{plugin: "ojs", service: "ojs", image: "libops/ojs:nginx-1.30.2-php84"},
-		{plugin: "omeka-classic", service: "omeka-classic", image: "libops/omeka-classic:nginx-1.30.2-php84"},
-		{plugin: "omeka-s", service: "omeka-s", image: "libops/omeka-s:nginx-1.30.2-php84"},
-		{plugin: "wp", service: "wp", image: "libops/wp:nginx-1.30.2-php84"},
+		{plugin: "drupal", service: "drupal", tag: "nginx-1.30.3-php84", image: "libops/drupal:nginx-1.30.3-php84"},
+		{plugin: "ojs", service: "ojs", tag: "3.5.0-5-php84", image: "libops/ojs:3.5.0-5-php84"},
+		{plugin: "omeka-classic", service: "omeka-classic", tag: "3.2.1-php84", image: "libops/omeka-classic:3.2.1-php84"},
+		{plugin: "omeka-s", service: "omeka-s", tag: "4.2.1-php84", image: "libops/omeka-s:4.2.1-php84"},
+		{plugin: "wp", service: "wp", tag: "nginx-1.30.3-php84", image: "libops/wp:nginx-1.30.3-php84"},
 	}
 
 	for _, tt := range cases {
 		t.Run(tt.plugin, func(t *testing.T) {
-			overrides, err := ResolveComposeImageOverrides(tt.plugin, []string{tt.service + "=nginx-1.30.2-php84"}, nil, nil)
+			overrides, err := ResolveComposeImageOverrides(tt.plugin, []string{tt.service + "=" + tt.tag}, nil, nil)
 			if err != nil {
 				t.Fatalf("ResolveComposeImageOverrides() error = %v", err)
 			}
@@ -30,11 +31,63 @@ func TestResolveComposeImageOverridesTagUsesApplicationBaseImages(t *testing.T) 
 			if args["BASE_IMAGE"] != tt.image {
 				t.Fatalf("BASE_IMAGE for %s = %q, want %q", tt.service, args["BASE_IMAGE"], tt.image)
 			}
+			if _, ok := overrides.Images[tt.service]; ok {
+				t.Fatalf("buildable service %s must use build args, got image override %#v", tt.service, overrides.Images)
+			}
 		})
 	}
 }
 
-func TestResolveComposeImageOverridesTagUsesIslandoraRepositoryTagArgs(t *testing.T) {
+func TestApplyComposeImageOverridesAddsBuildArgsWithoutBaseComposeArgs(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	overrides, err := ResolveComposeImageOverrides("ojs", []string{"ojs=3.5.0-5-php84"}, nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveComposeImageOverrides() error = %v", err)
+	}
+	if err := ApplyComposeImageOverrides(projectDir, overrides); err != nil {
+		t.Fatalf("ApplyComposeImageOverrides() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, ComposeImageOverrideFile))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{"build:", "args:", `BASE_IMAGE: "libops/ojs:3.5.0-5-php84"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("override missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "image:") {
+		t.Fatalf("buildable app override must not write image:\n%s", got)
+	}
+}
+
+func TestResolveComposeImageOverridesArchivesSpaceSolrUsesCompanionImage(t *testing.T) {
+	t.Parallel()
+
+	overrides, err := ResolveComposeImageOverrides("archivesspace", []string{"solr=4.2.0"}, nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveComposeImageOverrides() error = %v", err)
+	}
+	if got := overrides.Images["solr"]; got != "libops/archivesspace-solr:4.2.0" {
+		t.Fatalf("solr image = %q, want libops/archivesspace-solr:4.2.0", got)
+	}
+	if _, ok := overrides.BuildArgs["solr"]; ok {
+		t.Fatalf("expected a direct solr image override, got build args %#v", overrides.BuildArgs["solr"])
+	}
+}
+
+func TestResolveComposeImageOverridesRejectsImageForBuildableApplication(t *testing.T) {
+	t.Parallel()
+
+	_, err := ResolveComposeImageOverrides("omeka-s", nil, []string{"omeka-s=ghcr.io/example/omeka-s:test"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "Compose would still build") || !strings.Contains(err.Error(), "--tag omeka-s=TAG") {
+		t.Fatalf("ResolveComposeImageOverrides() error = %v, want buildable-service guidance", err)
+	}
+}
+
+func TestResolveComposeImageOverridesTagUsesIslandoraBaseImage(t *testing.T) {
 	for _, pluginName := range []string{"isle", "islandora"} {
 		t.Run(pluginName, func(t *testing.T) {
 			overrides, err := ResolveComposeImageOverrides(pluginName, []string{"drupal=nginx-1.30.3-php84"}, nil, nil)
@@ -42,14 +95,8 @@ func TestResolveComposeImageOverridesTagUsesIslandoraRepositoryTagArgs(t *testin
 				t.Fatalf("ResolveComposeImageOverrides() error = %v", err)
 			}
 			args := overrides.BuildArgs["drupal"]
-			if args["REPOSITORY"] != "libops" {
-				t.Fatalf("drupal REPOSITORY = %q, want libops", args["REPOSITORY"])
-			}
-			if args["TAG"] != "nginx-1.30.3-php84" {
-				t.Fatalf("drupal TAG = %q, want nginx-1.30.3-php84", args["TAG"])
-			}
-			if _, ok := args["BASE_IMAGE"]; ok {
-				t.Fatalf("did not expect ISLE drupal BASE_IMAGE override, got %#v", args)
+			if args["BASE_IMAGE"] != "libops/islandora:nginx-1.30.3-php84" {
+				t.Fatalf("drupal BASE_IMAGE = %q, want libops/islandora:nginx-1.30.3-php84", args["BASE_IMAGE"])
 			}
 		})
 	}
@@ -73,8 +120,8 @@ func TestResolveComposeImageOverridesTagSetsKnownServiceImages(t *testing.T) {
 	}
 
 	drupalArgs := overrides.BuildArgs["drupal"]
-	if drupalArgs["REPOSITORY"] != "libops" || drupalArgs["TAG"] != "nginx-1.30.3-php84" {
-		t.Fatalf("drupal args = %#v, want REPOSITORY libops and TAG nginx-1.30.3-php84", drupalArgs)
+	if drupalArgs["BASE_IMAGE"] != "libops/islandora:nginx-1.30.3-php84" {
+		t.Fatalf("drupal args = %#v, want BASE_IMAGE libops/islandora:nginx-1.30.3-php84", drupalArgs)
 	}
 	expectedImages := map[string]string{
 		"activemq": "libops/activemq:activemq-6.1.7",
@@ -158,4 +205,131 @@ func TestClearComposeImageOverridesPreservesUnrelatedOverrides(t *testing.T) {
 			t.Fatalf("expected %q preserved, got:\n%s", expected, got)
 		}
 	}
+}
+
+func TestComposeImageOverridesPreserveForkedComposeTextAcrossSetUpdateAndClear(t *testing.T) {
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, ComposeImageOverrideFile)
+	original := `# downstream operator comment
+x-common: &common
+    restart: unless-stopped
+
+services:
+    app:
+        image: old.example/app:v1 # keep image rationale
+        build:
+            context: .
+            dockerfile: Dockerfile.custom
+            args:
+                BASE_IMAGE: old.example/base:v1 # keep base rationale
+        volumes:
+            - ./custom:/opt/custom:ro,z
+    worker:
+        <<: *common
+        image: old.example/worker:v1 # untouched worker
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	overrides := ComposeImageOverrides{}
+	overrides.AddImage("app", "registry.example/app:v2")
+	overrides.AddBuildArg("app", "BASE_IMAGE", "registry.example/base:v2")
+	overrides.AddBuildArg("app", "EXTRA_FLAG", "enabled")
+	if err := ApplyComposeImageOverrides(projectDir, overrides); err != nil {
+		t.Fatalf("ApplyComposeImageOverrides(first) error = %v", err)
+	}
+	first := readComposeOverrideForTest(t, path)
+	for _, want := range []string{
+		"# downstream operator comment",
+		"x-common: &common",
+		"        image: \"registry.example/app:v2\" # keep image rationale",
+		"                BASE_IMAGE: \"registry.example/base:v2\" # keep base rationale",
+		"                EXTRA_FLAG: \"enabled\"",
+		"            context: .",
+		"            dockerfile: Dockerfile.custom",
+		"            - ./custom:/opt/custom:ro,z",
+		"        <<: *common",
+		"        image: old.example/worker:v1 # untouched worker",
+	} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("set did not preserve or write %q:\n%s", want, first)
+		}
+	}
+
+	overrides = ComposeImageOverrides{}
+	overrides.AddImage("app", "registry.example/app:v3")
+	overrides.AddBuildArg("app", "BASE_IMAGE", "registry.example/base:v3")
+	if err := ApplyComposeImageOverrides(projectDir, overrides); err != nil {
+		t.Fatalf("ApplyComposeImageOverrides(update) error = %v", err)
+	}
+	updated := readComposeOverrideForTest(t, path)
+	for _, want := range []string{
+		"        image: \"registry.example/app:v3\" # keep image rationale",
+		"                BASE_IMAGE: \"registry.example/base:v3\" # keep base rationale",
+		"                EXTRA_FLAG: \"enabled\"",
+	} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("update did not preserve or write %q:\n%s", want, updated)
+		}
+	}
+	if strings.Count(updated, "BASE_IMAGE:") != 1 || strings.Count(updated, "image: \"registry.example/app:v3\"") != 1 {
+		t.Fatalf("update duplicated managed keys:\n%s", updated)
+	}
+
+	if err := ClearComposeImageOverrides(projectDir, []string{"app"}); err != nil {
+		t.Fatalf("ClearComposeImageOverrides() error = %v", err)
+	}
+	cleared := readComposeOverrideForTest(t, path)
+	for _, want := range []string{
+		"# downstream operator comment",
+		"x-common: &common",
+		"            context: .",
+		"            dockerfile: Dockerfile.custom",
+		"            - ./custom:/opt/custom:ro,z",
+		"        <<: *common",
+		"        image: old.example/worker:v1 # untouched worker",
+	} {
+		if !strings.Contains(cleared, want) {
+			t.Fatalf("clear did not preserve unrelated value %q:\n%s", want, cleared)
+		}
+	}
+	for _, removed := range []string{"registry.example/app", "BASE_IMAGE:", "EXTRA_FLAG:", "args:"} {
+		if strings.Contains(cleared, removed) {
+			t.Fatalf("clear retained managed value %q:\n%s", removed, cleared)
+		}
+	}
+}
+
+func TestComposeImageOverridesExpandScalarBuildContextWithoutLosingIt(t *testing.T) {
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, ComposeImageOverrideFile)
+	if err := os.WriteFile(path, []byte("services:\n  app:\n    build: ./docker # custom context\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	overrides := ComposeImageOverrides{}
+	overrides.AddBuildArg("app", "BASE_IMAGE", "registry.example/base:v2")
+	if err := ApplyComposeImageOverrides(projectDir, overrides); err != nil {
+		t.Fatalf("ApplyComposeImageOverrides() error = %v", err)
+	}
+	got := readComposeOverrideForTest(t, path)
+	for _, want := range []string{
+		"    build: # custom context",
+		"      context: ./docker",
+		`      args:`,
+		`        BASE_IMAGE: "registry.example/base:v2"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("scalar build expansion missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func readComposeOverrideForTest(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	return string(data)
 }

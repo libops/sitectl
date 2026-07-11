@@ -20,7 +20,7 @@ func TestDiscoverInstalledFromPathFallsBackToBuiltinTemplateRepo(t *testing.T) {
 	if len(plugins) != 1 {
 		t.Fatalf("expected one plugin, got %d", len(plugins))
 	}
-	if plugins[0].TemplateRepo != "https://github.com/islandora-devops/isle-site-template" {
+	if plugins[0].TemplateRepo != "https://github.com/libops/isle" {
 		t.Fatalf("expected builtin template repo, got %q", plugins[0].TemplateRepo)
 	}
 	if plugins[0].CanCreate {

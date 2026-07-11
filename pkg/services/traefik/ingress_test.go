@@ -2,7 +2,9 @@ package traefik
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -104,6 +106,65 @@ func TestResolveIngressSettingsCanonicalizesHTTPSAlias(t *testing.T) {
 	}
 }
 
+func TestResolveIngressSettingsValidatesDomainAndTuningValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		values  map[string]string
+		wantErr string
+	}{
+		{name: "hostname", values: map[string]string{ingressDomainName: "app.example.org"}},
+		{name: "ipv4", values: map[string]string{ingressDomainName: "192.0.2.10"}},
+		{name: "ipv6", values: map[string]string{ingressDomainName: "[2001:db8::10]"}},
+		{name: "upload bytes", values: map[string]string{uploadSizeName: "1048576"}},
+		{name: "upload megabytes", values: map[string]string{uploadSizeName: "128M"}},
+		{name: "upload lowercase suffix", values: map[string]string{uploadSizeName: "128m"}},
+		{name: "timeout milliseconds", values: map[string]string{uploadTimeoutName: "500ms"}},
+		{name: "timeout hours", values: map[string]string{uploadTimeoutName: "1h"}},
+		{name: "domain control character", values: map[string]string{ingressDomainName: "app.example.org\nmalicious"}, wantErr: "control character"},
+		{name: "domain scheme", values: map[string]string{ingressDomainName: "https://app.example.org"}, wantErr: "DNS hostname or IP address"},
+		{name: "domain port", values: map[string]string{ingressDomainName: "app.example.org:8443"}, wantErr: "DNS hostname or IP address"},
+		{name: "domain empty label", values: map[string]string{ingressDomainName: "app..example.org"}, wantErr: "DNS hostname or IP address"},
+		{name: "upload decimal", values: map[string]string{uploadSizeName: "1.5G"}, wantErr: "maximum upload size"},
+		{name: "upload unsupported suffix", values: map[string]string{uploadSizeName: "1T"}, wantErr: "maximum upload size"},
+		{name: "timeout missing unit", values: map[string]string{uploadTimeoutName: "300"}, wantErr: "upload timeout"},
+		{name: "timeout compound", values: map[string]string{uploadTimeoutName: "1m30s"}, wantErr: "upload timeout"},
+		{name: "ACME display name", values: map[string]string{ingressModeName: IngressModeHTTPSLetsEncrypt, ingressACMEEmailName: "Ops <ops@example.org>"}, wantErr: "bare email address"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := resolveIngressSettings(tt.values)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("resolveIngressSettings() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("resolveIngressSettings() error = %v, want text %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMkcertHostsUnwrapsIPv6Literal(t *testing.T) {
+	t.Parallel()
+
+	hosts := mkcertHosts(ingressSettings{Domain: "[2001:db8::10]"})
+	if len(hosts) == 0 || hosts[0] != "2001:db8::10" {
+		t.Fatalf("mkcertHosts() = %#v, want unwrapped IPv6 SAN first", hosts)
+	}
+	for _, host := range hosts {
+		if host == "[2001:db8::10]" {
+			t.Fatalf("mkcertHosts() passed URL brackets to mkcert: %#v", hosts)
+		}
+	}
+}
+
 func TestApplyIngressComposeTLSModes(t *testing.T) {
 	t.Parallel()
 
@@ -120,7 +181,8 @@ func TestApplyIngressComposeTLSModes(t *testing.T) {
 			want: []string{
 				`SITECTL_TLS_MODE: "https-cloudflare-origin"`,
 				`--entryPoints.https.address=:443`,
-				`./certs:/certs:ro`,
+				`./certs/cert.pem:/certs/cert.pem:ro,z`,
+				`./certs/privkey.pem:/certs/privkey.pem:ro,z`,
 			},
 			notWant: []string{
 				`certificatesResolvers.letsencrypt`,
@@ -137,7 +199,8 @@ func TestApplyIngressComposeTLSModes(t *testing.T) {
 				`acme-data:/acme:rw`,
 			},
 			notWant: []string{
-				`./certs:/certs:ro`,
+				`./certs/cert.pem:/certs/cert.pem`,
+				`./certs/privkey.pem:/certs/privkey.pem`,
 			},
 		},
 		{
@@ -146,7 +209,8 @@ func TestApplyIngressComposeTLSModes(t *testing.T) {
 			want: []string{
 				`SITECTL_TLS_MODE: "https-custom"`,
 				`--entryPoints.https.address=:443`,
-				`./certs:/certs:ro`,
+				`./certs/cert.pem:/certs/cert.pem:ro,z`,
+				`./certs/privkey.pem:/certs/privkey.pem:ro,z`,
 			},
 			notWant: []string{
 				`certificatesResolvers.letsencrypt`,
@@ -158,7 +222,8 @@ func TestApplyIngressComposeTLSModes(t *testing.T) {
 			want: []string{
 				`SITECTL_TLS_MODE: "https-mkcert"`,
 				`--entryPoints.https.address=:443`,
-				`./certs:/certs:ro`,
+				`./certs/cert.pem:/certs/cert.pem:ro,z`,
+				`./certs/privkey.pem:/certs/privkey.pem:ro,z`,
 			},
 			notWant: []string{
 				`certificatesResolvers.letsencrypt`,
@@ -261,6 +326,115 @@ func TestApplyIngressComposeHTTPRemovesTLSModeMarker(t *testing.T) {
 		if strings.Contains(got, stale) {
 			t.Fatalf("expected stale HTTPS value %q to be removed:\n%s", stale, got)
 		}
+	}
+}
+
+func TestApplyIngressReplacesLegacyCertificateDirectoryMount(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "docker-compose.yml")
+	input := `services:
+  traefik:
+    image: traefik:v3
+    volumes:
+      - ./certs:/certs:ro,z
+`
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	compose, err := corecomponent.LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile() error = %v", err)
+	}
+	settings, err := resolveIngressSettings(map[string]string{ingressModeName: IngressModeHTTPSCustom})
+	if err != nil {
+		t.Fatalf("resolveIngressSettings() error = %v", err)
+	}
+	if err := applyIngressPortsAndVolumes(compose, normalizeIngressOptions(IngressOptions{NoAppService: true}), settings); err != nil {
+		t.Fatalf("applyIngressPortsAndVolumes() error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		"./certs/cert.pem:/certs/cert.pem:ro,z",
+		"./certs/privkey.pem:/certs/privkey.pem:ro,z",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected leaf certificate mount %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"./certs:/certs", "rootCA-key.pem"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("Traefik must not expose certificate directory value %q:\n%s", forbidden, got)
+		}
+	}
+}
+
+func TestApplyIngressUploadTimeoutCoversTraefikNginxAndPHP(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "docker-compose.yml")
+	input := `services:
+  traefik:
+    image: traefik:v3
+  app:
+    image: example/app
+`
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	compose, err := corecomponent.LoadComposeFile(path)
+	if err != nil {
+		t.Fatalf("LoadComposeFile() error = %v", err)
+	}
+	settings, err := resolveIngressSettings(map[string]string{
+		uploadSizeName:    "2G",
+		uploadTimeoutName: "10m",
+	})
+	if err != nil {
+		t.Fatalf("resolveIngressSettings() error = %v", err)
+	}
+	if err := applyIngressCompose(nil, compose, normalizeIngressOptions(IngressOptions{AppService: "app"}), settings); err != nil {
+		t.Fatalf("applyIngressCompose() error = %v", err)
+	}
+	if err := compose.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		`--entryPoints.http.transport.respondingTimeouts.readTimeout=10m`,
+		`NGINX_CLIENT_BODY_TIMEOUT: "10m"`,
+		`NGINX_FASTCGI_READ_TIMEOUT: "10m"`,
+		`NGINX_FASTCGI_SEND_TIMEOUT: "10m"`,
+		`PHP_MAX_INPUT_TIME: "600"`,
+		`PHP_MAX_EXECUTION_TIME: "600"`,
+		`PHP_REQUEST_TERMINATE_TIMEOUT: "600"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected end-to-end timeout setting %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestIngressPHPTimeoutSecondsRoundsSubsecondValuesUp(t *testing.T) {
+	t.Parallel()
+
+	got, err := ingressPHPTimeoutSeconds("500ms")
+	if err != nil {
+		t.Fatalf("ingressPHPTimeoutSeconds() error = %v", err)
+	}
+	if got != "1" {
+		t.Fatalf("ingressPHPTimeoutSeconds() = %q, want 1", got)
 	}
 }
 
@@ -466,6 +640,7 @@ func TestApplyIngressTraefikCommandsRemovesStaleHTTPEntrypointAddress(t *testing
 	path := filepath.Join(t.TempDir(), "docker-compose.yml")
 	input := `services:
   traefik:
+    image: traefik:v3
     command:
       - --providers.file.directory=/etc/traefik/dynamic
       - --entrypoints.web.address=:80
@@ -525,10 +700,21 @@ func TestNormalizeTraefikFileProviderPreservesBotMitigationMounts(t *testing.T) 
 	path := filepath.Join(t.TempDir(), "docker-compose.yml")
 	input := `services:
   traefik:
+    image: traefik:v3
     command:
       - --providers.file.filename=/etc/traefik/dynamic/drupal.yml
+      - --providers.docker=true
+      - --providers.docker.exposedByDefault=false
     volumes:
-      - ./conf/traefik:/etc/traefik/dynamic:ro,Z
+      - ./conf/traefik:/etc/traefik/dynamic:ro,z
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "/var/run/docker.sock:/var/run/docker.sock:rw"
+      - '/var/run/docker.sock:/var/run/docker.sock:z'
+      - type: bind
+        source: "/var/run/docker.sock"
+        target: /var/run/docker.sock
+        read_only: true
+      - { type: bind, source: /var/run/docker.sock, target: /var/run/docker.sock }
       - ./conf/traefik/plugins/captcha-protect:/plugins-local/src/github.com/libops/captcha-protect:r
       - ./conf/traefik/challenge.tmpl.html:/challenge.tmpl.html:ro
 `
@@ -553,7 +739,7 @@ func TestNormalizeTraefikFileProviderPreservesBotMitigationMounts(t *testing.T) 
 	}
 	got := string(data)
 	for _, want := range []string{
-		"./conf/traefik:/etc/traefik/dynamic:ro",
+		"./conf/traefik:/etc/traefik/dynamic:ro,z",
 		"./conf/traefik/plugins/captcha-protect:/plugins-local/src/github.com/libops/captcha-protect:r",
 		"./conf/traefik/challenge.tmpl.html:/challenge.tmpl.html:ro",
 	} {
@@ -563,11 +749,53 @@ func TestNormalizeTraefikFileProviderPreservesBotMitigationMounts(t *testing.T) 
 	}
 	for _, stale := range []string{
 		"--providers.file.filename=",
+		"--providers.docker",
+		"/var/run/docker.sock:/var/run/docker.sock",
 		"./conf/traefik:/etc/traefik/dynamic:ro,Z",
 	} {
 		if strings.Contains(got, stale) {
 			t.Fatalf("stale Traefik provider value %q was not removed:\n%s", stale, got)
 		}
+	}
+	if count := strings.Count(got, "/etc/traefik/dynamic"); count != 2 {
+		// One command and one mount should refer to the dynamic directory.
+		t.Fatalf("dynamic provider reference count = %d, want 2:\n%s", count, got)
+	}
+	assertComposeHasSingleTraefikDynamicMount(t, path)
+}
+
+func assertComposeHasSingleTraefikDynamicMount(t *testing.T, composePath string) {
+	t.Helper()
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker CLI is unavailable; text-level mount assertions completed")
+	}
+	command := exec.Command("docker", "compose", "-f", composePath, "config", "--format", "json")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker compose config failed: %v\n%s", err, output)
+	}
+	var rendered struct {
+		Services map[string]struct {
+			Volumes []struct {
+				Source string `json:"source"`
+				Target string `json:"target"`
+			} `json:"volumes"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(output, &rendered); err != nil {
+		t.Fatalf("parse docker compose config JSON: %v\n%s", err, output)
+	}
+	count := 0
+	for _, volume := range rendered.Services["traefik"].Volumes {
+		if volume.Source == "/var/run/docker.sock" {
+			t.Fatalf("Traefik Docker socket mount survived normalization: %s", output)
+		}
+		if volume.Target == "/etc/traefik/dynamic" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("Traefik dynamic mount target count = %d, want 1: %s", count, output)
 	}
 }
 

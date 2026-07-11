@@ -4,7 +4,9 @@ services:
     command:
       - --api.dashboard=true
     volumes:
-      - ./certs:/certs:ro
+      - ./certs/cert.pem:/certs/cert.pem:ro,z
+      - ./certs/privkey.pem:/certs/privkey.pem:ro,z
+      - ./conf/traefik:/etc/traefik/dynamic:ro,z
     environment:
       TRAEFIK_LOG_LEVEL: INFO
   ojs:

@@ -366,6 +366,156 @@ func TestComposeDependencyConditionRequiresHealthy(t *testing.T) {
 	}
 }
 
+func TestRequiredSuccessfulCompletionServices(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "compose", "completed-successfully.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(compose fixture) error = %v", err)
+	}
+	var document composeDependencyConfigDocument
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("Unmarshal(compose fixture) error = %v", err)
+	}
+
+	services := requiredSuccessfulCompletionServices(document)
+	for _, service := range []string{"database-init", "default-required-init"} {
+		if _, ok := services[service]; !ok {
+			t.Errorf("expected %s to require successful completion", service)
+		}
+	}
+	for _, service := range []string{"app", "mariadb", "optional-init", "orphan-job"} {
+		if _, ok := services[service]; ok {
+			t.Errorf("did not expect %s to require successful completion", service)
+		}
+	}
+}
+
+func TestCheckComposeServicesAllowsOnlyRequiredSuccessfulCompletion(t *testing.T) {
+	binDir := t.TempDir()
+	callPath := filepath.Join(t.TempDir(), "docker-call")
+	fixturePath, err := filepath.Abs(filepath.Join("testdata", "compose", "completed-successfully.json"))
+	if err != nil {
+		t.Fatalf("Abs(compose fixture) error = %v", err)
+	}
+	dockerPath := filepath.Join(binDir, "docker")
+	dockerScript := `#!/bin/sh
+printf '%s\n' "$*" > "$COMPOSE_CONFIG_CALL"
+cat "$COMPOSE_CONFIG_FIXTURE"
+`
+	if err := os.WriteFile(dockerPath, []byte(dockerScript), 0o755); err != nil {
+		t.Fatalf("WriteFile(fake docker) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMPOSE_CONFIG_CALL", callPath)
+	t.Setenv("COMPOSE_CONFIG_FIXTURE", fixturePath)
+
+	tests := []struct {
+		name     string
+		service  string
+		state    *dockercontainer.State
+		wantOK   bool
+		wantText string
+	}{
+		{
+			name:     "required one-shot exited zero",
+			service:  "database-init",
+			state:    &dockercontainer.State{Status: dockercontainer.StateExited, ExitCode: 0},
+			wantOK:   true,
+			wantText: "completed successfully (exit=0)",
+		},
+		{
+			name:     "default required one-shot exited zero",
+			service:  "default-required-init",
+			state:    &dockercontainer.State{Status: dockercontainer.StateExited, ExitCode: 0},
+			wantOK:   true,
+			wantText: "completed successfully (exit=0)",
+		},
+		{
+			name:     "optional one-shot exited zero",
+			service:  "optional-init",
+			state:    &dockercontainer.State{Status: dockercontainer.StateExited, ExitCode: 0},
+			wantText: "exited",
+		},
+		{
+			name:     "healthy dependency exited zero",
+			service:  "mariadb",
+			state:    &dockercontainer.State{Status: dockercontainer.StateExited, ExitCode: 0},
+			wantText: "exited",
+		},
+		{
+			name:     "arbitrary job exited zero",
+			service:  "orphan-job",
+			state:    &dockercontainer.State{Status: dockercontainer.StateExited, ExitCode: 0},
+			wantText: "exited",
+		},
+		{
+			name:     "required one-shot exited nonzero",
+			service:  "database-init",
+			state:    &dockercontainer.State{Status: dockercontainer.StateExited, ExitCode: 23},
+			wantText: "exit=23",
+		},
+		{
+			name:     "required one-shot dead with zero",
+			service:  "database-init",
+			state:    &dockercontainer.State{Status: dockercontainer.StateDead, ExitCode: 0},
+			wantText: "dead",
+		},
+		{
+			name:     "required one-shot missing",
+			service:  "database-init",
+			wantText: "no compose container found",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			containers := []dockercontainer.Summary{}
+			inspect := map[string]dockercontainer.InspectResponse{}
+			if test.state != nil {
+				containerID := test.service + "-id"
+				containers = append(containers, dockercontainer.Summary{
+					ID:     containerID,
+					Names:  []string{"/project-" + test.service + "-1"},
+					Labels: map[string]string{"com.docker.compose.service": test.service},
+				})
+				inspect[containerID] = dockercontainer.InspectResponse{
+					ContainerJSONBase: &dockercontainer.ContainerJSONBase{State: test.state},
+				}
+			}
+			checker := &DockerChecker{
+				Context: &config.Context{
+					DockerHostType: config.ContextLocal,
+					ProjectDir:     t.TempDir(),
+					ProjectName:    "project",
+				},
+				Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{containers: containers, inspect: inspect}},
+			}
+
+			results, err := checker.CheckComposeServices(context.Background(), test.service)
+			if err != nil {
+				t.Fatalf("CheckComposeServices() error = %v", err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("CheckComposeServices() returned %d results, want 1", len(results))
+			}
+			gotOK := results[0].Status == sitevalidate.StatusOK
+			if gotOK != test.wantOK {
+				t.Errorf("status = %s, wantOK = %v; detail = %q", results[0].Status, test.wantOK, results[0].Detail)
+			}
+			if !strings.Contains(results[0].Detail, test.wantText) {
+				t.Errorf("detail = %q, want text %q", results[0].Detail, test.wantText)
+			}
+		})
+	}
+
+	call, err := os.ReadFile(callPath)
+	if err != nil {
+		t.Fatalf("ReadFile(docker call) error = %v", err)
+	}
+	if got := strings.TrimSpace(string(call)); got != "compose config --format json" {
+		t.Fatalf("effective Compose config command = %q", got)
+	}
+}
+
 type fakeDockerAPI struct {
 	containers []dockercontainer.Summary
 	inspect    map[string]dockercontainer.InspectResponse

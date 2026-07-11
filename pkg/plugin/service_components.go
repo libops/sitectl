@@ -177,7 +177,7 @@ func (r serviceComponentRegistry) reconcileCommand() *cobra.Command {
 				}
 				return corecomponent.WriteComponentStatusReportWithFormat(cmd.OutOrStdout(), views, verbose, normalizeComponentReportFormat(format))
 			}
-			return r.reconcile(cmd, componentName, projectPath, yolo)
+			return r.reconcile(cmd, componentName, projectPath, rootfs, yolo)
 		},
 	}
 	// These flags intentionally mirror ComponentTargetParams rpc_flags tags.
@@ -303,28 +303,64 @@ func (r serviceComponentRegistry) detectViews(componentName, projectPath, codeba
 	return views, nil
 }
 
-func (r serviceComponentRegistry) reconcile(cmd *cobra.Command, componentName, projectPath string, yolo bool) error {
+func (r serviceComponentRegistry) reconcile(cmd *cobra.Command, componentName, projectPath, codebaseRootfs string, yolo bool) error {
 	ctx, err := r.resolveContext(projectPath)
 	if err != nil {
 		return fmt.Errorf("resolve component context: %w", err)
 	}
 	warnRemoteComponentMutation(cmd, ctx)
 
-	components := r.components
-	if strings.TrimSpace(componentName) != "" {
-		component, ok := r.componentByName(componentName)
-		if !ok {
-			return fmt.Errorf("unknown component %q", componentName)
+	views, err := r.detectViews(componentName, projectPath, codebaseRootfs)
+	if err != nil {
+		return err
+	}
+	drifted := make([]corecomponent.ReviewView, 0, len(views))
+	for _, view := range views {
+		if view.State == corecomponent.StateDrifted {
+			drifted = append(drifted, view)
 		}
-		components = []corecomponent.ComposeServiceComponent{component}
+	}
+	if len(drifted) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No component drift detected")
+		return nil
+	}
+
+	decisions := make(map[string]corecomponent.ReviewDecision, len(drifted))
+	if yolo {
+		for _, view := range drifted {
+			decisions[view.Name] = corecomponent.ReviewDecision{
+				Disposition: corecomponent.ReviewDefaultDisposition(view),
+				State:       corecomponent.ReviewDefaultState(view),
+				Options:     map[string]string{},
+			}
+		}
+	} else {
+		decisions, err = corecomponent.RunReview(drifted, corecomponent.ReviewOptions{})
+		if err != nil {
+			return err
+		}
 	}
 
 	manager := corecomponent.NewManager(ctx)
-	for _, component := range components {
-		if err := manager.ReconcileComponent(cmd.Context(), component, component.DefaultState(), corecomponent.ApplyOptions{Yolo: yolo}); err != nil {
+	for _, view := range drifted {
+		component, ok := r.componentByName(view.Name)
+		if !ok {
+			return fmt.Errorf("unknown component %q", view.Name)
+		}
+		decision := decisions[view.Name]
+		spec := component.SpecForWithOptions(decision.State, decision.Options)
+		switch decision.State {
+		case corecomponent.StateOn:
+			err = manager.EnableComponentWithOptions(cmd.Context(), spec, corecomponent.ApplyOptions{Yolo: true})
+		case corecomponent.StateOff:
+			err = manager.DisableComponentWithOptions(cmd.Context(), spec, corecomponent.ApplyOptions{Yolo: true})
+		default:
+			err = fmt.Errorf("unsupported component state %q", decision.State)
+		}
+		if err != nil {
 			return fmt.Errorf("reconcile component %q: %w", component.Name(), err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", component.Name(), corecomponent.StateToDisposition(component.DefaultState()))
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", component.Name(), decision.Disposition)
 	}
 	return nil
 }

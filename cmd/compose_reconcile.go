@@ -135,10 +135,13 @@ var composeReconcileCmd = &cobra.Command{
 	Short: "Run plugin Docker Compose init/build/up reconciliation",
 	Long: `Run plugin Docker Compose init/build/up reconciliation.
 
-This is the same lifecycle repair path sitectl runs automatically before
-'sitectl compose up' for plugin-managed local Compose projects. Use --force to
-rerun build/up even when the project is cached as current. Use --reset-init to
-remove plugin-declared init artifacts and init volumes before reconciling.`,
+This is the same lifecycle repair path sitectl runs automatically before a
+plain full-stack 'sitectl compose up' for plugin-managed local Compose projects.
+Starts with additional Compose flags or selected services pass through unchanged;
+run this command explicitly first when those starts also need lifecycle repair.
+Use --force to rerun build/up even when the project is cached as current. Use
+--reset-init to remove plugin-declared init artifacts and init volumes before
+reconciling.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		force, err := cmd.Flags().GetBool("force")
@@ -293,7 +296,7 @@ func composeReconcileDecisionForContextWithOptions(ctx *config.Context, opts com
 		return composeReconcileDecision{}, err
 	}
 
-	if !opts.Force {
+	if !opts.Force && !composeSpecAlwaysBuilds(spec) {
 		cached, err := composeReconcileHit(ctx, spec)
 		if err != nil {
 			return composeReconcileDecision{}, err
@@ -340,6 +343,15 @@ func composeReconcileDecisionForContextWithOptions(ctx *config.Context, opts com
 		Status:   status,
 		Spec:     spec,
 	}, nil
+}
+
+func composeSpecAlwaysBuilds(spec plugin.CreateSpec) bool {
+	for _, image := range spec.Images {
+		if image.BuildPolicy == plugin.BuildPolicyAlways {
+			return true
+		}
+	}
+	return false
 }
 
 func composeReconcileCreateSpec(pluginName string) (plugin.CreateSpec, bool, error) {

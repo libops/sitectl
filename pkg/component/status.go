@@ -163,14 +163,19 @@ func evaluateYAMLState(ctx *config.Context, root, domain string, spec YAMLStateS
 	results := []RuleCheckResult{}
 	for _, rule := range spec.Rules {
 		var matched []string
-		if ruleNeedsFileListing(rule) {
+		composeCandidates := composeCandidateRuleFiles(rule.Files)
+		if ruleNeedsFileListing(rule) || composeCandidates {
 			if err := ensureAvailableFiles(); err != nil {
 				return nil, err
 			}
 			matched = matchRuleFiles(availableFiles, rule.Files, rule.Exclude)
 		}
 		if len(matched) == 0 {
-			matched = syntheticRuleTargets(rule.Files)
+			if composeCandidates {
+				matched = []string{defaultComposeRuleFiles[0]}
+			} else {
+				matched = syntheticRuleTargets(rule.Files)
+			}
 		}
 		for _, rel := range matched {
 			ok, detail, err := evaluateRuleForFile(ctx, root, rel, rule, cache)
@@ -202,6 +207,22 @@ func evaluateYAMLState(ctx *config.Context, root, domain string, spec YAMLStateS
 	})
 
 	return results, nil
+}
+
+func composeCandidateRuleFiles(files []string) bool {
+	if len(files) != len(defaultComposeRuleFiles) {
+		return false
+	}
+	seen := make(map[string]bool, len(files))
+	for _, file := range files {
+		seen[filepath.ToSlash(strings.TrimSpace(file))] = true
+	}
+	for _, candidate := range defaultComposeRuleFiles {
+		if !seen[candidate] {
+			return false
+		}
+	}
+	return true
 }
 
 func ruleNeedsFileListing(rule YAMLRule) bool {

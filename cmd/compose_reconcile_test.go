@@ -145,6 +145,63 @@ func TestComposeReconcileDecisionForceBypassesCache(t *testing.T) {
 	}
 }
 
+func TestComposeReconcileDecisionAlwaysBuildBypassesCache(t *testing.T) {
+	restore := stubComposeReconcile(t)
+	defer restore()
+
+	composeReconcileSpec = func(string) (plugin.CreateSpec, bool, error) {
+		return plugin.CreateSpec{
+			DockerComposeBuild: []string{"docker compose build"},
+			Images: []plugin.ComposeImageSpec{{
+				Service:     "app",
+				Image:       "libops/app:1",
+				BuildPolicy: plugin.BuildPolicyAlways,
+			}},
+		}, true, nil
+	}
+	composeReconcileHit = func(*config.Context, plugin.CreateSpec) (bool, error) {
+		t.Fatal("BuildPolicyAlways must bypass the reconcile cache")
+		return true, nil
+	}
+	composeReconcileNeed = func(*config.Context, plugin.CreateSpec) (composeReconcileStatus, error) {
+		return statusWithFalse(conditionImagesAvailable, "BuildPolicyAlways", "app requires a build"), nil
+	}
+
+	decision, err := composeReconcileDecisionForContext(testComposeReconcileContext())
+	if err != nil {
+		t.Fatalf("composeReconcileDecisionForContext() error = %v", err)
+	}
+	if !decision.Needed || !decision.RunBuild {
+		t.Fatalf("cached Always spec must still build, got %+v", decision)
+	}
+}
+
+func TestShouldAutoReconcileComposeUpPreservesCustomizedStarts(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "plain", args: []string{"up"}, want: true},
+		{name: "normalized defaults", args: []string{"up", "-d", "--remove-orphans"}, want: true},
+		{name: "translated local daemon", args: []string{"up", "-d", "--remove-orphans", "--no-build"}, want: true},
+		{name: "wait flag", args: []string{"up", "--wait"}},
+		{name: "profile", args: []string{"up", "--profile", "assistant"}},
+		{name: "selected service", args: []string{"up", "-d", "drupal"}},
+		{name: "build requested", args: []string{"up", "--build"}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldAutoReconcileComposeUp(test.args); got != test.want {
+				t.Fatalf("shouldAutoReconcileComposeUp(%q) = %t, want %t", test.args, got, test.want)
+			}
+		})
+	}
+}
+
 func TestInspectComposeReconcileNeedUsesExplicitFilesAndImages(t *testing.T) {
 	oldImageMissing := composeReconcileImageMissing
 	oldVolumeMissing := composeReconcileVolumeMissing

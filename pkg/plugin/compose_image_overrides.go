@@ -3,8 +3,10 @@ package plugin
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	corecomponent "github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/spf13/cobra"
 	yaml "gopkg.in/yaml.v3"
@@ -21,7 +23,6 @@ type serviceTagOverrideKind int
 
 const (
 	serviceTagOverrideBaseImageArg serviceTagOverrideKind = iota
-	serviceTagOverrideRepositoryTagArgs
 	serviceTagOverrideImageRef
 )
 
@@ -83,6 +84,9 @@ func ResolveComposeImageOverrides(pluginName string, imageTags, images, buildArg
 		if err != nil {
 			return overrides, fmt.Errorf("parse --image: %w", err)
 		}
+		if buildableApplicationService(pluginName, service) {
+			return overrides, fmt.Errorf("--image cannot override buildable application service %q for plugin %q because Compose would still build that service; use --tag %s=TAG or --build-arg %s.BASE_IMAGE=IMAGE instead", service, pluginName, service, service)
+		}
 		overrides.AddImage(service, image)
 	}
 	for _, value := range buildArgs {
@@ -97,13 +101,6 @@ func ResolveComposeImageOverrides(pluginName string, imageTags, images, buildArg
 
 func addServiceTagOverride(overrides *ComposeImageOverrides, tag string, target serviceTagTarget) error {
 	switch target.Kind {
-	case serviceTagOverrideRepositoryTagArgs:
-		repository, _, ok := strings.Cut(target.Image, "/")
-		if !ok || strings.TrimSpace(repository) == "" {
-			return fmt.Errorf("cannot derive repository for image %q", target.Image)
-		}
-		overrides.AddBuildArg(target.Service, "REPOSITORY", repository)
-		overrides.AddBuildArg(target.Service, "TAG", tag)
 	case serviceTagOverrideImageRef:
 		overrides.AddImage(target.Service, target.Image+":"+tag)
 	default:
@@ -125,7 +122,6 @@ func ApplyComposeImageOverridesContext(ctx *config.Context, overrides ComposeIma
 		return err
 	}
 	path := filepath.Join(projectDir, ComposeImageOverrideFile)
-	doc := map[string]any{}
 	exists, err := ctx.FileExists(path)
 	if err != nil {
 		return fmt.Errorf("check %s: %w", path, err)
@@ -135,38 +131,31 @@ func ApplyComposeImageOverridesContext(ctx *config.Context, overrides ComposeIma
 		if err != nil {
 			return err
 		}
-		if len(strings.TrimSpace(string(data))) == 0 {
-			data = nil
-		}
-		if len(data) > 0 {
-			if err := yaml.Unmarshal(data, &doc); err != nil {
+		if len(strings.TrimSpace(string(data))) > 0 {
+			var validation any
+			if err := yaml.Unmarshal(data, &validation); err != nil {
 				return fmt.Errorf("parse %s: %w", path, err)
 			}
 		}
 	}
 
-	services := ensureStringMap(doc, "services")
-	for service, image := range overrides.Images {
-		serviceMap := ensureStringMap(services, service)
-		serviceMap["image"] = image
-	}
-	for service, args := range overrides.BuildArgs {
-		serviceMap := ensureStringMap(services, service)
-		buildMap := ensureStringMap(serviceMap, "build")
-		argsMap := ensureStringMap(buildMap, "args")
-		for name, value := range args {
-			argsMap[name] = value
-		}
-	}
-
-	data, err := yaml.Marshal(doc)
+	compose, err := corecomponent.LoadComposeFileOptionalForContext(ctx, path)
 	if err != nil {
-		return fmt.Errorf("marshal %s: %w", path, err)
-	}
-	if err := ctx.WriteFile(path, data); err != nil {
 		return err
 	}
-	return nil
+	for _, service := range sortedStringKeys(overrides.Images) {
+		if err := compose.SetServiceOverrideScalar(service, "image", fmt.Sprintf("%q", overrides.Images[service])); err != nil {
+			return err
+		}
+	}
+	for _, service := range sortedNestedStringKeys(overrides.BuildArgs) {
+		for _, name := range sortedStringKeys(overrides.BuildArgs[service]) {
+			if err := compose.SetServiceBuildArg(service, name, overrides.BuildArgs[service][name]); err != nil {
+				return err
+			}
+		}
+	}
+	return compose.Save()
 }
 
 func ClearComposeImageOverrides(projectDir string, services []string) error {
@@ -208,36 +197,36 @@ func ClearComposeImageOverridesContext(ctx *config.Context, services []string) e
 			targets[service] = true
 		}
 	}
-	for service, raw := range servicesMap {
+	compose, err := corecomponent.LoadComposeFileForContext(ctx, path)
+	if err != nil {
+		return err
+	}
+	for _, service := range sortedAnyKeys(servicesMap) {
 		if len(targets) > 0 && !targets[service] {
 			continue
 		}
+		raw := servicesMap[service]
 		serviceMap, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
-		clearComposeImageOverrideService(serviceMap)
-		if len(serviceMap) == 0 {
-			delete(servicesMap, service)
+		if _, hasImage := serviceMap["image"]; hasImage {
+			if err := compose.DeleteServiceKey(service, "image"); err != nil {
+				return err
+			}
 		}
-	}
-	if len(servicesMap) == 0 {
-		delete(doc, "services")
-	}
-	if len(doc) == 0 {
-		if err := ctx.RemoveFile(path); err != nil {
+		if buildMap, ok := serviceMap["build"].(map[string]any); ok {
+			if _, hasArgs := buildMap["args"]; hasArgs {
+				if err := compose.DeleteServiceBuildArgs(service); err != nil {
+					return err
+				}
+			}
+		}
+		if err := compose.PruneEmptyService(service); err != nil {
 			return err
 		}
-		return nil
 	}
-	data, err = yaml.Marshal(doc)
-	if err != nil {
-		return fmt.Errorf("marshal %s: %w", path, err)
-	}
-	if err := ctx.WriteFile(path, data); err != nil {
-		return err
-	}
-	return nil
+	return compose.Save()
 }
 
 func localImageOverrideContext(projectDir string) *config.Context {
@@ -256,18 +245,6 @@ func imageOverrideContext(ctx *config.Context) (*config.Context, string, error) 
 		return nil, "", fmt.Errorf("project directory cannot be empty")
 	}
 	return ctx, projectDir, nil
-}
-
-func clearComposeImageOverrideService(serviceMap map[string]any) {
-	delete(serviceMap, "image")
-	buildMap, ok := serviceMap["build"].(map[string]any)
-	if !ok {
-		return
-	}
-	delete(buildMap, "args")
-	if len(buildMap) == 0 {
-		delete(serviceMap, "build")
-	}
 }
 
 func resolveCreateImageOverrides(cmd *cobra.Command, req ComposeCreateRequest, pluginName string) (ComposeImageOverrides, error) {
@@ -297,7 +274,7 @@ func defaultServiceTagTarget(pluginName string) (serviceTagTarget, bool) {
 	case "drupal":
 		return serviceTagTarget{Service: "drupal", Image: "libops/drupal", Kind: serviceTagOverrideBaseImageArg}, true
 	case "isle", "islandora":
-		return serviceTagTarget{Service: "drupal", Image: "libops/drupal", Kind: serviceTagOverrideRepositoryTagArgs}, true
+		return serviceTagTarget{Service: "drupal", Image: "libops/islandora", Kind: serviceTagOverrideBaseImageArg}, true
 	case "ojs":
 		return serviceTagTarget{Service: "ojs", Image: "libops/ojs", Kind: serviceTagOverrideBaseImageArg}, true
 	case "omeka-classic":
@@ -320,15 +297,40 @@ func serviceTagTargetForService(pluginName, service string) (serviceTagTarget, b
 		return target, true
 	}
 	if strings.EqualFold(strings.TrimSpace(pluginName), "archivesspace") && service == "solr" {
-		return serviceTagTarget{Service: "solr", Image: "libops/solr", Kind: serviceTagOverrideBaseImageArg}, true
+		return serviceTagTarget{Service: "solr", Image: "libops/archivesspace-solr", Kind: serviceTagOverrideImageRef}, true
 	}
 	if isIslandoraPluginName(pluginName) && service == "drupal" {
-		return serviceTagTarget{Service: "drupal", Image: "libops/drupal", Kind: serviceTagOverrideRepositoryTagArgs}, true
+		return serviceTagTarget{Service: "drupal", Image: "libops/islandora", Kind: serviceTagOverrideBaseImageArg}, true
 	}
 	if image, ok := publishedImageByService(service); ok {
 		return serviceTagTarget{Service: service, Image: image, Kind: serviceTagOverrideImageRef}, true
 	}
 	return serviceTagTarget{}, false
+}
+
+func buildableApplicationService(pluginName, service string) bool {
+	pluginName = strings.ToLower(strings.TrimSpace(pluginName))
+	service = strings.ToLower(strings.TrimSpace(service))
+	switch pluginName {
+	case "app-tmpl":
+		return service == "app"
+	case "archivesspace":
+		return service == "archivesspace"
+	case "drupal":
+		return service == "drupal"
+	case "isle", "islandora":
+		return service == "drupal"
+	case "ojs":
+		return service == "ojs"
+	case "omeka-classic":
+		return service == "omeka-classic"
+	case "omeka-s":
+		return service == "omeka-s"
+	case "wp", "wordpress":
+		return service == "wp"
+	default:
+		return false
+	}
 }
 
 func isIslandoraPluginName(pluginName string) bool {
@@ -396,11 +398,29 @@ func parseBuildArgAssignment(value string) (string, string, string, error) {
 	return strings.TrimSpace(service), strings.TrimSpace(name), strings.TrimSpace(right), nil
 }
 
-func ensureStringMap(parent map[string]any, key string) map[string]any {
-	if existing, ok := parent[key].(map[string]any); ok {
-		return existing
+func sortedStringKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
 	}
-	next := map[string]any{}
-	parent[key] = next
-	return next
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedNestedStringKeys(values map[string]map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedAnyKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

@@ -171,6 +171,30 @@ func TestDetectComponentStatusesSortsByName(t *testing.T) {
 	}
 }
 
+func TestDetectComposeServiceComponentUsesExistingComposeFilename(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yaml"), []byte("services:\n  queue:\n    image: example/queue\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(docker-compose.yaml) error = %v", err)
+	}
+	component, err := NewComposeServiceComponent(ComposeServiceComponentOptions{
+		Name:        "queue",
+		ComposeYAML: []byte("services:\n  queue:\n    image: example/queue\n"),
+	})
+	if err != nil {
+		t.Fatalf("NewComposeServiceComponent() error = %v", err)
+	}
+	ctx := &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir}
+	status, err := DetectComponentStatus(ctx, projectDir, component.Definition(), DetectOptions{})
+	if err != nil {
+		t.Fatalf("DetectComponentStatus() error = %v", err)
+	}
+	if status.State != DetectedState(StateOn) {
+		t.Fatalf("status = %q, want %q; checks=%#v", status.State, StateOn, status.On.Results)
+	}
+}
+
 func detectStatus(t *testing.T, projectDir string, def Definition) ComponentStatus {
 	t.Helper()
 	ctx := &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir}

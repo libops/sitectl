@@ -25,11 +25,12 @@ var deployCmd = &cobra.Command{
 	Long: `Deploy the active context by orchestrating a full update cycle.
 
 The deploy sequence runs:
-  1. Plugin pre-down hooks (if the context plugin registers a deploy runner)
-  2. docker compose down
-  3. git pull --ff-only for the current upstream branch (unless --skip-git is set)
-  4. docker compose pull (unless --no-pull is set)
-  5. docker compose up -d --remove-orphans
+  1. git pull --ff-only for the current upstream branch (unless --skip-git is set)
+  2. Pull images while the current site is still running (unless --no-pull is set)
+  3. Plugin pre-down hooks (if the context plugin registers a deploy runner)
+  4. docker compose down --remove-orphans
+  5. The plugin's remaining application-aware rollout commands when declared;
+     otherwise docker compose up -d --remove-orphans
   6. Plugin post-up hooks (if the context plugin registers a deploy runner)
 
 The --branch flag checks out a branch before the git pull step.
@@ -55,58 +56,102 @@ Examples:
 		if err != nil {
 			return err
 		}
+		return runDeployCycle(cmd, contextName, ctx, pluginName, hasDeployHooks, deployCycleOptions{
+			Branch:  deployBranch,
+			NoPull:  deployNoPull,
+			SkipGit: deploySkipGit,
+		})
+	},
+}
 
-		// 1. Pre-down hooks
-		if hasDeployHooks {
-			slog.Debug("running pre-down hooks", "context", contextName, "plugin", pluginName)
-			if err := invokeDeployHook(cmd, contextName, pluginName, "pre-down"); err != nil {
-				return fmt.Errorf("pre-down hook failed: %w", err)
+type deployCycleOptions struct {
+	Branch  string
+	NoPull  bool
+	SkipGit bool
+}
+
+var (
+	deployRunGitUpdate      = runGitUpdate
+	deployRunContextCompose = runContextCompose
+	deployRunHook           = invokeDeployHook
+	deployResolveRollout    = pluginComposeRollout
+)
+
+func runDeployCycle(cmd *cobra.Command, contextName string, ctx config.Context, pluginName string, hasDeployHooks bool, opts deployCycleOptions) error {
+	// Update the checkout while the healthy site is still online. A fetch,
+	// checkout, or pull failure therefore cannot turn an update failure into an
+	// outage.
+	if !opts.SkipGit {
+		slog.Debug("running git update", "context", contextName, "branch", strings.TrimSpace(opts.Branch))
+		if err := deployRunGitUpdate(cmd, ctx, opts.Branch); err != nil {
+			return fmt.Errorf("git update failed: %w", err)
+		}
+	}
+
+	// Resolve the rollout before stopping a healthy site. Plugin discovery and
+	// metadata errors are deployment validation failures, not reasons to create
+	// an outage.
+	rolloutCommands, hasRollout, err := deployResolveRollout(pluginName)
+	if err != nil {
+		return fmt.Errorf("resolve compose rollout failed: %w", err)
+	}
+	rolloutPullCommands, rolloutCommands := splitLeadingComposePullCommands(rolloutCommands)
+
+	// Pull while the healthy site is still online. Registry authentication,
+	// connectivity, and missing-image failures must not turn an update failure
+	// into an outage.
+	if !opts.NoPull {
+		if hasRollout {
+			if len(rolloutPullCommands) > 0 {
+				slog.Debug("running plugin compose pull preflight", "context", contextName, "plugin", pluginName)
+				if err := deployRunComposeRollout(cmd, &ctx, rolloutPullCommands, false); err != nil {
+					return fmt.Errorf("compose pull preflight failed: %w", err)
+				}
+			}
+		} else {
+			slog.Debug("running compose pull preflight", "context", contextName)
+			if err := deployRunContextCompose(cmd, ctx, []string{"pull"}); err != nil {
+				return fmt.Errorf("compose pull preflight failed: %w", err)
 			}
 		}
+	}
 
-		// 2. Compose down
-		slog.Debug("running compose down", "context", contextName)
-		if err := runContextCompose(cmd, ctx, []string{"down"}); err != nil {
-			return fmt.Errorf("compose down failed: %w", err)
+	if hasDeployHooks {
+		slog.Debug("running pre-down hooks", "context", contextName, "plugin", pluginName)
+		if err := deployRunHook(cmd, contextName, pluginName, "pre-down"); err != nil {
+			return fmt.Errorf("pre-down hook failed: %w", err)
 		}
+	}
 
-		// 3. Git update
-		if !deploySkipGit {
-			slog.Debug("running git update", "context", contextName, "branch", strings.TrimSpace(deployBranch))
-			if err := runGitUpdate(cmd, ctx, deployBranch); err != nil {
-				return fmt.Errorf("git update failed: %w", err)
-			}
+	slog.Debug("running compose down", "context", contextName)
+	if err := deployRunContextCompose(cmd, ctx, []string{"down", "--remove-orphans"}); err != nil {
+		return fmt.Errorf("compose down failed: %w", err)
+	}
+
+	if hasRollout {
+		slog.Debug("running plugin compose rollout", "context", contextName, "plugin", pluginName)
+		if err := deployRunComposeRollout(cmd, &ctx, rolloutCommands, opts.NoPull); err != nil {
+			return fmt.Errorf("compose rollout failed: %w", err)
 		}
-
-		// 4. Compose pull
-		if !deployNoPull {
-			slog.Debug("running compose pull", "context", contextName)
-			if err := runContextCompose(cmd, ctx, []string{"pull"}); err != nil {
-				return fmt.Errorf("compose pull failed: %w", err)
-			}
-		}
-
-		// 5. Compose up
+	} else {
 		slog.Debug("running compose up", "context", contextName)
-		if err := runContextCompose(cmd, ctx, []string{"up", "-d", "--remove-orphans"}); err != nil {
+		if err := deployRunContextCompose(cmd, ctx, []string{"up", "-d", "--remove-orphans"}); err != nil {
 			return fmt.Errorf("compose up failed: %w", err)
 		}
+	}
 
-		// 6. Post-up hooks
-		if hasDeployHooks {
-			slog.Debug("running post-up hooks", "context", contextName, "plugin", pluginName)
-			if err := invokeDeployHook(cmd, contextName, pluginName, "post-up"); err != nil {
-				return fmt.Errorf("post-up hook failed: %w", err)
-			}
+	if hasDeployHooks {
+		slog.Debug("running post-up hooks", "context", contextName, "plugin", pluginName)
+		if err := deployRunHook(cmd, contextName, pluginName, "post-up"); err != nil {
+			return fmt.Errorf("post-up hook failed: %w", err)
 		}
-
-		return nil
-	},
+	}
+	return nil
 }
 
 func init() {
 	deployCmd.Flags().StringVar(&deployBranch, "branch", "", "Git branch to check out during the deploy (default: current branch)")
-	deployCmd.Flags().BoolVar(&deployNoPull, "no-pull", false, "Skip docker compose pull before bringing services up")
+	deployCmd.Flags().BoolVar(&deployNoPull, "no-pull", false, "Skip explicit docker compose pull steps (build --pull is unaffected)")
 	deployCmd.Flags().BoolVar(&deploySkipGit, "skip-git", false, "Skip the git fetch/checkout step")
 	deployCmd.GroupID = "workflow"
 	RootCmd.AddCommand(deployCmd)
@@ -172,6 +217,15 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 	if len(args) > 0 && args[0] == "up" {
 		if !slices.Contains(args, "-d") && !slices.Contains(args, "--detach") {
 			args = append(args, "-d", "--remove-orphans")
+		}
+		if shouldAutoReconcileComposeUp(args) {
+			handled, err := maybeRunComposeReconcile(cmd, &ctx)
+			if err != nil {
+				return err
+			}
+			if handled {
+				return nil
+			}
 		}
 	}
 	cmdArgs = append(cmdArgs, args...)

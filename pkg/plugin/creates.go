@@ -268,7 +268,7 @@ func (s *SDK) BindComposeCreateFlags(cmd *cobra.Command, spec CreateSpec, drupal
 	cmd.Flags().Bool("setup-only", false, "Clone and configure the checkout but do not start the stack.")
 	cmd.Flags().Bool("yolo", false, "Skip confirmation prompts for create-time host changes.")
 	cmd.Flags().StringArray("tag", []string{}, "Set a LibOps image tag for a known Compose service as SERVICE=TAG; may be passed more than once.")
-	cmd.Flags().StringArray("image", []string{}, "Override a Compose service image as SERVICE=IMAGE; may be passed more than once.")
+	cmd.Flags().StringArray("image", []string{}, "Override a non-buildable Compose service image as SERVICE=IMAGE; may be passed more than once.")
 	cmd.Flags().StringArray("build-arg", []string{}, "Override a Compose service build arg as SERVICE.ARG=VALUE; may be passed more than once.")
 	cmd.Flags().String("ssh-hostname", "", "SSH hostname for a remote target.")
 	cmd.Flags().Uint("ssh-port", 0, "SSH port for a remote target.")

@@ -108,7 +108,7 @@ Examples:
 			filteredArgs = append(filteredArgs, "-d", "--remove-orphans")
 		}
 		filteredArgs = context.DockerComposeSubcommandArgs(filteredArgs)
-		if isComposeUpCommand(filteredArgs) {
+		if shouldAutoReconcileComposeUp(filteredArgs) {
 			handled, err := maybeRunComposeReconcile(cmd, &context)
 			if err != nil {
 				return err
@@ -153,6 +153,26 @@ func isComposeUpCommand(args []string) bool {
 		return false
 	}
 	return args[0] == "up"
+}
+
+// shouldAutoReconcileComposeUp limits lifecycle replacement to the plain
+// full-stack start that sitectl itself normalizes. Service selection and
+// behavior-changing Compose flags must reach the user's requested `up`
+// command unchanged; operators can run `sitectl compose reconcile` explicitly
+// before those specialized starts.
+func shouldAutoReconcileComposeUp(args []string) bool {
+	if !isComposeUpCommand(args) {
+		return false
+	}
+	for _, arg := range args[1:] {
+		switch arg {
+		case "-d", "--detach", "--remove-orphans", "--no-build":
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func init() {

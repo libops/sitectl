@@ -51,15 +51,15 @@ sitectl validate
 Local image overrides are documented in [`sitectl image`](https://sitectl.libops.io/commands/image):
 
 ```bash
-sitectl image set --image app=ghcr.io/example/app:pr-123
+sitectl image set --tag wp=nginx-1.30.3-php84
 ```
 
-Component changes are written with [`sitectl set`](https://sitectl.libops.io/commands/set) and applied with [`sitectl converge`](https://sitectl.libops.io/commands/converge):
+Component changes are applied immediately with [`sitectl set`](https://sitectl.libops.io/commands/set). Use [`sitectl converge`](https://sitectl.libops.io/commands/converge) later to inspect or repair drift:
 
 ```bash
 sitectl set ingress enabled --mode https-mkcert --domain app.localhost
 sitectl set ingress enabled --trusted-ip 203.0.113.10/32 --max-upload-size 2G --upload-timeout 10m
-sitectl converge
+sitectl converge --report
 ```
 
 ## License
