@@ -50,6 +50,30 @@ func TestRunDeployCycleUpdatesGitBeforeStoppingSite(t *testing.T) {
 	}
 }
 
+func TestRunDeployCycleUsesExactRefUpdater(t *testing.T) {
+	restore := stubDeployCycle(t)
+	defer restore()
+
+	var gotRef string
+	deployRunGitUpdate = func(*cobra.Command, config.Context, string) error {
+		t.Fatal("branch updater called for an exact ref")
+		return nil
+	}
+	deployRunGitRefUpdate = func(_ *cobra.Command, _ config.Context, ref string) error {
+		gotRef = ref
+		return nil
+	}
+	deployResolveRollout = func(string) ([]string, bool, error) { return nil, false, nil }
+	deployRunContextCompose = func(*cobra.Command, config.Context, []string) error { return nil }
+
+	if err := runDeployCycle(&cobra.Command{}, "prod", config.Context{}, "core", false, deployCycleOptions{Ref: "refs/pull/42/head"}); err != nil {
+		t.Fatalf("runDeployCycle() error = %v", err)
+	}
+	if gotRef != "refs/pull/42/head" {
+		t.Fatalf("exact ref = %q", gotRef)
+	}
+}
+
 func TestRunDeployCyclePreparesPluginPullAndBuildBeforeStoppingSite(t *testing.T) {
 	restore := stubDeployCycle(t)
 	defer restore()
@@ -279,12 +303,14 @@ func TestRunDeployCycleGitFailureLeavesSiteRunning(t *testing.T) {
 func stubDeployCycle(t *testing.T) func() {
 	t.Helper()
 	oldGit := deployRunGitUpdate
+	oldGitRef := deployRunGitRefUpdate
 	oldCompose := deployRunContextCompose
 	oldHook := deployRunHook
 	oldResolve := deployResolveRollout
 	oldRollout := deployRunComposeRollout
 	return func() {
 		deployRunGitUpdate = oldGit
+		deployRunGitRefUpdate = oldGitRef
 		deployRunContextCompose = oldCompose
 		deployRunHook = oldHook
 		deployResolveRollout = oldResolve

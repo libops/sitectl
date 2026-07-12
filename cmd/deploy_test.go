@@ -26,7 +26,7 @@ func TestRunGitUpdateUsesRepositoryUpstream(t *testing.T) {
 
 func TestRunGitUpdateBranchOverrideCommand(t *testing.T) {
 	command := config.Context{}.GitSyncShellCommand("release")
-	if !strings.Contains(command, "git_branch=release") || !strings.Contains(command, "git checkout \"$git_branch\"") {
+	if !strings.Contains(command, "git_branch=release") || !strings.Contains(command, "git fetch --prune --no-tags") || !strings.Contains(command, "git merge --ff-only") {
 		t.Fatalf("expected branch override command, got:\n%s", command)
 	}
 }
