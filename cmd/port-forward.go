@@ -21,13 +21,15 @@ import (
 
 var portForwardCmd = &cobra.Command{
 	Use:   "port-forward [LOCAL-PORT:SERVICE:REMOTE-PORT...]",
-	Args:  cobra.ArbitraryArgs,
+	Args:  cobra.MinimumNArgs(1),
 	Short: "Forward one or more local ports to a service",
 	Long: `
-Access remote context docker service ports.
+Access a Docker Compose service without publishing its port on the host.
 
-For docker services running in remote contexts that do not have ports exposed on the host VM, accessing those services can be tricky.
-The sitectl port-forward command can help in these situations.
+Every listener is bound to 127.0.0.1. Remote contexts forward over SSH,
+local Linux contexts use the container network directly, and local Docker
+Desktop contexts stream through BusyBox nc inside the selected service
+container.
 
 As an example, from a local machine, accessing your stage context's traefik dashboard and solr admin UI
 could be done by running this command in the terminal:
@@ -51,9 +53,6 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 		if err != nil {
 			return err
 		}
-		if runtime.GOOS != "linux" && c.DockerHostType == config.ContextLocal {
-			return fmt.Errorf("port-forwarding on non-linux local contexts is not currently supported")
-		}
 		cli, err := docker.GetDockerCli(c)
 		if err != nil {
 			return err
@@ -62,68 +61,85 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 
 		listeners := make([]net.Listener, 0, len(args))
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
-		defer stop()
 		var wg sync.WaitGroup
+		defer func() {
+			stop()
+			for _, listener := range listeners {
+				_ = listener.Close()
+			}
+			_ = cli.Close()
+			wg.Wait()
+		}()
 
 		for _, arg := range args {
-			parts := strings.Split(arg, ":")
-			if len(parts) != 3 {
-				return fmt.Errorf("invalid port forwarding spec '%s': expected format LOCAL-PORT:SERVICE:REMOTE-PORT", arg)
-			}
-			localPortStr, service, remotePortStr := parts[0], parts[1], parts[2]
-
-			localPort, err := strconv.Atoi(localPortStr)
+			spec, err := parsePortForwardSpec(arg)
 			if err != nil {
-				return fmt.Errorf("invalid local port '%s': must be an integer", localPortStr)
-			}
-			if localPort < 1 || localPort > 65535 {
-				return fmt.Errorf("invalid local port '%s': must be between 1 and 65535", localPortStr)
-			}
-			remotePort, err := strconv.Atoi(remotePortStr)
-			if err != nil {
-				return fmt.Errorf("invalid remote port '%s': must be an integer", remotePortStr)
-			}
-			if remotePort < 1 || remotePort > 65535 {
-				return fmt.Errorf("invalid remote port '%s': must be between 1 and 65535", remotePortStr)
+				return err
 			}
 
-			addr := fmt.Sprintf("localhost:%d", localPort)
+			addr := portForwardListenAddress(spec.localPort)
 			listener, err := net.Listen("tcp", addr)
 			if err != nil {
-				return fmt.Errorf("local port %d appears to be in use: %v", localPort, err)
+				return fmt.Errorf("local port %d appears to be in use: %v", spec.localPort, err)
 			}
 			listeners = append(listeners, listener)
 
-			containerName, err := cli.GetContainerNameContext(ctx, c, service)
+			containerName, err := cli.GetContainerNameContext(ctx, c, spec.service)
 			if err != nil {
 				return err
 			}
-			serviceIp, err := cli.GetServiceIp(ctx, c, containerName)
-			if err != nil {
-				return err
+			if strings.TrimSpace(containerName) == "" {
+				return fmt.Errorf("service %q does not have a running container", spec.service)
 			}
 
-			remoteEndpoint := fmt.Sprintf("%s:%d", serviceIp, remotePort)
+			var target string
+			var transport string
+			var forwardConnection func(net.Conn)
+			if useContainerExecPortForward(runtime.GOOS, c) {
+				target = fmt.Sprintf("%s:%d", spec.service, spec.remotePort)
+				transport = "Docker exec"
+				forwardConnection = func(localConn net.Conn) {
+					forwardContainerExec(ctx, cli, localConn, containerName, spec.remotePort, cmd.ErrOrStderr())
+				}
+			} else {
+				serviceIP, err := cli.GetServiceIp(ctx, c, containerName)
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(serviceIP) == "" {
+					return fmt.Errorf("service %q does not have an address on the Compose network", spec.service)
+				}
+				target = net.JoinHostPort(serviceIP, strconv.Itoa(spec.remotePort))
+				transport = "the local Docker network"
+				if cli.SshCli != nil {
+					transport = "SSH"
+				}
+				forwardConnection = func(localConn net.Conn) {
+					forward(ctx, cli.SshCli, localConn, target, cmd.ErrOrStderr())
+				}
+			}
+
 			wg.Add(1)
-			go func(listener net.Listener, lp, remoteAddr string) {
+			go func(listener net.Listener, localPort int, remoteTarget, via string, forwardConn func(net.Conn)) {
 				defer wg.Done()
-				fmt.Fprintf(cmd.OutOrStdout(), "Forwarding localhost:%s -> %s via SSH\n", lp, remoteAddr)
+				fmt.Fprintf(cmd.OutOrStdout(), "Forwarding 127.0.0.1:%d -> %s via %s\n", localPort, remoteTarget, via)
 				for {
 					localConn, err := listener.Accept()
 					if err != nil {
 						if ctx.Err() != nil || isClosedNetworkError(err) {
 							return
 						}
-						fmt.Fprintf(cmd.ErrOrStderr(), "error accepting connection on port %s: %v\n", lp, err)
+						fmt.Fprintf(cmd.ErrOrStderr(), "error accepting connection on port %d: %v\n", localPort, err)
+						stop()
 						return
 					}
 					wg.Add(1)
 					go func() {
 						defer wg.Done()
-						forward(ctx, cli.SshCli, localConn, remoteAddr, cmd.ErrOrStderr())
+						forwardConn(localConn)
 					}()
 				}
-			}(listener, localPortStr, remoteEndpoint)
+			}(listener, spec.localPort, target, transport, forwardConnection)
 		}
 
 		<-ctx.Done()
@@ -139,6 +155,79 @@ Be sure to run Ctrl+c in your terminal when you are done to close the connection
 		wg.Wait()
 		return nil
 	},
+}
+
+type portForwardSpec struct {
+	localPort  int
+	service    string
+	remotePort int
+}
+
+func parsePortForwardSpec(value string) (portForwardSpec, error) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 {
+		return portForwardSpec{}, fmt.Errorf("invalid port forwarding spec %q: expected format LOCAL-PORT:SERVICE:REMOTE-PORT", value)
+	}
+	localPort, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return portForwardSpec{}, fmt.Errorf("invalid local port %q: must be an integer", parts[0])
+	}
+	if localPort < 1 || localPort > 65535 {
+		return portForwardSpec{}, fmt.Errorf("invalid local port %q: must be between 1 and 65535", parts[0])
+	}
+	service := strings.TrimSpace(parts[1])
+	if service == "" {
+		return portForwardSpec{}, fmt.Errorf("invalid service: must not be empty")
+	}
+	remotePort, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return portForwardSpec{}, fmt.Errorf("invalid remote port %q: must be an integer", parts[2])
+	}
+	if remotePort < 1 || remotePort > 65535 {
+		return portForwardSpec{}, fmt.Errorf("invalid remote port %q: must be between 1 and 65535", parts[2])
+	}
+	return portForwardSpec{localPort: localPort, service: service, remotePort: remotePort}, nil
+}
+
+func portForwardListenAddress(localPort int) string {
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
+}
+
+func useContainerExecPortForward(goos string, c *config.Context) bool {
+	return c != nil && c.DockerHostType == config.ContextLocal && goos != "linux"
+}
+
+type portForwardContainerExecutor interface {
+	Exec(context.Context, docker.ExecOptions) (int, error)
+}
+
+func forwardContainerExec(ctx context.Context, executor portForwardContainerExecutor, localConn net.Conn, containerName string, remotePort int, errw io.Writer) {
+	defer localConn.Close()
+	stopClose := context.AfterFunc(ctx, func() {
+		_ = localConn.Close()
+	})
+	defer stopClose()
+
+	exitCode, err := executor.Exec(ctx, docker.ExecOptions{
+		Container:    containerName,
+		Cmd:          []string{"busybox", "nc", "127.0.0.1", strconv.Itoa(remotePort)},
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		Stdin:        localConn,
+		Stdout:       localConn,
+		Stderr:       errw,
+	})
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(errw, "container port forward failed: %v (service image must provide BusyBox nc)\n", err)
+		return
+	}
+	if exitCode != 0 {
+		fmt.Fprintf(errw, "container port forward exited with status %d (service image must provide BusyBox nc)\n", exitCode)
+	}
 }
 
 func forward(ctx context.Context, client *ssh.Client, localConn net.Conn, remoteAddr string, errw io.Writer) {

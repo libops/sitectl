@@ -11,6 +11,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestComponentDescribeHelpExplainsObservedDrift(t *testing.T) {
+	t.Parallel()
+
+	if strings.Contains(componentDescribeCmd.Long, "last recorded state") {
+		t.Fatalf("component describe help must not imply persisted component state: %q", componentDescribeCmd.Long)
+	}
+	if !strings.Contains(componentDescribeCmd.Long, "does not match a complete supported disposition") {
+		t.Fatalf("component describe help must define drift against supported dispositions: %q", componentDescribeCmd.Long)
+	}
+}
+
 func TestSplitNamespacedComponent(t *testing.T) {
 	pluginName, componentName, ok := splitNamespacedComponent("isle/fcrepo")
 	if !ok {

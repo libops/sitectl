@@ -194,12 +194,21 @@ func (c *Context) runCommandContext(ctx context.Context, cmd *exec.Cmd, printOut
 	}
 
 	if err = session.Wait(); err != nil {
-		// do not mark error on sigint
-		if exitErr, ok := err.(*ssh.ExitError); ok && exitErr.ExitStatus() == 130 {
-			return output.String(), nil
-		}
-		return "", fmt.Errorf("error waiting for remote command %q: %v", remoteCmd, err)
+		return output.String(), remoteCommandWaitError(runCtx, remoteCmd, err)
 	}
 
 	return output.String(), nil
+}
+
+func remoteCommandWaitError(runCtx context.Context, remoteCmd string, waitErr error) error {
+	if waitErr == nil {
+		return nil
+	}
+	// Do not special-case exit status 130. It is also returned by interrupted
+	// rollout gates, and treating it as success lets deploy continue. Commands
+	// interrupted through the sitectl context retain context.Canceled below.
+	if ctxErr := runCtx.Err(); ctxErr != nil {
+		return fmt.Errorf("remote command %q canceled: %w", remoteCmd, ctxErr)
+	}
+	return fmt.Errorf("error waiting for remote command %q: %w", remoteCmd, waitErr)
 }

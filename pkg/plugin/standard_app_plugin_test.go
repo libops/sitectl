@@ -83,3 +83,26 @@ func TestRegisterStandardComposeAppPlugin(t *testing.T) {
 		t.Fatalf("claim reason = %q, want wordpress service", got)
 	}
 }
+
+func TestRegisterStandardComposeAppPluginCanOmitDevMode(t *testing.T) {
+	t.Parallel()
+
+	sdk := NewSDK(Metadata{Name: "bundled-app"})
+	err := sdk.RegisterStandardComposeAppPlugin(StandardComposeAppPluginOptions{
+		AppService:     "bundled-app",
+		DisableDevMode: true,
+		CreateSpec: CreateSpec{
+			Name:    "default",
+			Default: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RegisterStandardComposeAppPlugin() error = %v", err)
+	}
+	if len(sdk.serviceComponents) != 1 {
+		t.Fatalf("registered service components = %d, want ingress only", len(sdk.serviceComponents))
+	}
+	if sdk.serviceComponents[0].Name() != "ingress" {
+		t.Fatalf("registered component = %q, want ingress", sdk.serviceComponents[0].Name())
+	}
+}

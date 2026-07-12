@@ -2,10 +2,13 @@ package config
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -370,25 +373,91 @@ func (a *FileAccessor) UploadFile(source, destination string) error {
 		if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
 			return err
 		}
-		remoteFile, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- destination is an explicit caller-selected upload target.
-		if err != nil {
-			return err
-		}
-		defer remoteFile.Close()
-		_, err = io.Copy(remoteFile, localFile)
-		return err
+		return atomicCopyLocal(localFile, destination)
 	}
 
-	if err := mkdirAllRemote(a.sftp, filepath.Dir(destination)); err != nil {
+	if err := mkdirAllRemote(a.sftp, path.Dir(destination)); err != nil {
 		return err
 	}
-	remoteFile, err := a.sftp.Create(destination)
+	tempDestination, err := remoteUploadTempPath(destination)
 	if err != nil {
 		return err
 	}
-	defer remoteFile.Close()
-	_, err = io.Copy(remoteFile, localFile)
-	return err
+	remoteFile, err := a.sftp.OpenFile(tempDestination, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		_ = remoteFile.Close()
+		if !committed {
+			_ = a.sftp.Remove(tempDestination)
+		}
+	}()
+	if err := a.sftp.Chmod(tempDestination, 0o600); err != nil {
+		return err
+	}
+	if _, err := io.Copy(remoteFile, localFile); err != nil {
+		return err
+	}
+	if err := remoteFile.Sync(); err != nil {
+		return err
+	}
+	if err := remoteFile.Close(); err != nil {
+		return err
+	}
+	if err := a.sftp.PosixRename(tempDestination, destination); err != nil {
+		return fmt.Errorf("atomically publish remote upload: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func atomicCopyLocal(source io.Reader, destination string) (err error) {
+	directory := filepath.Dir(destination)
+	temp, err := os.CreateTemp(directory, "."+filepath.Base(destination)+".sitectl-upload-*") // #nosec G304 -- destination is an explicit caller-selected upload target.
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		if err != nil {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err = temp.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err = io.Copy(temp, source); err != nil {
+		return err
+	}
+	if err = temp.Sync(); err != nil {
+		return err
+	}
+	if err = temp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tempPath, destination); err != nil {
+		return err
+	}
+	directoryHandle, openErr := os.Open(directory) // #nosec G304 -- directory is derived from the explicit caller-selected upload target.
+	if openErr != nil {
+		return openErr
+	}
+	defer directoryHandle.Close()
+	if err = directoryHandle.Sync(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func remoteUploadTempPath(destination string) (string, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("generate remote upload name: %w", err)
+	}
+	return path.Join(path.Dir(destination), "."+path.Base(destination)+".sitectl-upload-"+hex.EncodeToString(random)), nil
 }
 
 func readAllLimited(r io.Reader, limit int64) ([]byte, error) {

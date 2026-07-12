@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -47,6 +48,30 @@ func TestRunDeployCycleUpdatesGitBeforeStoppingSite(t *testing.T) {
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("deploy events = %#v, want %#v", events, want)
+	}
+}
+
+func TestRunDeployCycleUsesExactRefUpdater(t *testing.T) {
+	restore := stubDeployCycle(t)
+	defer restore()
+
+	var gotRef string
+	deployRunGitUpdate = func(*cobra.Command, config.Context, string) error {
+		t.Fatal("branch updater called for an exact ref")
+		return nil
+	}
+	deployRunGitRefUpdate = func(_ *cobra.Command, _ config.Context, ref string) error {
+		gotRef = ref
+		return nil
+	}
+	deployResolveRollout = func(string) ([]string, bool, error) { return nil, false, nil }
+	deployRunContextCompose = func(*cobra.Command, config.Context, []string) error { return nil }
+
+	if err := runDeployCycle(&cobra.Command{}, "prod", config.Context{}, "core", false, deployCycleOptions{Ref: "refs/pull/42/head"}); err != nil {
+		t.Fatalf("runDeployCycle() error = %v", err)
+	}
+	if gotRef != "refs/pull/42/head" {
+		t.Fatalf("exact ref = %q", gotRef)
 	}
 }
 
@@ -251,6 +276,58 @@ func TestRunDeployCycleRolloutResolutionFailureLeavesSiteRunning(t *testing.T) {
 	}
 }
 
+func TestRunDeployCycleStopsAfterRolloutGateFailure(t *testing.T) {
+	restore := stubDeployCycle(t)
+	defer restore()
+
+	exitErr := &testDeployExitError{status: 130}
+	var events []string
+	deployRunGitUpdate = func(*cobra.Command, config.Context, string) error { return nil }
+	deployResolveRollout = func(string) ([]string, bool, error) {
+		return []string{"docker compose exec -T app migrate", "docker compose up -d"}, true, nil
+	}
+	deployRunHook = func(_ *cobra.Command, _, _, hook string) error {
+		events = append(events, "hook:"+hook)
+		if hook == "post-up" {
+			t.Fatal("post-up hook ran after failed rollout gate")
+		}
+		return nil
+	}
+	deployRunContextCompose = func(_ *cobra.Command, _ config.Context, args []string) error {
+		events = append(events, "compose:"+strings.Join(args, " "))
+		return nil
+	}
+	deployRunComposeRollout = func(_ *cobra.Command, _ *config.Context, commands []string, _ bool) error {
+		events = append(events, "rollout:"+strings.Join(commands, ","))
+		return exitErr
+	}
+
+	err := runDeployCycle(&cobra.Command{}, "prod", config.Context{}, "app", true, deployCycleOptions{})
+	if !errors.Is(err, exitErr) {
+		t.Fatalf("runDeployCycle() error = %v, want wrapped exit status 130", err)
+	}
+	want := []string{
+		"hook:pre-down",
+		"compose:down --remove-orphans",
+		"rollout:docker compose exec -T app migrate,docker compose up -d",
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("deploy events = %#v, want %#v", events, want)
+	}
+}
+
+type testDeployExitError struct {
+	status int
+}
+
+func (e *testDeployExitError) Error() string {
+	return fmt.Sprintf("Process exited with status %d", e.status)
+}
+
+func (e *testDeployExitError) ExitStatus() int {
+	return e.status
+}
+
 func TestRunDeployCycleGitFailureLeavesSiteRunning(t *testing.T) {
 	restore := stubDeployCycle(t)
 	defer restore()
@@ -279,12 +356,14 @@ func TestRunDeployCycleGitFailureLeavesSiteRunning(t *testing.T) {
 func stubDeployCycle(t *testing.T) func() {
 	t.Helper()
 	oldGit := deployRunGitUpdate
+	oldGitRef := deployRunGitRefUpdate
 	oldCompose := deployRunContextCompose
 	oldHook := deployRunHook
 	oldResolve := deployResolveRollout
 	oldRollout := deployRunComposeRollout
 	return func() {
 		deployRunGitUpdate = oldGit
+		deployRunGitRefUpdate = oldGitRef
 		deployRunContextCompose = oldCompose
 		deployRunHook = oldHook
 		deployResolveRollout = oldResolve

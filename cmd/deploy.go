@@ -15,6 +15,7 @@ import (
 
 var (
 	deployBranch  string
+	deployRef     string
 	deployNoPull  bool
 	deploySkipGit bool
 )
@@ -34,12 +35,16 @@ The deploy sequence runs:
      otherwise docker compose up -d --remove-orphans
   6. Plugin post-up hooks (if the context plugin registers a deploy runner)
 
-The --branch flag checks out a branch before the git pull step.
-If omitted, sitectl updates the current branch when it has a git upstream.
+The --branch flag fetches and checks out a named remote branch before a
+fast-forward merge. The --ref flag fetches an exact remote ref (including a
+pull-request ref or advertised commit) and checks it out detached without
+rewriting a local branch. If both are omitted, sitectl updates the current
+branch when it has a git upstream.
 
 Examples:
   sitectl deploy                         # Deploy the current upstream branch
   sitectl deploy --branch main           # Switch to main and deploy
+  sitectl deploy --ref refs/pull/123/head # Deploy an exact pull-request ref
   sitectl deploy --skip-git              # Restart services without pulling git changes
   sitectl deploy --context prod          # Deploy on a specific context`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -59,6 +64,7 @@ Examples:
 		}
 		return runDeployCycle(cmd, contextName, ctx, pluginName, hasDeployHooks, deployCycleOptions{
 			Branch:  deployBranch,
+			Ref:     deployRef,
 			NoPull:  deployNoPull,
 			SkipGit: deploySkipGit,
 		})
@@ -67,12 +73,14 @@ Examples:
 
 type deployCycleOptions struct {
 	Branch  string
+	Ref     string
 	NoPull  bool
 	SkipGit bool
 }
 
 var (
 	deployRunGitUpdate      = runGitUpdate
+	deployRunGitRefUpdate   = runGitRefUpdate
 	deployRunContextCompose = runContextCompose
 	deployRunHook           = invokeDeployHook
 	deployResolveRollout    = pluginComposeRollout
@@ -83,8 +91,14 @@ func runDeployCycle(cmd *cobra.Command, contextName string, ctx config.Context, 
 	// checkout, or pull failure therefore cannot turn an update failure into an
 	// outage.
 	if !opts.SkipGit {
-		slog.Debug("running git update", "context", contextName, "branch", strings.TrimSpace(opts.Branch))
-		if err := deployRunGitUpdate(cmd, ctx, opts.Branch); err != nil {
+		slog.Debug("running git update", "context", contextName, "branch", strings.TrimSpace(opts.Branch), "ref", strings.TrimSpace(opts.Ref))
+		var err error
+		if strings.TrimSpace(opts.Ref) != "" {
+			err = deployRunGitRefUpdate(cmd, ctx, opts.Ref)
+		} else {
+			err = deployRunGitUpdate(cmd, ctx, opts.Branch)
+		}
+		if err != nil {
 			return fmt.Errorf("git update failed: %w", err)
 		}
 	}
@@ -151,6 +165,8 @@ func runDeployCycle(cmd *cobra.Command, contextName string, ctx config.Context, 
 
 func init() {
 	deployCmd.Flags().StringVar(&deployBranch, "branch", "", "Git branch to check out during the deploy (default: current branch)")
+	deployCmd.Flags().StringVar(&deployRef, "ref", "", "Exact remote Git ref or advertised commit to fetch and deploy detached")
+	deployCmd.MarkFlagsMutuallyExclusive("branch", "ref")
 	deployCmd.Flags().BoolVar(&deployNoPull, "no-pull", false, "Skip explicit docker compose pull steps (build --pull is unaffected)")
 	deployCmd.Flags().BoolVar(&deploySkipGit, "skip-git", false, "Skip the git fetch/checkout step")
 	deployCmd.GroupID = "workflow"
@@ -206,13 +222,6 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 		}
 	}
 
-	cmdArgs := []string{"compose"}
-	for _, f := range ctx.ComposeFile {
-		cmdArgs = append(cmdArgs, "-f", f)
-	}
-	for _, e := range ctx.EnvFile {
-		cmdArgs = append(cmdArgs, "--env-file", e)
-	}
 	// Auto-add -d --remove-orphans for up if not already present.
 	if len(args) > 0 && args[0] == "up" {
 		if !slices.Contains(args, "-d") && !slices.Contains(args, "--detach") {
@@ -228,6 +237,13 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 			}
 		}
 	}
+	commandName := ""
+	if len(args) > 0 {
+		commandName = args[0]
+	}
+	cmdArgs := []string{"compose"}
+	cmdArgs = append(cmdArgs, ctx.DockerComposeGlobalArgsForCommand(commandName)...)
+	args = ctx.DockerComposeSubcommandArgs(args)
 	cmdArgs = append(cmdArgs, args...)
 
 	c := exec.Command("docker", cmdArgs...)
@@ -249,6 +265,14 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 // runGitUpdate fast-forwards the checkout from its configured upstream branch.
 func runGitUpdate(cmd *cobra.Command, ctx config.Context, branch string) error {
 	command := ctx.GitSyncShellCommand(branch)
+	syncCmd := exec.Command("bash", "-lc", command) // #nosec G204 -- command text is assembled from context values using shell quoting.
+	syncCmd.Dir = ctx.ProjectDir
+	_, err := ctx.RunCommandContext(cmd.Context(), syncCmd)
+	return err
+}
+
+func runGitRefUpdate(cmd *cobra.Command, ctx config.Context, ref string) error {
+	command := ctx.GitSyncRefShellCommand(ref)
 	syncCmd := exec.Command("bash", "-lc", command) // #nosec G204 -- command text is assembled from context values using shell quoting.
 	syncCmd.Dir = ctx.ProjectDir
 	_, err := ctx.RunCommandContext(cmd.Context(), syncCmd)
