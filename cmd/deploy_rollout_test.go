@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -129,5 +132,39 @@ func TestRunDeployComposeRolloutPropagatesCommandFailure(t *testing.T) {
 	err := runDeployComposeRollout(cmd, ctx, []string{"exit 23"}, false)
 	if err == nil || !strings.Contains(err.Error(), "exit 23") {
 		t.Fatalf("runDeployComposeRollout() error = %v, want command failure", err)
+	}
+}
+
+func TestRunDeployComposeRolloutHonorsContextComposeFiles(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "docker-args.txt")
+	projectDir := t.TempDir()
+	ctx := &config.Context{
+		DockerHostType: config.ContextLocal,
+		ProjectDir:     projectDir,
+		ComposeFile:    []string{"compose.yaml", "compose production.yaml"},
+		EnvFile:        []string{".env"},
+	}
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	command := fmt.Sprintf("docker() { printf '%%s\\n' \"$*\" > %q; }; docker compose ps", logPath)
+	if err := runDeployComposeRollout(cmd, ctx, []string{command}, false); err != nil {
+		t.Fatalf("runDeployComposeRollout() error = %v", err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile(docker log) error = %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	for _, expected := range []string{
+		"compose",
+		"-f " + filepath.Join(projectDir, "compose.yaml"),
+		"-f " + filepath.Join(projectDir, "compose production.yaml"),
+		"--env-file " + filepath.Join(projectDir, ".env"),
+		"ps",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("docker arguments = %q, want %q", got, expected)
+		}
 	}
 }

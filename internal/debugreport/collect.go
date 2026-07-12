@@ -533,8 +533,8 @@ func runRemoteCommandWithSSH(runCtx context.Context, ctxCfg *config.Context, ssh
 		return "", fmt.Errorf("error starting remote command %q: %v", remoteCmd, err)
 	}
 	if err := session.Wait(); err != nil {
-		if exitErr, ok := err.(*ssh.ExitError); ok && exitErr.ExitStatus() == 130 {
-			return strings.TrimRight(stdout.String()+stderr.String(), "\n"), nil
+		if ctxErr := runCtx.Err(); ctxErr != nil {
+			return strings.TrimRight(stdout.String()+stderr.String(), "\n"), fmt.Errorf("remote command %q canceled: %w", remoteCmd, ctxErr)
 		}
 		combined := strings.TrimSpace(strings.Join([]string{stdout.String(), stderr.String()}, "\n"))
 		if combined != "" {

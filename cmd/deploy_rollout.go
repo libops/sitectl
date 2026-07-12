@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/kballard/go-shellquote"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/spf13/cobra"
 )
@@ -44,11 +45,12 @@ func runDeployComposeRollout(cmd *cobra.Command, ctx *config.Context, commands [
 			continue
 		}
 
+		composeUp := isDockerComposeSubcommand(commandText, "up")
 		commandText = ctx.DockerComposeShellCommand(commandText)
 		fmt.Fprintf(cmd.OutOrStdout(), "Running %s\n", commandText)
 		command := exec.Command("bash", "-lc", commandText) // #nosec G204 -- commands come from trusted plugin create metadata.
 		command.Dir = ctx.ProjectDir
-		if isDockerComposeSubcommand(commandText, "up") {
+		if composeUp {
 			envValues, messages, err := ctx.PrepareComposeUpPortOverride()
 			if err != nil {
 				return err
@@ -108,7 +110,10 @@ func isDockerComposePreparationCommand(command string) bool {
 // subcommand. This deliberately does not treat `docker compose build --pull`
 // as a pull command when deploy --no-pull is set.
 func isDockerComposeSubcommand(command, want string) bool {
-	fields := strings.Fields(strings.TrimSpace(command))
+	fields, err := shellquote.Split(strings.TrimSpace(command))
+	if err != nil {
+		return false
+	}
 	if len(fields) < 3 || fields[0] != "docker" || fields[1] != "compose" {
 		return false
 	}

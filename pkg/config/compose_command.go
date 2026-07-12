@@ -23,15 +23,14 @@ func (c Context) DockerComposeGlobalArgs() []string {
 }
 
 func (c Context) DockerComposeGlobalArgsForCommand(command string) []string {
-	if strings.TrimSpace(command) == "build" {
-		return nil
-	}
 	dockerProjectDir := c.dockerComposeTranslatedProjectDir()
-	if dockerProjectDir == "" {
-		return nil
+	args := []string{}
+	// The translated daemon-side project directory is only valid for commands
+	// whose paths are resolved by the daemon. Build contexts are read by the
+	// local Compose client, where the translated host path may not exist.
+	if strings.TrimSpace(command) != "build" && dockerProjectDir != "" {
+		args = append(args, "--project-directory", dockerProjectDir)
 	}
-
-	args := []string{"--project-directory", dockerProjectDir}
 	for _, file := range c.composeCommandFiles() {
 		args = append(args, "-f", file)
 	}
@@ -47,26 +46,266 @@ func (c Context) DockerComposeSubcommandArgs(args []string) []string {
 	return dockerComposeSubcommandArgs(args, c.dockerComposeTranslatedProjectDir() != "")
 }
 
-// DockerComposeShellCommand rewrites simple "docker compose ..." shell command
-// strings so Docker receives bind-mount paths visible from the daemon host.
+// DockerComposeShellCommand rewrites executable "docker compose ..." commands
+// in a shell list so they honor the context's Compose and environment files.
+// It also supplies daemon-visible project paths for local sshfs workspaces.
 func (c Context) DockerComposeShellCommand(command string) string {
-	leading, tail, ok := splitDockerComposeShellCommand(command)
+	separators, ok := shellCommandListSeparators(command)
 	if !ok {
 		return command
 	}
-	tail = strings.TrimLeft(tail, " \t")
-	fields, err := shellquote.Split(tail)
-	if err != nil || len(fields) == 0 {
-		return command
+	var rewritten strings.Builder
+	segmentStart := 0
+	for _, separator := range separators {
+		rewritten.WriteString(c.rewriteDockerComposeShellSegment(command[segmentStart:separator.start]))
+		rewritten.WriteString(command[separator.start:separator.end])
+		segmentStart = separator.end
 	}
-	subcommand := fields[0]
+	rewritten.WriteString(c.rewriteDockerComposeShellSegment(command[segmentStart:]))
+	return rewritten.String()
+}
+
+type shellCommandSeparator struct {
+	start int
+	end   int
+}
+
+// shellCommandListSeparators finds unquoted command-list separators. A
+// malformed quoted string is left completely unchanged instead of attempting
+// a partial rewrite.
+func shellCommandListSeparators(command string) ([]shellCommandSeparator, bool) {
+	separators := []shellCommandSeparator{}
+	quote := byte(0)
+	escaped := false
+	for index := 0; index < len(command); index++ {
+		value := command[index]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote != '\'' && value == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if value == quote {
+				quote = 0
+			}
+			continue
+		}
+		if value == '\'' || value == '"' {
+			quote = value
+			continue
+		}
+		if index+1 < len(command) && (command[index:index+2] == "&&" || command[index:index+2] == "||") {
+			separators = append(separators, shellCommandSeparator{start: index, end: index + 2})
+			index++
+			continue
+		}
+		if index+1 < len(command) && command[index:index+2] == "|&" {
+			separators = append(separators, shellCommandSeparator{start: index, end: index + 2})
+			index++
+			continue
+		}
+		if value == ';' || value == '\n' || value == '|' {
+			separators = append(separators, shellCommandSeparator{start: index, end: index + 1})
+		}
+	}
+	return separators, quote == 0 && !escaped
+}
+
+type shellCommandWord struct {
+	value string
+	start int
+	end   int
+}
+
+func shellCommandWords(command string) ([]shellCommandWord, bool) {
+	words := []shellCommandWord{}
+	wordStart := -1
+	quote := byte(0)
+	escaped := false
+	valid := true
+	appendWord := func(end int) {
+		if wordStart < 0 {
+			return
+		}
+		raw := command[wordStart:end]
+		fields, err := shellquote.Split(raw)
+		if err != nil || len(fields) != 1 {
+			valid = false
+			wordStart = -1
+			return
+		}
+		words = append(words, shellCommandWord{value: fields[0], start: wordStart, end: end})
+		wordStart = -1
+	}
+	for index := 0; index < len(command); index++ {
+		value := command[index]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote != '\'' && value == '\\' {
+			if wordStart < 0 {
+				wordStart = index
+			}
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if value == quote {
+				quote = 0
+			}
+			continue
+		}
+		if value == '\'' || value == '"' {
+			if wordStart < 0 {
+				wordStart = index
+			}
+			quote = value
+			continue
+		}
+		// Command-list operators have already been split. Other unquoted shell
+		// grammar is deliberately unsupported: rewriting only part of a
+		// redirection, subshell, function, or background command is unsafe.
+		if strings.ContainsRune("&<>();{}", rune(value)) {
+			return nil, false
+		}
+		if isShellSpace(value) || value == '\r' || value == '\n' {
+			appendWord(index)
+			continue
+		}
+		if wordStart < 0 {
+			wordStart = index
+		}
+	}
+	appendWord(len(command))
+	return words, valid && quote == 0 && !escaped
+}
+
+func (c Context) rewriteDockerComposeShellSegment(segment string) string {
+	words, ok := shellCommandWords(segment)
+	if !ok {
+		return segment
+	}
+	dockerIndex := dockerComposeCommandWordIndex(words)
+	if dockerIndex < 0 || dockerIndex+2 >= len(words) {
+		return segment
+	}
+	subcommandIndex := dockerComposeSubcommandWordIndex(words, dockerIndex+2)
+	if subcommandIndex < 0 {
+		return segment
+	}
+	subcommand := words[subcommandIndex].value
 	globalArgs := c.DockerComposeGlobalArgsForCommand(subcommand)
-	if len(globalArgs) == 0 {
-		return command
+	addNoBuild := c.dockerComposeTranslatedProjectDir() != "" && subcommand == "up" && !hasComposeBuildOption(words[subcommandIndex+1:])
+	if len(globalArgs) == 0 && !addNoBuild {
+		return segment
 	}
-	normalized := c.DockerComposeSubcommandArgs(fields)
-	addNoBuild := len(normalized) > len(fields) && normalized[len(normalized)-1] == "--no-build"
-	return rewriteDockerComposeShellCommand(leading, tail, globalArgs, addNoBuild)
+
+	composeEnd := words[dockerIndex+1].end
+	var rewritten strings.Builder
+	rewritten.WriteString(segment[:composeEnd])
+	if len(globalArgs) > 0 {
+		rewritten.WriteByte(' ')
+		rewritten.WriteString(shellquote.Join(globalArgs...))
+	}
+	if addNoBuild {
+		rewritten.WriteString(segment[composeEnd:words[subcommandIndex].end])
+		rewritten.WriteString(" --no-build")
+		rewritten.WriteString(segment[words[subcommandIndex].end:])
+	} else {
+		rewritten.WriteString(segment[composeEnd:])
+	}
+	return rewritten.String()
+}
+
+func dockerComposeCommandWordIndex(words []shellCommandWord) int {
+	for index := 0; index+1 < len(words); index++ {
+		if words[index].value != "docker" || words[index+1].value != "compose" {
+			continue
+		}
+		if shellCommandPrefixAllowed(words[:index]) {
+			return index
+		}
+	}
+	return -1
+}
+
+func shellCommandPrefixAllowed(words []shellCommandWord) bool {
+	index := 0
+	for index < len(words) && isShellAssignment(words[index].value) {
+		index++
+	}
+	if index == len(words) {
+		return true
+	}
+	switch words[index].value {
+	case "command", "exec":
+		index++
+	case "env":
+		index++
+		for index < len(words) && (isShellAssignment(words[index].value) || isSimpleEnvOption(words[index].value)) {
+			index++
+		}
+	case "sudo":
+		index++
+		for index < len(words) && (words[index].value == "-n" || words[index].value == "--non-interactive") {
+			index++
+		}
+	default:
+		return false
+	}
+	return index == len(words)
+}
+
+func isShellAssignment(value string) bool {
+	name, _, ok := strings.Cut(value, "=")
+	if !ok || name == "" {
+		return false
+	}
+	for index, char := range name {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && char != '_' && (index == 0 || char < '0' || char > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func isSimpleEnvOption(value string) bool {
+	return value == "-i" || value == "--ignore-environment" || strings.HasPrefix(value, "--chdir=") || strings.HasPrefix(value, "--unset=")
+}
+
+func dockerComposeSubcommandWordIndex(words []shellCommandWord, start int) int {
+	for index := start; index < len(words); index++ {
+		option := words[index].value
+		if !strings.HasPrefix(option, "-") {
+			return index
+		}
+		if composeGlobalOptionTakesValue(option) && !strings.Contains(option, "=") {
+			index++
+		}
+	}
+	return -1
+}
+
+func composeGlobalOptionTakesValue(option string) bool {
+	switch option {
+	case "--ansi", "--env-file", "-f", "--file", "--parallel", "--profile", "--progress", "--project-directory", "-p", "--project-name":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasComposeBuildOption(words []shellCommandWord) bool {
+	for _, word := range words {
+		if word.value == "--build" || strings.HasPrefix(word.value, "--build=") || word.value == "--no-build" || strings.HasPrefix(word.value, "--no-build=") {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Context) dockerComposeTranslatedProjectDir() string {
@@ -91,27 +330,6 @@ func dockerComposeSubcommandArgs(args []string, translatedProjectDir bool) []str
 		}
 	}
 	return append(out, "--no-build")
-}
-
-func splitDockerComposeShellCommand(command string) (leading, tail string, ok bool) {
-	trimmed := strings.TrimLeft(command, " \t")
-	leading = command[:len(command)-len(trimmed)]
-	if !strings.HasPrefix(trimmed, "docker") {
-		return "", "", false
-	}
-	afterDocker := strings.TrimPrefix(trimmed, "docker")
-	if afterDocker == "" || !isShellSpace(afterDocker[0]) {
-		return "", "", false
-	}
-	afterDocker = strings.TrimLeft(afterDocker, " \t")
-	if !strings.HasPrefix(afterDocker, "compose") {
-		return "", "", false
-	}
-	afterCompose := strings.TrimPrefix(afterDocker, "compose")
-	if afterCompose != "" && !isShellSpace(afterCompose[0]) {
-		return "", "", false
-	}
-	return leading, afterCompose, true
 }
 
 func rewriteDockerComposeShellCommand(leading, tail string, globalArgs []string, addNoBuild bool) string {

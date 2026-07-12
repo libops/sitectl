@@ -47,6 +47,8 @@ type StandardComposeCommandOptions struct {
 	RolloutCommand  string
 }
 
+var runComposeProjectRemoteShellCommandContext = runRemoteShellCommandContext
+
 // StandardComposeTemplateOptions configures the SDK's standard Compose
 // template create runner and lifecycle commands from one application spec.
 type StandardComposeTemplateOptions struct {
@@ -405,21 +407,22 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}
+	composeUp := isComposeProjectUpCommand(command)
+	command = ctx.DockerComposeShellCommand(command)
 	if ctx.DockerHostType == config.ContextRemote {
 		remoteCommand := command
 		if strings.TrimSpace(projectDir) != "" {
 			remoteCommand = fmt.Sprintf("cd %s && %s", shellQuote(projectDir), command)
 		}
-		_, err := runRemoteShellCommandContext(runCtx, ctx, stdout, stderr, remoteCommand)
+		_, err := runComposeProjectRemoteShellCommandContext(runCtx, ctx, stdout, stderr, remoteCommand)
 		return err
 	}
-	command = ctx.DockerComposeShellCommand(command)
 	localCmd := exec.CommandContext(runCtx, "bash", "-lc", command) // #nosec G204 -- command text is assembled from template-owned command lists and shell-quoted inputs.
 	localCmd.Dir = projectDir
 	localCmd.Stdout = stdout
 	localCmd.Stderr = stderr
 	localCmd.Env = os.Environ()
-	if isComposeProjectUpCommand(command) {
+	if composeUp {
 		envValues, messages, err := ctx.PrepareComposeUpPortOverride()
 		if err != nil {
 			return err

@@ -222,13 +222,6 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 		}
 	}
 
-	cmdArgs := []string{"compose"}
-	for _, f := range ctx.ComposeFile {
-		cmdArgs = append(cmdArgs, "-f", f)
-	}
-	for _, e := range ctx.EnvFile {
-		cmdArgs = append(cmdArgs, "--env-file", e)
-	}
 	// Auto-add -d --remove-orphans for up if not already present.
 	if len(args) > 0 && args[0] == "up" {
 		if !slices.Contains(args, "-d") && !slices.Contains(args, "--detach") {
@@ -244,6 +237,13 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 			}
 		}
 	}
+	commandName := ""
+	if len(args) > 0 {
+		commandName = args[0]
+	}
+	cmdArgs := []string{"compose"}
+	cmdArgs = append(cmdArgs, ctx.DockerComposeGlobalArgsForCommand(commandName)...)
+	args = ctx.DockerComposeSubcommandArgs(args)
 	cmdArgs = append(cmdArgs, args...)
 
 	c := exec.Command("docker", cmdArgs...)
