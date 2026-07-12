@@ -94,8 +94,9 @@ var componentDescribeCmd = &cobra.Command{
 	Short:   "Show the current state of each component",
 	Long: `Show the current state of each component registered by the active context's plugin.
 
-Each component is reported as on, off, or drifted. A drifted component means the project files no
-longer match the last recorded state — run reconcile to bring them back into alignment.`,
+Each component is reported as on, off, or drifted. A drifted component means the current project
+configuration does not match a complete supported disposition — run reconcile to review and bring
+it into alignment.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName, owner, name, err := resolveComponentOwner(cmd, componentDescribeName)
 		if err != nil {

@@ -23,13 +23,14 @@ type StandardComposeAppPluginOptions struct {
 	CreateOptions        ComposeTemplateCreateOptions
 	IngressOptions       coretraefik.IngressOptions
 	DevModeOptions       coredevmode.Options
+	DisableDevMode       bool
 	Healthcheck          HealthcheckRunner
 	IngressRouteProvider IngressRouteProvider
 	ExtraComponents      []corecomponent.ComposeServiceComponent
 }
 
 // RegisterStandardComposeAppPlugin registers discovery, template create,
-// ingress, dev-mode, healthcheck, and route discovery for a standard
+// ingress, optional dev-mode, healthcheck, and route discovery for a standard
 // compose-backed web application plugin.
 func (s *SDK) RegisterStandardComposeAppPlugin(opts StandardComposeAppPluginOptions) error {
 	if s == nil {
@@ -120,16 +121,18 @@ func standardComposeAppComponents(appService string, opts StandardComposeAppPlug
 		return nil, fmt.Errorf("build %s ingress component: %w", appService, err)
 	}
 
-	devModeOptions := opts.DevModeOptions
-	if strings.TrimSpace(devModeOptions.AppService) == "" {
-		devModeOptions.AppService = appService
+	components := []corecomponent.ComposeServiceComponent{ingress}
+	if !opts.DisableDevMode {
+		devModeOptions := opts.DevModeOptions
+		if strings.TrimSpace(devModeOptions.AppService) == "" {
+			devModeOptions.AppService = appService
+		}
+		devMode, err := coredevmode.Component(devModeOptions)
+		if err != nil {
+			return nil, fmt.Errorf("build %s dev-mode component: %w", appService, err)
+		}
+		components = append(components, devMode)
 	}
-	devMode, err := coredevmode.Component(devModeOptions)
-	if err != nil {
-		return nil, fmt.Errorf("build %s dev-mode component: %w", appService, err)
-	}
-
-	components := []corecomponent.ComposeServiceComponent{ingress, devMode}
 	components = append(components, opts.ExtraComponents...)
 	return components, nil
 }
