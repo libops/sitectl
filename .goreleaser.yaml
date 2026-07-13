@@ -47,6 +47,7 @@ brews:
     repository:
       owner: libops
       name: homebrew
+      token: "{{ .Env.HOMEBREW_REPO_TOKEN }}"
 nfpms:
   - id: sitectl
     package_name: sitectl
