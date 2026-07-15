@@ -591,6 +591,9 @@ func runPluginRPCPath(pluginName, pluginPath string, req RPCRequest, opts plugin
 	if width, ok := terminalColumns(); ok {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("COLUMNS=%d", width))
 	}
+	// Reserved build identity values always come from the running sitectl host,
+	// never from inherited environment or internal RPC options.
+	cmd.Env = filterHostBuildEnvironment(cmd.Env)
 	cmd.WaitDelay = pluginRPCProcessWaitDelay
 
 	stdout := newLimitedRPCBuffer(maxRPCResponseBytes)

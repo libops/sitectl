@@ -68,6 +68,7 @@ func Execute() {
 
 func SetVersionInfo(version, commit, date string) {
 	RootCmd.Version = fmt.Sprintf("%s (Built on %s from Git SHA %s)", version, date, commit)
+	plugin.SetHostBuildInfo(version, commit)
 }
 
 func init() {

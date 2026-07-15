@@ -25,7 +25,11 @@ var hasGitRepositoryFunc = hasGitRepository
 var gitRemoteExistsFunc = gitRemoteExists
 
 func (s *SDK) CloneTemplateRepo(opts GitTemplateOptions) error {
-	return CloneTemplateRepo(opts)
+	if s == nil {
+		return fmt.Errorf("plugin sdk is not initialized")
+	}
+	sitectl, plugins := s.templateLockPackages()
+	return cloneTemplateRepo(opts, sitectl, plugins)
 }
 
 func (s *SDK) ConfigureTemplateRemotes(opts GitTemplateOptions) error {
@@ -33,9 +37,15 @@ func (s *SDK) ConfigureTemplateRemotes(opts GitTemplateOptions) error {
 }
 
 func CloneTemplateRepo(opts GitTemplateOptions) error {
-	if opts.TemplateRepo == "" {
-		return fmt.Errorf("template repo cannot be empty")
+	return cloneTemplateRepo(opts, nil, nil)
+}
+
+func cloneTemplateRepo(opts GitTemplateOptions, sitectl *templateLockPackage, plugins []templateLockPackage) error {
+	templateRepo, err := validateTemplateRepository(opts.TemplateRepo)
+	if err != nil {
+		return err
 	}
+	opts.TemplateRepo = templateRepo
 	if opts.ProjectDir == "" {
 		return fmt.Errorf("project directory cannot be empty")
 	}
@@ -53,7 +63,7 @@ func CloneTemplateRepo(opts GitTemplateOptions) error {
 	if opts.TemplateBranch != "" {
 		args = append(args, "--branch", opts.TemplateBranch)
 	}
-	args = append(args, opts.TemplateRepo, opts.ProjectDir)
+	args = append(args, "--", opts.TemplateRepo, opts.ProjectDir)
 	stdout, stderr := io.Writer(os.Stdout), io.Writer(os.Stderr)
 	if opts.Quiet {
 		stdout = io.Discard
@@ -62,11 +72,22 @@ func CloneTemplateRepo(opts GitTemplateOptions) error {
 	if err := runGitCommand(stdout, stderr, "git", args...); err != nil {
 		return fmt.Errorf("clone template repo %q: %w", opts.TemplateRepo, err)
 	}
+	metadata, err := inspectLocalTemplateCheckout(opts.ProjectDir)
+	if err != nil {
+		return err
+	}
+	lock, err := buildTemplateLock(opts.TemplateRepo, metadata, sitectl, plugins)
+	if err != nil {
+		return err
+	}
 
 	if err := os.RemoveAll(filepath.Join(opts.ProjectDir, ".git")); err != nil {
 		return fmt.Errorf("remove template git history: %w", err)
 	}
 	if err := initializeTemplateRepo(opts, stdout, stderr); err != nil {
+		return err
+	}
+	if err := writeTemplateLockAtomic(opts.ProjectDir, lock); err != nil {
 		return err
 	}
 	if opts.GitRemoteURL == "" {
@@ -142,17 +163,7 @@ func runGitCommandWithIO(stdout, stderr io.Writer, name string, args ...string) 
 	cmd := exec.Command(name, args...) // #nosec G204 -- helper is used for fixed git invocations assembled by sitectl.
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	cmd.Dir = workingDirFromArgs(args)
 	return cmd.Run()
-}
-
-func workingDirFromArgs(args []string) string {
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == "-C" {
-			return filepath.Clean(args[i+1])
-		}
-	}
-	return ""
 }
 
 func hasGitRepository(projectDir string) (bool, error) {
