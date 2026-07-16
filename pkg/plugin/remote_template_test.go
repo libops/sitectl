@@ -18,6 +18,7 @@ type localRemoteTemplateConnection struct {
 	commands         [][]string
 	run              func([]string) (string, error)
 	beforeGitRemoval func(string)
+	mkdir            func(string) error
 	renameErr        error
 	closed           bool
 }
@@ -72,6 +73,9 @@ func (c *localRemoteTemplateConnection) MkdirAll(directory string) error {
 }
 
 func (c *localRemoteTemplateConnection) Mkdir(directory string) error {
+	if c.mkdir != nil {
+		return c.mkdir(directory)
+	}
 	return os.Mkdir(directory, 0o750)
 }
 
@@ -358,6 +362,81 @@ func TestRemoteTemplateCheckoutCleansRejectedCloneAndPreservesExistingRoot(t *te
 	}
 	if len(entries) != 0 {
 		t.Fatalf("rejected checkout contents remain and could bypass validation on retry: %v", entries)
+	}
+}
+
+func TestRemoteTemplateCloneFailureCleansNewProjectDirectory(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "site")
+	cloneErr := errors.New("clone failed")
+	connection := &localRemoteTemplateConnection{
+		run: func(args []string) (string, error) {
+			switch {
+			case len(args) > 1 && args[1] == "clone":
+				if err := os.WriteFile(filepath.Join(projectDir, "partial"), []byte("partial\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return "", cloneErr
+			case len(args) == 4 && args[0] == "rm" && args[3] == projectDir:
+				return "", os.RemoveAll(args[3])
+			default:
+				t.Fatalf("unexpected remote command args: %v", args)
+				return "", nil
+			}
+		},
+	}
+	useLocalRemoteTemplateConnection(t, connection)
+	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
+	ctx := &config.Context{DockerHostType: config.ContextRemote, ProjectDir: projectDir, SSHHostname: "example.invalid"}
+
+	created, err := sdk.ensureRemoteComposeTemplateCheckout(context.Background(), io.Discard, ComposeCreateRequest{
+		TemplateRepo: "git@github.com:libops/omeka-s.git",
+	}, ctx)
+	if err == nil || !strings.Contains(err.Error(), cloneErr.Error()) {
+		t.Fatalf("ensureRemoteComposeTemplateCheckout() error = %v", err)
+	}
+	if created {
+		t.Fatal("ensureRemoteComposeTemplateCheckout() created = true, want false")
+	}
+	if _, err := os.Lstat(projectDir); !os.IsNotExist(err) {
+		t.Fatalf("partial checkout remains after clone failure: %v", err)
+	}
+}
+
+func TestRemoteTemplateDirectoryClaimDoesNotDeleteConcurrentWinner(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "site")
+	marker := filepath.Join(projectDir, "concurrent")
+	connection := &localRemoteTemplateConnection{
+		mkdir: func(directory string) error {
+			if directory != projectDir {
+				t.Fatalf("claimed directory = %q, want %q", directory, projectDir)
+			}
+			if err := os.Mkdir(directory, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(marker, []byte("keep\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return os.ErrExist
+		},
+	}
+	useLocalRemoteTemplateConnection(t, connection)
+	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
+	ctx := &config.Context{DockerHostType: config.ContextRemote, ProjectDir: projectDir, SSHHostname: "example.invalid"}
+
+	created, err := sdk.ensureRemoteComposeTemplateCheckout(context.Background(), io.Discard, ComposeCreateRequest{
+		TemplateRepo: "git@github.com:libops/omeka-s.git",
+	}, ctx)
+	if err == nil || !strings.Contains(err.Error(), "claim remote project directory") {
+		t.Fatalf("ensureRemoteComposeTemplateCheckout() error = %v", err)
+	}
+	if created {
+		t.Fatal("ensureRemoteComposeTemplateCheckout() created = true, want false")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("concurrent winner was deleted: %v", err)
+	}
+	if len(connection.commands) != 0 {
+		t.Fatalf("remote commands = %v, want none", connection.commands)
 	}
 }
 

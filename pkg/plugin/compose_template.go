@@ -3,6 +3,7 @@ package plugin
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -310,29 +311,60 @@ func (s *SDK) EnsureComposeTemplateCheckoutContext(runCtx context.Context, out i
 }
 
 func (s *SDK) ensureLocalComposeTemplateCheckout(runCtx context.Context, out io.Writer, req ComposeCreateRequest, projectDir string) (bool, error) {
-	if err := runCtx.Err(); err != nil {
-		return false, err
+	projectDirExisted, notEmpty, err := localProjectDirectoryState(runCtx, projectDir)
+	if err != nil {
+		return false, fmt.Errorf("inspect project directory: %w", err)
 	}
-	entries, err := os.ReadDir(projectDir)
-	if err == nil && len(entries) > 0 {
-		return false, nil
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return false, fmt.Errorf("read project directory %q: %w", projectDir, err)
+	if notEmpty {
+		return false, fmt.Errorf("project directory %q is not empty; choose checkout source %q to use an existing checkout", projectDir, CheckoutSourceExisting)
 	}
 	if err := os.MkdirAll(filepath.Dir(projectDir), 0o750); err != nil {
 		return false, fmt.Errorf("create parent directory for %q: %w", projectDir, err)
 	}
+	ownedProjectDir := false
+	if !projectDirExisted {
+		if err := os.Mkdir(projectDir, 0o750); err != nil {
+			return false, fmt.Errorf("claim project directory %q for template checkout: %w", projectDir, err)
+		}
+		ownedProjectDir = true
+	}
 	fmt.Fprintf(out, "Cloning %s into %s\n", req.TemplateRepo, projectDir)
-	if err := s.CloneTemplateRepo(GitTemplateOptions{
+	if err := s.CloneTemplateRepoContext(runCtx, GitTemplateOptions{
 		TemplateRepo:   req.TemplateRepo,
 		TemplateBranch: req.TemplateBranch,
 		ProjectDir:     projectDir,
 		Quiet:          true,
 	}); err != nil {
+		if !ownedProjectDir {
+			return false, err
+		}
+		if cleanupErr := os.RemoveAll(projectDir); cleanupErr != nil {
+			return false, errors.Join(err, fmt.Errorf("clean up failed template checkout %q: %w", projectDir, cleanupErr))
+		}
 		return false, err
 	}
 	return true, nil
+}
+
+func localProjectDirectoryState(runCtx context.Context, projectDir string) (bool, bool, error) {
+	if err := runCtx.Err(); err != nil {
+		return false, false, err
+	}
+	info, err := os.Lstat(projectDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("inspect project directory %q: %w", projectDir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return true, false, fmt.Errorf("project directory %q must be a real directory, not a symlink or other file", projectDir)
+	}
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return false, false, fmt.Errorf("read project directory %q: %w", projectDir, err)
+	}
+	return true, len(entries) > 0, nil
 }
 
 func refreshCreateContextComposeIdentity(ctx *config.Context, req ComposeCreateRequest) error {
@@ -378,6 +410,17 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 	if err := connection.MkdirAll(path.Dir(ctx.ProjectDir)); err != nil {
 		return false, fmt.Errorf("prepare remote parent directory: %w", err)
 	}
+	ownedProjectDir := false
+	if !projectDirExisted {
+		if err := connection.Mkdir(ctx.ProjectDir); err != nil {
+			return false, fmt.Errorf("claim remote project directory %q for template checkout: %w", ctx.ProjectDir, err)
+		}
+		ownedProjectDir = true
+		if err := connection.Chmod(ctx.ProjectDir, 0o750); err != nil {
+			claimErr := fmt.Errorf("set remote project directory permissions: %w", err)
+			return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, false, claimErr)
+		}
+	}
 	cloneArgs := []string{"git", "clone"}
 	if strings.TrimSpace(req.TemplateBranch) != "" {
 		cloneArgs = append(cloneArgs, "--branch", req.TemplateBranch)
@@ -385,20 +428,24 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 	cloneArgs = append(cloneArgs, "--", templateRepo, ctx.ProjectDir)
 	fmt.Fprintf(out, "Cloning %s into %s on %s\n", templateRepo, ctx.ProjectDir, ctx.SSHHostname)
 	if _, err := connection.Run(runCtx, io.Discard, nil, cloneArgs...); err != nil {
-		return false, fmt.Errorf("clone remote template repo %q: %w", templateRepo, err)
+		cloneErr := fmt.Errorf("clone remote template repo %q: %w", templateRepo, err)
+		if !ownedProjectDir {
+			return false, cloneErr
+		}
+		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, false, cloneErr)
 	}
 	metadata, err := inspectRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir)
 	if err != nil {
-		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, projectDirExisted, err)
+		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, !ownedProjectDir, err)
 	}
 	sitectl, plugins := s.templateLockPackages()
 	lock, err := buildTemplateLock(templateRepo, metadata, sitectl, plugins)
 	if err != nil {
-		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, projectDirExisted, err)
+		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, !ownedProjectDir, err)
 	}
 	if err := finalizeRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, req.TemplateBranch, lock); err != nil {
 		finalizeErr := fmt.Errorf("finalize remote template checkout: %w", err)
-		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, projectDirExisted, finalizeErr)
+		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, !ownedProjectDir, finalizeErr)
 	}
 	return true, nil
 }
