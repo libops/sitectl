@@ -242,10 +242,6 @@ func validateTemplateRepository(repository string) (string, error) {
 	return repository, nil
 }
 
-func resolveTemplateCommit(projectDir string) (string, error) {
-	return resolveTemplateCommitWithRunner(projectDir, runGitCommand)
-}
-
 func resolveTemplateCommitWithRunner(projectDir string, runner gitRunner) (string, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -257,10 +253,6 @@ func resolveTemplateCommitWithRunner(projectDir string, runner gitRunner) (strin
 		return "", fmt.Errorf("resolve cloned template commit: git returned an invalid object id")
 	}
 	return strings.ToLower(commit), nil
-}
-
-func inspectLocalTemplateCheckout(projectDir string) (templateCheckoutMetadata, error) {
-	return inspectLocalTemplateCheckoutWithRunner(projectDir, runGitCommand)
 }
 
 func inspectLocalTemplateCheckoutWithRunner(projectDir string, runner gitRunner) (templateCheckoutMetadata, error) {

@@ -487,16 +487,9 @@ func prepareRemoteTemplateLock(runCtx context.Context, connection remoteTemplate
 	return temporaryPath, nil
 }
 
-func cleanupRemoteTemplateCheckout(connection remoteTemplateConnection, projectDir string, preserveRoot bool, cause error) error {
+func cleanupOwnedRemoteTemplateCheckout(connection remoteTemplateConnection, projectDir string, cause error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), remoteTemplateCleanupTimeout)
 	defer cancel()
-	if preserveRoot {
-		args := []string{"find", projectDir, "-mindepth", "1", "-maxdepth", "1", "-exec", "rm", "-rf", "--", "{}", "+"}
-		if _, err := connection.Run(cleanupCtx, io.Discard, nil, args...); err != nil {
-			return errors.Join(cause, fmt.Errorf("clean up failed remote template checkout contents: %w", err))
-		}
-		return cause
-	}
 	if _, err := connection.Run(cleanupCtx, io.Discard, nil, "rm", "-rf", "--", projectDir); err != nil {
 		return errors.Join(cause, fmt.Errorf("clean up failed remote template checkout: %w", err))
 	}

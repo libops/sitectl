@@ -418,7 +418,7 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 		ownedProjectDir = true
 		if err := connection.Chmod(ctx.ProjectDir, 0o750); err != nil {
 			claimErr := fmt.Errorf("set remote project directory permissions: %w", err)
-			return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, false, claimErr)
+			return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, claimErr)
 		}
 	}
 	cloneArgs := []string{"git", "clone"}
@@ -432,20 +432,29 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 		if !ownedProjectDir {
 			return false, cloneErr
 		}
-		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, false, cloneErr)
+		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, cloneErr)
 	}
 	metadata, err := inspectRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir)
 	if err != nil {
-		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, !ownedProjectDir, err)
+		if !ownedProjectDir {
+			return false, err
+		}
+		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, err)
 	}
 	sitectl, plugins := s.templateLockPackages()
 	lock, err := buildTemplateLock(templateRepo, metadata, sitectl, plugins)
 	if err != nil {
-		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, !ownedProjectDir, err)
+		if !ownedProjectDir {
+			return false, err
+		}
+		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, err)
 	}
 	if err := finalizeRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, req.TemplateBranch, lock); err != nil {
 		finalizeErr := fmt.Errorf("finalize remote template checkout: %w", err)
-		return false, cleanupRemoteTemplateCheckout(connection, ctx.ProjectDir, !ownedProjectDir, finalizeErr)
+		if !ownedProjectDir {
+			return false, finalizeErr
+		}
+		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, finalizeErr)
 	}
 	return true, nil
 }

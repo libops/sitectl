@@ -316,7 +316,7 @@ func TestRemoteTemplateCheckoutRejectsNonEmptyProject(t *testing.T) {
 	}
 }
 
-func TestRemoteTemplateCheckoutCleansRejectedCloneAndPreservesExistingRoot(t *testing.T) {
+func TestRemoteTemplateCheckoutDoesNotCleanRejectedCloneFromExistingRoot(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "site")
 	if err := os.Mkdir(projectDir, 0o750); err != nil {
 		t.Fatal(err)
@@ -337,8 +337,6 @@ func TestRemoteTemplateCheckoutCleansRejectedCloneAndPreservesExistingRoot(t *te
 				return "", nil
 			case len(args) > 3 && args[3] == "rev-parse":
 				return testTemplateCommit, nil
-			case len(args) > 1 && args[0] == "find" && args[1] == projectDir:
-				return "", removeDirectoryContents(projectDir)
 			default:
 				t.Fatalf("unexpected remote command args: %v", args)
 				return "", nil
@@ -360,8 +358,11 @@ func TestRemoteTemplateCheckoutCleansRejectedCloneAndPreservesExistingRoot(t *te
 	if readErr != nil {
 		t.Fatalf("pre-existing project root was removed: %v", readErr)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("rejected checkout contents remain and could bypass validation on retry: %v", entries)
+	if len(entries) == 0 {
+		t.Fatal("rejected checkout contents in a pre-existing root were removed")
+	}
+	if _, statErr := os.Stat(filepath.Join(projectDir, ".libops", "template.lock.yaml")); statErr != nil {
+		t.Fatalf("rejected checkout contents in a pre-existing root were modified: %v", statErr)
 	}
 }
 
@@ -675,17 +676,4 @@ func createRemoteGitDirectory(t *testing.T, projectDir string) {
 	if err := os.MkdirAll(filepath.Join(projectDir, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func removeDirectoryContents(directory string) error {
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if err := os.RemoveAll(filepath.Join(directory, entry.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
 }
