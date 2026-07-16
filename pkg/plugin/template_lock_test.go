@@ -2,11 +2,8 @@ package plugin
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/libops/sitectl/pkg/config"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -256,79 +252,5 @@ func TestHostBuildEnvironmentCannotBeOverriddenByInheritedValues(t *testing.T) {
 	want := []string{"PATH=/test/bin", hostVersionEnvironment + "=1.2.3", hostRevisionEnvironment + "=abcdef1"}
 	if !reflect.DeepEqual(filtered, want) {
 		t.Fatalf("filterHostBuildEnvironment() = %v, want %v", filtered, want)
-	}
-}
-
-func TestParseRemoteTemplateInspectionValidatesStrictEnvelope(t *testing.T) {
-	contract := []byte("apiVersion: sitectl.libops.io/v1alpha1\nkind: TemplateContract\nschema: 1\n")
-	revision := []byte("components-v4\n")
-	valid := strings.Join([]string{
-		"commit=" + testTemplateCommit,
-		"contract=" + base64.StdEncoding.EncodeToString(contract),
-		"component_defaults=" + base64.StdEncoding.EncodeToString(revision),
-	}, "\n")
-	metadata, err := parseRemoteTemplateInspection(valid)
-	if err != nil {
-		t.Fatalf("parseRemoteTemplateInspection() error = %v", err)
-	}
-	if metadata.Commit != testTemplateCommit || !bytes.Equal(metadata.Contract, contract) || metadata.ComponentDefaultsRevision != "components-v4" {
-		t.Fatalf("unexpected remote metadata: %+v", metadata)
-	}
-	for _, invalid := range []string{
-		"commit=" + testTemplateCommit,
-		valid + "\nunknown=value",
-		strings.Replace(valid, "contract=", "commit="+testTemplateCommit+"\ncontract=", 1),
-		strings.Replace(valid, base64.StdEncoding.EncodeToString(contract), "not-base64!", 1),
-		strings.Replace(valid, testTemplateCommit, "main", 1),
-	} {
-		if _, err := parseRemoteTemplateInspection(invalid); err == nil {
-			t.Fatalf("invalid remote metadata was accepted:\n%s", invalid)
-		}
-	}
-}
-
-func TestRemoteTemplateCheckoutInspectsBeforeFreshInitAndAtomicLock(t *testing.T) {
-	oldRunner := runComposeProjectRemoteShellCommandContext
-	t.Cleanup(func() { runComposeProjectRemoteShellCommandContext = oldRunner })
-	contract := []byte("apiVersion: sitectl.libops.io/v1alpha1\nkind: TemplateContract\nschema: 1\n")
-	inspection := strings.Join([]string{
-		"commit=" + testTemplateCommit,
-		"contract=" + base64.StdEncoding.EncodeToString(contract),
-		"component_defaults=",
-	}, "\n")
-	var commands []string
-	runComposeProjectRemoteShellCommandContext = func(_ context.Context, _ *config.Context, _, _ io.Writer, command string) (string, error) {
-		commands = append(commands, command)
-		if strings.Contains(command, "printf 'commit=") {
-			return inspection, nil
-		}
-		return "", nil
-	}
-	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
-	ctx := &config.Context{DockerHostType: config.ContextRemote, ProjectDir: "/srv/sites/museum", SSHHostname: "example.invalid"}
-	created, err := sdk.ensureRemoteComposeTemplateCheckout(context.Background(), io.Discard, ComposeCreateRequest{
-		TemplateRepo:   "git@github.com:libops/omeka-s.git",
-		TemplateBranch: "main",
-	}, ctx)
-	if err != nil {
-		t.Fatalf("ensureRemoteComposeTemplateCheckout() error = %v", err)
-	}
-	if !created || len(commands) != 5 {
-		t.Fatalf("created = %t, commands = %d, want true and five commands", created, len(commands))
-	}
-	if !strings.Contains(commands[2], "'git' 'clone'") || !strings.Contains(commands[2], "'--'") {
-		t.Fatalf("clone command does not terminate options: %s", commands[2])
-	}
-	if !strings.Contains(commands[3], "rev-parse --verify") || !strings.Contains(commands[3], "template-contract.yaml") || !strings.Contains(commands[3], "source template must not contain .libops/template.lock.yaml") {
-		t.Fatalf("inspection command is incomplete: %s", commands[3])
-	}
-	finalize := commands[4]
-	for _, required := range []string{"mktemp", "base64 --decode", "chmod 0644", "rm -rf --", "'git' '-C'", "'init' '-b'", "mv -f --", "template.lock.yaml"} {
-		if !strings.Contains(finalize, required) {
-			t.Errorf("finalize command is missing %q: %s", required, finalize)
-		}
-	}
-	if strings.Index(finalize, "mktemp") > strings.Index(finalize, "rm -rf --") {
-		t.Error("remote lock must be prepared before template history is removed")
 	}
 }

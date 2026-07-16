@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -19,8 +20,10 @@ type GitTemplateOptions struct {
 }
 
 type gitRunner func(stdout, stderr io.Writer, name string, args ...string) error
+type gitContextRunner func(context.Context, io.Writer, io.Writer, string, ...string) error
 
 var runGitCommand gitRunner = defaultRunGitCommand
+var runGitCommandContext gitContextRunner = defaultRunGitCommandContext
 var hasGitRepositoryFunc = hasGitRepository
 var gitRemoteExistsFunc = gitRemoteExists
 
@@ -29,7 +32,23 @@ func (s *SDK) CloneTemplateRepo(opts GitTemplateOptions) error {
 		return fmt.Errorf("plugin sdk is not initialized")
 	}
 	sitectl, plugins := s.templateLockPackages()
-	return cloneTemplateRepo(opts, sitectl, plugins)
+	return cloneTemplateRepoWithRunner(context.Background(), opts, sitectl, plugins, runGitCommand)
+}
+
+// CloneTemplateRepoContext clones and finalizes a template repository while
+// honoring cancellation for every Git subprocess.
+func (s *SDK) CloneTemplateRepoContext(runCtx context.Context, opts GitTemplateOptions) error {
+	if s == nil {
+		return fmt.Errorf("plugin sdk is not initialized")
+	}
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+	sitectl, plugins := s.templateLockPackages()
+	runner := func(stdout, stderr io.Writer, name string, args ...string) error {
+		return runGitCommandContext(runCtx, stdout, stderr, name, args...)
+	}
+	return cloneTemplateRepoWithRunner(runCtx, opts, sitectl, plugins, runner)
 }
 
 func (s *SDK) ConfigureTemplateRemotes(opts GitTemplateOptions) error {
@@ -37,10 +56,16 @@ func (s *SDK) ConfigureTemplateRemotes(opts GitTemplateOptions) error {
 }
 
 func CloneTemplateRepo(opts GitTemplateOptions) error {
-	return cloneTemplateRepo(opts, nil, nil)
+	return cloneTemplateRepoWithRunner(context.Background(), opts, nil, nil, runGitCommand)
 }
 
-func cloneTemplateRepo(opts GitTemplateOptions, sitectl *templateLockPackage, plugins []templateLockPackage) error {
+func cloneTemplateRepoWithRunner(runCtx context.Context, opts GitTemplateOptions, sitectl *templateLockPackage, plugins []templateLockPackage, runner gitRunner) error {
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+	if err := runCtx.Err(); err != nil {
+		return err
+	}
 	templateRepo, err := validateTemplateRepository(opts.TemplateRepo)
 	if err != nil {
 		return err
@@ -69,10 +94,10 @@ func cloneTemplateRepo(opts GitTemplateOptions, sitectl *templateLockPackage, pl
 		stdout = io.Discard
 		stderr = io.Discard
 	}
-	if err := runGitCommand(stdout, stderr, "git", args...); err != nil {
+	if err := runner(stdout, stderr, "git", args...); err != nil {
 		return fmt.Errorf("clone template repo %q: %w", opts.TemplateRepo, err)
 	}
-	metadata, err := inspectLocalTemplateCheckout(opts.ProjectDir)
+	metadata, err := inspectLocalTemplateCheckoutWithRunner(opts.ProjectDir, runner)
 	if err != nil {
 		return err
 	}
@@ -80,11 +105,17 @@ func cloneTemplateRepo(opts GitTemplateOptions, sitectl *templateLockPackage, pl
 	if err != nil {
 		return err
 	}
+	if err := runCtx.Err(); err != nil {
+		return err
+	}
 
 	if err := os.RemoveAll(filepath.Join(opts.ProjectDir, ".git")); err != nil {
 		return fmt.Errorf("remove template git history: %w", err)
 	}
-	if err := initializeTemplateRepo(opts, stdout, stderr); err != nil {
+	if err := initializeTemplateRepoWithRunner(opts, stdout, stderr, runner); err != nil {
+		return err
+	}
+	if err := runCtx.Err(); err != nil {
 		return err
 	}
 	if err := writeTemplateLockAtomic(opts.ProjectDir, lock); err != nil {
@@ -93,10 +124,14 @@ func cloneTemplateRepo(opts GitTemplateOptions, sitectl *templateLockPackage, pl
 	if opts.GitRemoteURL == "" {
 		return nil
 	}
-	return ConfigureTemplateRemotes(opts)
+	return configureTemplateRemotesWithRunner(opts, runner)
 }
 
 func ConfigureTemplateRemotes(opts GitTemplateOptions) error {
+	return configureTemplateRemotesWithRunner(opts, runGitCommand)
+}
+
+func configureTemplateRemotesWithRunner(opts GitTemplateOptions, runner gitRunner) error {
 	if opts.GitRemoteURL == "" {
 		return nil
 	}
@@ -133,11 +168,11 @@ func ConfigureTemplateRemotes(opts GitTemplateOptions) error {
 		return err
 	}
 	if hasOrigin && opts.TemplateRemoteName != "" && opts.TemplateRemoteName != "origin" {
-		if err := runGitCommand(stdout, stderr, "git", "-C", opts.ProjectDir, "remote", "rename", "origin", opts.TemplateRemoteName); err != nil {
+		if err := runner(stdout, stderr, "git", "-C", opts.ProjectDir, "remote", "rename", "origin", opts.TemplateRemoteName); err != nil {
 			return fmt.Errorf("rename template remote to %q: %w", opts.TemplateRemoteName, err)
 		}
 	}
-	if err := runGitCommand(stdout, stderr, "git", "-C", opts.ProjectDir, "remote", "add", opts.GitRemoteName, opts.GitRemoteURL); err != nil {
+	if err := runner(stdout, stderr, "git", "-C", opts.ProjectDir, "remote", "add", opts.GitRemoteName, opts.GitRemoteURL); err != nil {
 		return fmt.Errorf("add git remote %q: %w", opts.GitRemoteName, err)
 	}
 
@@ -145,11 +180,15 @@ func ConfigureTemplateRemotes(opts GitTemplateOptions) error {
 }
 
 func initializeTemplateRepo(opts GitTemplateOptions, stdout, stderr io.Writer) error {
+	return initializeTemplateRepoWithRunner(opts, stdout, stderr, runGitCommand)
+}
+
+func initializeTemplateRepoWithRunner(opts GitTemplateOptions, stdout, stderr io.Writer, runner gitRunner) error {
 	args := []string{"-C", opts.ProjectDir, "init"}
 	if opts.TemplateBranch != "" {
 		args = append(args, "-b", opts.TemplateBranch)
 	}
-	if err := runGitCommand(stdout, stderr, "git", args...); err != nil {
+	if err := runner(stdout, stderr, "git", args...); err != nil {
 		return fmt.Errorf("initialize fresh git repository in %q: %w", opts.ProjectDir, err)
 	}
 	return nil
@@ -159,8 +198,22 @@ func defaultRunGitCommand(stdout, stderr io.Writer, name string, args ...string)
 	return runGitCommandWithIO(stdout, stderr, name, args...)
 }
 
+func defaultRunGitCommandContext(runCtx context.Context, stdout, stderr io.Writer, name string, args ...string) error {
+	return runGitCommandWithIOContext(runCtx, stdout, stderr, name, args...)
+}
+
 func runGitCommandWithIO(stdout, stderr io.Writer, name string, args ...string) error {
 	cmd := exec.Command(name, args...) // #nosec G204 -- helper is used for fixed git invocations assembled by sitectl.
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+func runGitCommandWithIOContext(runCtx context.Context, stdout, stderr io.Writer, name string, args ...string) error {
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+	cmd := exec.CommandContext(runCtx, name, args...) // #nosec G204 -- helper is used for fixed git invocations assembled by sitectl.
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()

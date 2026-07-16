@@ -3,11 +3,12 @@ package plugin
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -310,29 +311,60 @@ func (s *SDK) EnsureComposeTemplateCheckoutContext(runCtx context.Context, out i
 }
 
 func (s *SDK) ensureLocalComposeTemplateCheckout(runCtx context.Context, out io.Writer, req ComposeCreateRequest, projectDir string) (bool, error) {
-	if err := runCtx.Err(); err != nil {
-		return false, err
+	projectDirExisted, notEmpty, err := localProjectDirectoryState(runCtx, projectDir)
+	if err != nil {
+		return false, fmt.Errorf("inspect project directory: %w", err)
 	}
-	entries, err := os.ReadDir(projectDir)
-	if err == nil && len(entries) > 0 {
-		return false, nil
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return false, fmt.Errorf("read project directory %q: %w", projectDir, err)
+	if notEmpty {
+		return false, fmt.Errorf("project directory %q is not empty; choose checkout source %q to use an existing checkout", projectDir, CheckoutSourceExisting)
 	}
 	if err := os.MkdirAll(filepath.Dir(projectDir), 0o750); err != nil {
 		return false, fmt.Errorf("create parent directory for %q: %w", projectDir, err)
 	}
+	ownedProjectDir := false
+	if !projectDirExisted {
+		if err := os.Mkdir(projectDir, 0o750); err != nil {
+			return false, fmt.Errorf("claim project directory %q for template checkout: %w", projectDir, err)
+		}
+		ownedProjectDir = true
+	}
 	fmt.Fprintf(out, "Cloning %s into %s\n", req.TemplateRepo, projectDir)
-	if err := s.CloneTemplateRepo(GitTemplateOptions{
+	if err := s.CloneTemplateRepoContext(runCtx, GitTemplateOptions{
 		TemplateRepo:   req.TemplateRepo,
 		TemplateBranch: req.TemplateBranch,
 		ProjectDir:     projectDir,
 		Quiet:          true,
 	}); err != nil {
+		if !ownedProjectDir {
+			return false, err
+		}
+		if cleanupErr := os.RemoveAll(projectDir); cleanupErr != nil {
+			return false, errors.Join(err, fmt.Errorf("clean up failed template checkout %q: %w", projectDir, cleanupErr))
+		}
 		return false, err
 	}
 	return true, nil
+}
+
+func localProjectDirectoryState(runCtx context.Context, projectDir string) (bool, bool, error) {
+	if err := runCtx.Err(); err != nil {
+		return false, false, err
+	}
+	info, err := os.Lstat(projectDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("inspect project directory %q: %w", projectDir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return true, false, fmt.Errorf("project directory %q must be a real directory, not a symlink or other file", projectDir)
+	}
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return false, false, fmt.Errorf("read project directory %q: %w", projectDir, err)
+	}
+	return true, len(entries) > 0, nil
 }
 
 func refreshCreateContextComposeIdentity(ctx *config.Context, req ComposeCreateRequest) error {
@@ -359,20 +391,35 @@ func refreshCreateContextComposeIdentity(ctx *config.Context, req ComposeCreateR
 }
 
 func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io.Writer, req ComposeCreateRequest, ctx *config.Context) (bool, error) {
-	runRemote := runComposeProjectRemoteShellCommandContext
-	output, err := runRemote(runCtx, ctx, nil, nil, fmt.Sprintf("if [ -d %s ] && [ -n \"$(ls -A %s 2>/dev/null)\" ]; then echo present; fi", shellQuote(ctx.ProjectDir), shellQuote(ctx.ProjectDir)))
+	connection, err := openRemoteTemplateConnection(runCtx, ctx)
+	if err != nil {
+		return false, fmt.Errorf("open remote template connection: %w", err)
+	}
+	defer connection.Close()
+	projectDirExisted, notEmpty, err := remoteProjectDirectoryState(runCtx, connection, ctx.ProjectDir)
 	if err != nil {
 		return false, fmt.Errorf("inspect remote project directory: %w", err)
 	}
-	if strings.TrimSpace(output) == "present" {
-		return false, nil
+	if notEmpty {
+		return false, fmt.Errorf("remote project directory %q is not empty; choose checkout source %q to use an existing checkout", ctx.ProjectDir, CheckoutSourceExisting)
 	}
 	templateRepo, err := validateTemplateRepository(req.TemplateRepo)
 	if err != nil {
 		return false, err
 	}
-	if _, err := runRemote(runCtx, ctx, nil, nil, fmt.Sprintf("mkdir -p %s", shellQuote(filepath.Dir(ctx.ProjectDir)))); err != nil {
+	if err := connection.MkdirAll(path.Dir(ctx.ProjectDir)); err != nil {
 		return false, fmt.Errorf("prepare remote parent directory: %w", err)
+	}
+	ownedProjectDir := false
+	if !projectDirExisted {
+		if err := connection.Mkdir(ctx.ProjectDir); err != nil {
+			return false, fmt.Errorf("claim remote project directory %q for template checkout: %w", ctx.ProjectDir, err)
+		}
+		ownedProjectDir = true
+		if err := connection.Chmod(ctx.ProjectDir, 0o750); err != nil {
+			claimErr := fmt.Errorf("set remote project directory permissions: %w", err)
+			return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, claimErr)
+		}
 	}
 	cloneArgs := []string{"git", "clone"}
 	if strings.TrimSpace(req.TemplateBranch) != "" {
@@ -380,159 +427,36 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 	}
 	cloneArgs = append(cloneArgs, "--", templateRepo, ctx.ProjectDir)
 	fmt.Fprintf(out, "Cloning %s into %s on %s\n", templateRepo, ctx.ProjectDir, ctx.SSHHostname)
-	if _, err := runRemote(runCtx, ctx, io.Discard, io.Discard, shellJoin(cloneArgs)); err != nil {
-		return false, err
+	if _, err := connection.Run(runCtx, io.Discard, nil, cloneArgs...); err != nil {
+		cloneErr := fmt.Errorf("clone remote template repo %q: %w", templateRepo, err)
+		if !ownedProjectDir {
+			return false, cloneErr
+		}
+		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, cloneErr)
 	}
-	inspectionOutput, err := runRemote(runCtx, ctx, nil, nil, remoteTemplateInspectionCommand(ctx.ProjectDir))
+	metadata, err := inspectRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir)
 	if err != nil {
-		return false, fmt.Errorf("inspect remote template checkout: %w", err)
-	}
-	metadata, err := parseRemoteTemplateInspection(inspectionOutput)
-	if err != nil {
-		return false, err
+		if !ownedProjectDir {
+			return false, err
+		}
+		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, err)
 	}
 	sitectl, plugins := s.templateLockPackages()
 	lock, err := buildTemplateLock(templateRepo, metadata, sitectl, plugins)
 	if err != nil {
-		return false, err
+		if !ownedProjectDir {
+			return false, err
+		}
+		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, err)
 	}
-	finalizeCommand := remoteTemplateFinalizeCommand(ctx.ProjectDir, req.TemplateBranch, lock)
-	if _, err := runRemote(runCtx, ctx, io.Discard, io.Discard, finalizeCommand); err != nil {
-		return false, fmt.Errorf("finalize remote template checkout: %w", err)
+	if err := finalizeRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, req.TemplateBranch, lock); err != nil {
+		finalizeErr := fmt.Errorf("finalize remote template checkout: %w", err)
+		if !ownedProjectDir {
+			return false, finalizeErr
+		}
+		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, finalizeErr)
 	}
 	return true, nil
-}
-
-func remoteTemplateInspectionCommand(projectDir string) string {
-	return fmt.Sprintf(`set -euo pipefail
-project=%s
-if [ ! -d "${project}/.git" ]; then
-  echo "remote template checkout has no Git history" >&2
-  exit 1
-fi
-commit="$(git -C "${project}" rev-parse --verify 'HEAD^{commit}')"
-libops="${project}/.libops"
-if [ -L "${libops}" ] || { [ -e "${libops}" ] && [ ! -d "${libops}" ]; }; then
-  echo "remote template .libops must be a real directory" >&2
-  exit 1
-fi
-lock_path="${libops}/template.lock.yaml"
-if [ -L "${lock_path}" ] || [ -e "${lock_path}" ]; then
-  echo "source template must not contain .libops/template.lock.yaml; sitectl creates that downstream provenance file" >&2
-  exit 1
-fi
-encode_metadata_file() {
-  local relative="$1"
-  local maximum="$2"
-  local path="${project}/${relative}"
-  if [ -L "${path}" ] || { [ -e "${path}" ] && [ ! -f "${path}" ]; }; then
-    echo "remote template metadata ${relative} must be a regular file" >&2
-    exit 1
-  fi
-  if [ ! -e "${path}" ]; then
-    return 0
-  fi
-  local bytes
-  bytes="$(LC_ALL=C wc -c < "${path}")"
-  if [[ ! "${bytes}" =~ ^[0-9]+$ ]] || [ "${bytes}" -gt "${maximum}" ]; then
-    echo "remote template metadata ${relative} exceeds ${maximum} bytes" >&2
-    exit 1
-  fi
-  base64 < "${path}" | tr -d '\n'
-}
-printf 'commit=%%s\n' "${commit}"
-printf 'contract=%%s\n' "$(encode_metadata_file %s %d)"
-printf 'component_defaults=%%s\n' "$(encode_metadata_file %s %d)"`,
-		shellQuote(projectDir),
-		shellQuote(templateContractPath), maxTemplateContractBytes,
-		shellQuote(componentDefaultsRevisionPath), maxComponentRevisionBytes,
-	)
-}
-
-func parseRemoteTemplateInspection(output string) (templateCheckoutMetadata, error) {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) != 3 {
-		return templateCheckoutMetadata{}, fmt.Errorf("parse remote template metadata: expected three fields")
-	}
-	values := map[string]string{}
-	for _, line := range lines {
-		key, value, found := strings.Cut(line, "=")
-		if !found || (key != "commit" && key != "contract" && key != "component_defaults") {
-			return templateCheckoutMetadata{}, fmt.Errorf("parse remote template metadata: invalid field")
-		}
-		if _, duplicate := values[key]; duplicate {
-			return templateCheckoutMetadata{}, fmt.Errorf("parse remote template metadata: duplicate %s field", key)
-		}
-		values[key] = value
-	}
-	for _, key := range []string{"commit", "contract", "component_defaults"} {
-		if _, present := values[key]; !present {
-			return templateCheckoutMetadata{}, fmt.Errorf("parse remote template metadata: missing %s field", key)
-		}
-	}
-	if !templateCommitPattern.MatchString(values["commit"]) {
-		return templateCheckoutMetadata{}, fmt.Errorf("parse remote template metadata: invalid Git object id")
-	}
-	metadata := templateCheckoutMetadata{Commit: strings.ToLower(values["commit"])}
-	if values["contract"] != "" {
-		contract, err := base64.StdEncoding.Strict().DecodeString(values["contract"])
-		if err != nil || len(contract) > maxTemplateContractBytes {
-			return templateCheckoutMetadata{}, fmt.Errorf("parse remote template metadata: invalid contract payload")
-		}
-		metadata.Contract = contract
-		revision, err := validateTemplateContract(contract)
-		if err != nil {
-			return templateCheckoutMetadata{}, err
-		}
-		metadata.ComponentDefaultsRevision = revision
-	}
-	if values["component_defaults"] != "" {
-		revisionData, err := base64.StdEncoding.Strict().DecodeString(values["component_defaults"])
-		if err != nil || len(revisionData) > maxComponentRevisionBytes {
-			return templateCheckoutMetadata{}, fmt.Errorf("parse remote template metadata: invalid component defaults payload")
-		}
-		revision, err := validateComponentDefaultsRevision(string(revisionData))
-		if err != nil {
-			return templateCheckoutMetadata{}, fmt.Errorf("parse remote component defaults revision: %w", err)
-		}
-		if metadata.ComponentDefaultsRevision != "" && metadata.ComponentDefaultsRevision != revision {
-			return templateCheckoutMetadata{}, fmt.Errorf("component defaults revision differs between %s and %s", templateContractPath, componentDefaultsRevisionPath)
-		}
-		metadata.ComponentDefaultsRevision = revision
-	}
-	return metadata, nil
-}
-
-func remoteTemplateFinalizeCommand(projectDir, branch string, lock []byte) string {
-	initArgs := []string{"git", "-C", projectDir, "init"}
-	if strings.TrimSpace(branch) != "" {
-		initArgs = append(initArgs, "-b", branch)
-	}
-	encodedLock := base64.StdEncoding.EncodeToString(lock)
-	return fmt.Sprintf(`set -euo pipefail
-project=%s
-libops="${project}/.libops"
-lock_path="${libops}/template.lock.yaml"
-if [ -L "${libops}" ] || { [ -e "${libops}" ] && [ ! -d "${libops}" ]; }; then
-  echo "remote template .libops must be a real directory" >&2
-  exit 1
-fi
-if [ -L "${lock_path}" ] || { [ -e "${lock_path}" ] && [ ! -f "${lock_path}" ]; }; then
-  echo "remote template lock path must be a regular file" >&2
-  exit 1
-fi
-if [ ! -e "${libops}" ]; then
-  mkdir -m 0750 -- "${libops}"
-fi
-temporary="$(mktemp "${libops}/.template.lock.yaml.tmp-XXXXXX")"
-cleanup() { rm -f -- "${temporary}"; }
-trap cleanup EXIT
-printf '%%s' %s | base64 --decode > "${temporary}"
-chmod 0644 "${temporary}"
-rm -rf -- "${project}/.git"
-%s
-mv -f -- "${temporary}" "${lock_path}"
-trap - EXIT`, shellQuote(projectDir), shellQuote(encodedLock), shellJoin(initArgs))
 }
 
 // RunComposeProjectCommandList runs a list of shell commands in a compose

@@ -242,10 +242,10 @@ func validateTemplateRepository(repository string) (string, error) {
 	return repository, nil
 }
 
-func resolveTemplateCommit(projectDir string) (string, error) {
+func resolveTemplateCommitWithRunner(projectDir string, runner gitRunner) (string, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := runGitCommand(&stdout, &stderr, "git", "-C", projectDir, "rev-parse", "--verify", "HEAD^{commit}"); err != nil {
+	if err := runner(&stdout, &stderr, "git", "-C", projectDir, "rev-parse", "--verify", "HEAD^{commit}"); err != nil {
 		return "", fmt.Errorf("resolve cloned template commit: %w", err)
 	}
 	commit := strings.TrimSpace(stdout.String())
@@ -255,8 +255,8 @@ func resolveTemplateCommit(projectDir string) (string, error) {
 	return strings.ToLower(commit), nil
 }
 
-func inspectLocalTemplateCheckout(projectDir string) (templateCheckoutMetadata, error) {
-	commit, err := resolveTemplateCommit(projectDir)
+func inspectLocalTemplateCheckoutWithRunner(projectDir string, runner gitRunner) (templateCheckoutMetadata, error) {
+	commit, err := resolveTemplateCommitWithRunner(projectDir, runner)
 	if err != nil {
 		return templateCheckoutMetadata{}, err
 	}
