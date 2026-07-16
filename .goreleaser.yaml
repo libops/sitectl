@@ -40,7 +40,9 @@ changelog:
       - "^.github"
 brews:
   - name: sitectl
+    description: "CLI for managing local and remote Docker Compose projects"
     homepage: "https://github.com/libops/sitectl"
+    license: MIT
     commit_author:
       name: sitectl-dev[bot]
       email: 2408410+sitectl-dev[bot]@users.noreply.github.com
