@@ -106,7 +106,7 @@ func writeCatalogGuidance(out io.Writer, def Definition) error {
 	}{
 		{"enabled", def.Guidance.EnabledHelp},
 		{"disabled", def.Guidance.DisabledHelp},
-		{"superceded", def.Guidance.SupersededHelp},
+		{string(DispositionSuperseded), def.Guidance.SupersededHelp},
 		{"distributed", def.Guidance.DistributedHelp},
 	}
 	wrote := false

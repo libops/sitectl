@@ -356,6 +356,15 @@ func NewComponentReconcileRequest(params ComponentTargetParams, args ...string) 
 
 // NewComponentSetRequest creates a typed component.set request.
 func NewComponentSetRequest(params ComponentSetParams, args ...string) (RPCRequest, error) {
+	// RPC v1 originally shipped the misspelled value. Keep the wire spelling so
+	// a corrected host can still drive v1.0.0 plugins; current plugins normalize
+	// both spellings and render the canonical "superseded" form.
+	if strings.EqualFold(strings.TrimSpace(params.Disposition), "superseded") {
+		params.Disposition = "superceded"
+	}
+	if strings.EqualFold(strings.TrimSpace(params.DispositionFlag), "superseded") {
+		params.DispositionFlag = "superceded"
+	}
 	req := NewRPCRequest(MethodComponentSet)
 	req.Args = copyRPCArgs(args)
 	return withRPCParams(req, params)

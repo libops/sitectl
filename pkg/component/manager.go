@@ -26,7 +26,7 @@ type Disposition string
 
 const (
 	DispositionDisabled    Disposition = "disabled"
-	DispositionSuperseded  Disposition = "superceded"
+	DispositionSuperseded  Disposition = "superseded"
 	DispositionEnabled     Disposition = "enabled"
 	DispositionDistributed Disposition = "distributed"
 	DispositionCantaloupe  Disposition = "cantaloupe"
@@ -529,7 +529,7 @@ func normalizeDisposition(disposition Disposition) Disposition {
 		return DispositionDisabled
 	case string(DispositionDisabled):
 		return DispositionDisabled
-	case string(DispositionSuperseded):
+	case string(DispositionSuperseded), "superceded":
 		return DispositionSuperseded
 	case string(DispositionEnabled):
 		return DispositionEnabled
