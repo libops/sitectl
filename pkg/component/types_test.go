@@ -49,6 +49,20 @@ func TestParseDispositionAcceptsCodebaseLayouts(t *testing.T) {
 	}
 }
 
+func TestParseDispositionCanonicalizesSupersededSpellings(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{"superseded", "superceded", " SUPERSEDED "} {
+		got, err := ParseDisposition(value)
+		if err != nil {
+			t.Fatalf("ParseDisposition(%q) error = %v", value, err)
+		}
+		if got != DispositionSuperseded || string(got) != "superseded" {
+			t.Fatalf("ParseDisposition(%q) = %q, want canonical superseded", value, got)
+		}
+	}
+}
+
 func TestDependenciesDrupalModulesForEnable(t *testing.T) {
 	t.Parallel()
 

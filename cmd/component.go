@@ -212,7 +212,7 @@ func init() {
 
 	componentSetCmd.Flags().StringVar(&componentSetPath, "path", "", "Path to the project directory. Defaults to the active context project directory.")
 	componentSetCmd.Flags().StringVar(&componentSetState, "state", "", "State to apply (on, off).")
-	componentSetCmd.Flags().StringVar(&componentSetDisposition, "disposition", "", "Disposition to apply (enabled, disabled, superceded, distributed).")
+	componentSetCmd.Flags().StringVar(&componentSetDisposition, "disposition", "", "Disposition to apply (enabled, disabled, superseded, distributed).")
 	componentSetCmd.Flags().StringVar(&componentSetTLSMode, "tls-mode", "", "TLS mode (http, self-managed, mkcert, letsencrypt).")
 	componentSetCmd.Flags().BoolVar(&componentSetYolo, "yolo", false, "Skip the confirmation prompt.")
 
@@ -498,7 +498,7 @@ USAGE
 
 EXAMPLES
 
-  sitectl component set fcrepo superceded --isle-file-system-uri private
+  sitectl component set fcrepo superseded --isle-file-system-uri private
   sitectl component set iiif triplet
   sitectl component set iiif-topology distributed --iiif-upstream-url https://iiif.example.org
   sitectl component set homarus distributed

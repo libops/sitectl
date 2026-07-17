@@ -297,7 +297,7 @@ func TestResolveComponentSetInvocationStripsNamespace(t *testing.T) {
 	cmd := &cobra.Command{Use: "set"}
 	contextName, owner, forwarded, err := resolveComponentSetInvocation(cmd, []string{
 		"isle/fcrepo",
-		"superceded",
+		"superseded",
 		"--isle-file-system-uri",
 		"private",
 	})
@@ -307,7 +307,7 @@ func TestResolveComponentSetInvocationStripsNamespace(t *testing.T) {
 	if contextName != "museum" || owner != "isle" {
 		t.Fatalf("unexpected owner resolution: context=%q owner=%q", contextName, owner)
 	}
-	want := []string{"fcrepo", "superceded", "--isle-file-system-uri", "private"}
+	want := []string{"fcrepo", "superseded", "--isle-file-system-uri", "private"}
 	if !reflect.DeepEqual(forwarded, want) {
 		t.Fatalf("forwarded args = %#v, want %#v", forwarded, want)
 	}

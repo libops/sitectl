@@ -50,9 +50,9 @@ func TestWriteComponentCatalogIncludesDispositionsAndSetFlags(t *testing.T) {
 	for _, want := range []string{
 		"ISLE components",
 		"fcrepo",
-		"enabled, superceded",
+		"enabled, superseded",
 		"--isle-file-system-uri",
-		"when superceded",
+		"when superseded",
 		"choices: public, private",
 	} {
 		if !strings.Contains(rendered, want) {

@@ -259,6 +259,30 @@ func TestRPCArgvSafetyDoesNotScreenPassthroughArgs(t *testing.T) {
 	}
 }
 
+func TestComponentSetRequestKeepsSupersededRPCV1Compatibility(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []ComponentSetParams{
+		{Name: "fcrepo", Disposition: "superseded"},
+		{Name: "fcrepo", DispositionFlag: "SUPERSEDED"},
+	} {
+		req, err := NewComponentSetRequest(input)
+		if err != nil {
+			t.Fatalf("NewComponentSetRequest() error = %v", err)
+		}
+		params, err := DecodeRPCParams[ComponentSetParams](req.Params)
+		if err != nil {
+			t.Fatalf("DecodeRPCParams() error = %v", err)
+		}
+		if params.Disposition != "" && params.Disposition != "superceded" {
+			t.Fatalf("RPC v1 positional disposition = %q, want legacy wire spelling", params.Disposition)
+		}
+		if params.DispositionFlag != "" && params.DispositionFlag != "superceded" {
+			t.Fatalf("RPC v1 disposition flag = %q, want legacy wire spelling", params.DispositionFlag)
+		}
+	}
+}
+
 func TestInvokePluginRPCReturnsStderrDetail(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sitectl-broken")
