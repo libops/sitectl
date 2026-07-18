@@ -2,6 +2,20 @@ name: goreleaser
 
 on:
   workflow_dispatch:
+    inputs:
+      release-mode:
+        description: Full release or recovery mode; full recovery requires an existing empty release
+        required: true
+        type: choice
+        default: packages-only
+        options:
+          - packages-only
+          - homebrew-only
+          - full
+      release-version:
+        description: Exact existing vMAJOR.MINOR.PATCH tag for recovery
+        required: false
+        type: string
   push:
     tags:
       - "*"
@@ -12,22 +26,13 @@ permissions:
 
 jobs:
   goreleaser:
-    uses: libops/terraform-linux-packages/.github/workflows/reusable-goreleaser.yaml@481df51116aed2efd1c002ef1ef6a287699828a0 # main
+    uses: libops/.github/.github/workflows/sitectl-plugin-goreleaser.yaml@e1e30b58c9c566f72b22f03e637cd5218d635727 # main
     permissions:
       contents: write
       id-token: write
     secrets: inherit
     with:
-      go-version: "1.26.x"
-      publish-package-repo: true
+      go-version: "1.26.5"
+      release-mode: ${{ github.ref_type == 'tag' && 'full' || inputs.release-mode }}
+      release-version: ${{ inputs.release-version }}
       package-name: sitectl
-      package-repo-prefix: sitectl
-      package-repo-label: sitectl
-      package-public-key-name: sitectl-archive-keyring
-      gcp-project: ${{ vars.LIBOPS_PACKAGES_GCLOUD_PROJECT }}
-      workload-identity-provider: ${{ vars.LIBOPS_PACKAGES_GCLOUD_OIDC_POOL }}
-      service-account: ${{ vars.LIBOPS_PACKAGES_GSA }}
-      gcs-bucket: ${{ vars.LIBOPS_PACKAGES_GCS_BUCKET }}
-      aptly-gpg-key-id: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_KEY_ID }}
-      aptly-gpg-private-key-secret: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PRIVATE_KEY_SECRET }}
-      aptly-gpg-passphrase-secret: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PASSPHRASE_SECRET }}
