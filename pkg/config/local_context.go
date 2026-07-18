@@ -266,7 +266,11 @@ func expandAndCleanProjectDir(value string) (string, error) {
 		value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
 	}
 	value = os.ExpandEnv(value)
-	return filepath.Clean(value), nil
+	projectDir, err := filepath.Abs(value)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute project directory %q: %w", value, err)
+	}
+	return projectDir, nil
 }
 
 func ExpandProjectDir(value string) (string, error) {
