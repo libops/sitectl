@@ -259,7 +259,7 @@ func TestRPCArgvSafetyDoesNotScreenPassthroughArgs(t *testing.T) {
 	}
 }
 
-func TestComponentSetRequestKeepsSupersededRPCV1Compatibility(t *testing.T) {
+func TestComponentSetRequestEmitsCanonicalSupersededSpelling(t *testing.T) {
 	t.Parallel()
 
 	for _, input := range []ComponentSetParams{
@@ -274,11 +274,11 @@ func TestComponentSetRequestKeepsSupersededRPCV1Compatibility(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DecodeRPCParams() error = %v", err)
 		}
-		if params.Disposition != "" && params.Disposition != "superceded" {
-			t.Fatalf("RPC v1 positional disposition = %q, want legacy wire spelling", params.Disposition)
+		if params.Disposition != "" && params.Disposition != "superseded" {
+			t.Fatalf("RPC v1 positional disposition = %q, want canonical spelling", params.Disposition)
 		}
-		if params.DispositionFlag != "" && params.DispositionFlag != "superceded" {
-			t.Fatalf("RPC v1 disposition flag = %q, want legacy wire spelling", params.DispositionFlag)
+		if params.DispositionFlag != "" && params.DispositionFlag != "superseded" {
+			t.Fatalf("RPC v1 disposition flag = %q, want canonical spelling", params.DispositionFlag)
 		}
 	}
 }
