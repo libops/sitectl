@@ -243,6 +243,39 @@ func TestPromptAndSaveLocalContextExpandsEnvInPromptedProjectDir(t *testing.T) {
 	}
 }
 
+func TestPromptAndSaveLocalContextResolvesRelativeProjectDirFromWorkingDirectory(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(tempHome); err != nil {
+		t.Fatalf("Chdir(tempHome) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWd)
+	})
+
+	ctx, err := PromptAndSaveLocalContext(LocalContextCreateOptions{
+		Name:       "relative-local",
+		ProjectDir: "./foo/bar",
+		Input: func(question ...string) (string, error) {
+			t.Fatal("did not expect prompt")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("PromptAndSaveLocalContext() error = %v", err)
+	}
+
+	expected := filepath.Join(tempHome, "foo", "bar")
+	if ctx.ProjectDir != expected {
+		t.Fatalf("expected project dir %q, got %q", expected, ctx.ProjectDir)
+	}
+}
+
 func TestPromptAndSaveLocalContextDeclinesOverwrite(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
