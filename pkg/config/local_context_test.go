@@ -254,6 +254,10 @@ func TestPromptAndSaveLocalContextResolvesRelativeProjectDirFromWorkingDirectory
 	if err := os.Chdir(tempHome); err != nil {
 		t.Fatalf("Chdir(tempHome) error = %v", err)
 	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() after Chdir error = %v", err)
+	}
 	t.Cleanup(func() {
 		_ = os.Chdir(oldWd)
 	})
@@ -270,7 +274,7 @@ func TestPromptAndSaveLocalContextResolvesRelativeProjectDirFromWorkingDirectory
 		t.Fatalf("PromptAndSaveLocalContext() error = %v", err)
 	}
 
-	expected := filepath.Join(tempHome, "foo", "bar")
+	expected := filepath.Join(workingDir, "foo", "bar")
 	if ctx.ProjectDir != expected {
 		t.Fatalf("expected project dir %q, got %q", expected, ctx.ProjectDir)
 	}
