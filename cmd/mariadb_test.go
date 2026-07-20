@@ -3,12 +3,188 @@ package cmd
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"errors"
 	"io"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/libops/sitectl/pkg/docker"
+	"github.com/spf13/cobra"
 )
+
+func TestMariaDBUpgradeCommandUsesDefaultServiceFlag(t *testing.T) {
+	t.Parallel()
+
+	cmd := mariaDBUpgradeCommand()
+	flag := cmd.Flags().Lookup("service")
+	if flag == nil {
+		t.Fatal("expected --service flag")
+	}
+	if flag.DefValue != defaultMariaDBService {
+		t.Fatalf("--service default = %q, want %q", flag.DefValue, defaultMariaDBService)
+	}
+}
+
+func TestRunMariaDBUpgradeSkipsUpgradeWhenProbeReportsNoAction(t *testing.T) {
+	t.Parallel()
+
+	var commands [][]string
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	cmd := mariaDBUpgradeTestCommand(stdout, stderr)
+	execute := func(_ context.Context, _ *docker.DockerClient, container string, command []string) (mariaDBUpgradeResult, error) {
+		if container != "database-1" {
+			t.Fatalf("container = %q, want database-1", container)
+		}
+		commands = append(commands, append([]string{}, command...))
+		switch len(commands) {
+		case 1:
+			return mariaDBUpgradeResult{stdout: "  --check-if-upgrade-is-needed"}, nil
+		case 2:
+			return mariaDBUpgradeResult{exitCode: 1, stderr: "already current"}, nil
+		default:
+			t.Fatalf("unexpected command %v", command)
+			return mariaDBUpgradeResult{}, nil
+		}
+	}
+
+	err := runMariaDBUpgradeWithExecutor(cmd, &serviceContainer{containerName: "database-1"}, "mariadb-upgrade", execute)
+	if err != nil {
+		t.Fatalf("runMariaDBUpgradeWithExecutor() error = %v", err)
+	}
+	wantCommands := [][]string{
+		{"mariadb-upgrade", "--help"},
+		{"mariadb-upgrade", "--check-if-upgrade-is-needed"},
+	}
+	if !reflect.DeepEqual(commands, wantCommands) {
+		t.Fatalf("commands = %v, want %v", commands, wantCommands)
+	}
+	if got := stdout.String(); !strings.Contains(got, "already up to date; no upgrade needed") {
+		t.Fatalf("stdout = %q, want no-op status", got)
+	}
+	if got := stderr.String(); got != "already current\n" {
+		t.Fatalf("stderr = %q, want preserved probe stderr", got)
+	}
+}
+
+func TestRunMariaDBUpgradeRunsWhenProbeReportsUpgradeNeeded(t *testing.T) {
+	t.Parallel()
+
+	results := []mariaDBUpgradeResult{
+		{stdout: "--check-if-upgrade-is-needed"},
+		{exitCode: 0},
+		{exitCode: 0, stdout: "tables upgraded", stderr: "upgrade warning"},
+	}
+	var commands [][]string
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	cmd := mariaDBUpgradeTestCommand(stdout, stderr)
+	execute := func(_ context.Context, _ *docker.DockerClient, _ string, command []string) (mariaDBUpgradeResult, error) {
+		commands = append(commands, append([]string{}, command...))
+		return results[len(commands)-1], nil
+	}
+
+	err := runMariaDBUpgradeWithExecutor(cmd, &serviceContainer{containerName: "database-1"}, "mariadb-upgrade", execute)
+	if err != nil {
+		t.Fatalf("runMariaDBUpgradeWithExecutor() error = %v", err)
+	}
+	wantCommands := [][]string{
+		{"mariadb-upgrade", "--help"},
+		{"mariadb-upgrade", "--check-if-upgrade-is-needed"},
+		{"mariadb-upgrade"},
+	}
+	if !reflect.DeepEqual(commands, wantCommands) {
+		t.Fatalf("commands = %v, want %v", commands, wantCommands)
+	}
+	if got := stdout.String(); got != "tables upgraded\nMariaDB upgrade complete.\n" {
+		t.Fatalf("stdout = %q, want upgrade output and completion status", got)
+	}
+	if got := stderr.String(); got != "upgrade warning\n" {
+		t.Fatalf("stderr = %q, want preserved upgrade stderr", got)
+	}
+}
+
+func TestRunMariaDBUpgradeFallsBackForOlderClients(t *testing.T) {
+	t.Parallel()
+
+	var commands [][]string
+	stdout := &bytes.Buffer{}
+	cmd := mariaDBUpgradeTestCommand(stdout, io.Discard)
+	execute := func(_ context.Context, _ *docker.DockerClient, _ string, command []string) (mariaDBUpgradeResult, error) {
+		commands = append(commands, append([]string{}, command...))
+		if len(commands) == 1 {
+			return mariaDBUpgradeResult{exitCode: 0, stdout: "legacy client help"}, nil
+		}
+		return mariaDBUpgradeResult{exitCode: 0, stdout: "legacy upgrade complete"}, nil
+	}
+
+	err := runMariaDBUpgradeWithExecutor(cmd, &serviceContainer{containerName: "database-1"}, "mysql_upgrade", execute)
+	if err != nil {
+		t.Fatalf("runMariaDBUpgradeWithExecutor() error = %v", err)
+	}
+	wantCommands := [][]string{{"mysql_upgrade", "--help"}, {"mysql_upgrade"}}
+	if !reflect.DeepEqual(commands, wantCommands) {
+		t.Fatalf("commands = %v, want %v", commands, wantCommands)
+	}
+	if got := stdout.String(); !strings.Contains(got, "legacy upgrade complete") {
+		t.Fatalf("stdout = %q, want legacy upgrade output", got)
+	}
+}
+
+func TestRunMariaDBUpgradePreservesProbeFailure(t *testing.T) {
+	t.Parallel()
+
+	cmd := mariaDBUpgradeTestCommand(io.Discard, io.Discard)
+	call := 0
+	execute := func(_ context.Context, _ *docker.DockerClient, _ string, _ []string) (mariaDBUpgradeResult, error) {
+		call++
+		if call == 1 {
+			return mariaDBUpgradeResult{stdout: "--check-if-upgrade-is-needed"}, nil
+		}
+		return mariaDBUpgradeResult{exitCode: 2, stderr: "cannot connect to server"}, nil
+	}
+
+	err := runMariaDBUpgradeWithExecutor(cmd, &serviceContainer{containerName: "database-1"}, "mariadb-upgrade", execute)
+	if err == nil {
+		t.Fatal("expected probe failure")
+	}
+	if got := err.Error(); !strings.Contains(got, "exit code 2") || !strings.Contains(got, "cannot connect to server") {
+		t.Fatalf("error = %q, want exit code and stderr", got)
+	}
+}
+
+func TestRunMariaDBUpgradePreservesExecError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("docker connection lost")
+	execute := func(_ context.Context, _ *docker.DockerClient, _ string, _ []string) (mariaDBUpgradeResult, error) {
+		return mariaDBUpgradeResult{exitCode: -1, stderr: "socket closed"}, wantErr
+	}
+
+	err := runMariaDBUpgradeWithExecutor(
+		mariaDBUpgradeTestCommand(io.Discard, io.Discard),
+		&serviceContainer{containerName: "database-1"},
+		"mariadb-upgrade",
+		execute,
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want wrapping %v", err, wantErr)
+	}
+	if got := err.Error(); !strings.Contains(got, "socket closed") {
+		t.Fatalf("error = %q, want preserved stderr", got)
+	}
+}
+
+func mariaDBUpgradeTestCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{Use: "upgrade"}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetContext(context.Background())
+	return cmd
+}
 
 func TestMariaDBDumpArgsDefaultsToAllDatabases(t *testing.T) {
 	t.Parallel()

@@ -19,7 +19,7 @@ func TestCoreServiceCommandsExposeExpectedSubcommands(t *testing.T) {
 		cmd         *cobra.Command
 		subcommands []string
 	}{
-		{name: "mariadb", cmd: mariaDBCommand(), subcommands: []string{"backup", "restore", "status", "sync"}},
+		{name: "mariadb", cmd: mariaDBCommand(), subcommands: []string{"backup", "restore", "status", "sync", "upgrade"}},
 		{name: "traefik", cmd: traefikCommand(), subcommands: []string{"status"}},
 		{name: "solr", cmd: solrCommand(), subcommands: []string{"info", "status"}},
 		{name: "valkey", cmd: valkeyCommand(), subcommands: []string{"ping", "status"}},

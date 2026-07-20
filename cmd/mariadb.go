@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -43,6 +44,14 @@ type mariaDBSyncOptions struct {
 	yolo      bool
 }
 
+type mariaDBUpgradeResult struct {
+	exitCode int
+	stdout   string
+	stderr   string
+}
+
+type mariaDBUpgradeExecutor func(context.Context, *docker.DockerClient, string, []string) (mariaDBUpgradeResult, error)
+
 func mariaDBCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "mariadb",
@@ -54,8 +63,146 @@ func mariaDBCommand() *cobra.Command {
 		mariaDBBackupCommand(),
 		mariaDBRestoreCommand(),
 		mariaDBSyncCommand(),
+		mariaDBUpgradeCommand(),
 	)
 	return cmd
+}
+
+func mariaDBUpgradeCommand() *cobra.Command {
+	opts := struct {
+		service string
+	}{service: defaultMariaDBService}
+	cmd := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Upgrade MariaDB system tables when required",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, err := resolveServiceContainer(cmd, opts.service)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				_ = target.cli.Close()
+			}()
+
+			return runMariaDBUpgrade(cmd, target)
+		},
+	}
+	cmd.Flags().StringVar(&opts.service, "service", defaultMariaDBService, "MariaDB compose service name")
+	return cmd
+}
+
+func runMariaDBUpgrade(cmd *cobra.Command, target *serviceContainer) error {
+	binary := resolveContainerExecutable(cmd, target.cli, target.containerName, "mariadb-upgrade", "mysql_upgrade")
+	return runMariaDBUpgradeWithExecutor(cmd, target, binary, executeMariaDBUpgradeCommand)
+}
+
+func runMariaDBUpgradeWithExecutor(cmd *cobra.Command, target *serviceContainer, binary string, execute mariaDBUpgradeExecutor) error {
+	helpResult, err := execute(cmd.Context(), target.cli, target.containerName, []string{binary, "--help"})
+	if err != nil {
+		return mariaDBUpgradeError("inspect MariaDB upgrade capabilities", helpResult, err)
+	}
+
+	supportsProbe := helpResult.exitCode == 0 && strings.Contains(
+		helpResult.stdout+"\n"+helpResult.stderr,
+		"--check-if-upgrade-is-needed",
+	)
+	if supportsProbe {
+		probeResult, err := execute(cmd.Context(), target.cli, target.containerName, []string{binary, "--check-if-upgrade-is-needed"})
+		if err != nil {
+			return mariaDBUpgradeError("check whether MariaDB needs an upgrade", probeResult, err)
+		}
+		switch probeResult.exitCode {
+		case 0:
+			if err := writeMariaDBUpgradeResult(cmd, probeResult); err != nil {
+				return err
+			}
+		case 1:
+			if err := writeMariaDBUpgradeResult(cmd, probeResult); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "MariaDB is already up to date; no upgrade needed."); err != nil {
+				return fmt.Errorf("write MariaDB upgrade status: %w", err)
+			}
+			return nil
+		default:
+			return mariaDBUpgradeError("check whether MariaDB needs an upgrade", probeResult, nil)
+		}
+	}
+
+	upgradeResult, err := execute(cmd.Context(), target.cli, target.containerName, []string{binary})
+	if err != nil {
+		return mariaDBUpgradeError("run MariaDB upgrade", upgradeResult, err)
+	}
+	if upgradeResult.exitCode != 0 {
+		return mariaDBUpgradeError("run MariaDB upgrade", upgradeResult, nil)
+	}
+	if err := writeMariaDBUpgradeResult(cmd, upgradeResult); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(cmd.OutOrStdout(), "MariaDB upgrade complete."); err != nil {
+		return fmt.Errorf("write MariaDB upgrade status: %w", err)
+	}
+	return nil
+}
+
+func executeMariaDBUpgradeCommand(ctx context.Context, cli *docker.DockerClient, containerName string, command []string) (mariaDBUpgradeResult, error) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode, err := cli.Exec(ctx, docker.ExecOptions{
+		Container:    containerName,
+		Cmd:          command,
+		AttachStdout: true,
+		AttachStderr: true,
+		Stdout:       &stdout,
+		Stderr:       &stderr,
+	})
+	return mariaDBUpgradeResult{
+		exitCode: exitCode,
+		stdout:   stdout.String(),
+		stderr:   stderr.String(),
+	}, err
+}
+
+func mariaDBUpgradeError(action string, result mariaDBUpgradeResult, err error) error {
+	detail := strings.TrimSpace(result.stderr)
+	if detail == "" {
+		detail = strings.TrimSpace(result.stdout)
+	}
+	if err != nil {
+		if detail != "" {
+			return fmt.Errorf("%s: %w: %s", action, err, detail)
+		}
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if detail != "" {
+		return fmt.Errorf("%s failed with exit code %d: %s", action, result.exitCode, detail)
+	}
+	return fmt.Errorf("%s failed with exit code %d", action, result.exitCode)
+}
+
+func writeMariaDBUpgradeResult(cmd *cobra.Command, result mariaDBUpgradeResult) error {
+	if err := writeMariaDBUpgradeStream(cmd.OutOrStdout(), result.stdout); err != nil {
+		return fmt.Errorf("write MariaDB upgrade stdout: %w", err)
+	}
+	if err := writeMariaDBUpgradeStream(cmd.ErrOrStderr(), result.stderr); err != nil {
+		return fmt.Errorf("write MariaDB upgrade stderr: %w", err)
+	}
+	return nil
+}
+
+func writeMariaDBUpgradeStream(writer io.Writer, output string) error {
+	if output == "" {
+		return nil
+	}
+	if _, err := io.WriteString(writer, output); err != nil {
+		return err
+	}
+	if !strings.HasSuffix(output, "\n") {
+		_, err := io.WriteString(writer, "\n")
+		return err
+	}
+	return nil
 }
 
 func mariaDBBackupCommand() *cobra.Command {
