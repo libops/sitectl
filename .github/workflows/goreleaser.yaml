@@ -10,7 +10,6 @@ on:
         default: packages-only
         options:
           - packages-only
-          - homebrew-only
           - full
       release-version:
         description: Exact existing vMAJOR.MINOR.PATCH tag for recovery
@@ -26,11 +25,12 @@ permissions:
 
 jobs:
   goreleaser:
-    uses: libops/.github/.github/workflows/sitectl-plugin-goreleaser.yaml@94c6e17e0cdb3e9aa71292ba6dac2e96a74f2dcb # main
+    uses: libops/.github/.github/workflows/sitectl-plugin-goreleaser.yaml@5f44a8c8d157bb7e5cf6d9e1c98847a604e87455 # main
     permissions:
       contents: write
       id-token: write
-    secrets: inherit
+    secrets:
+      HOMEBREW_REPO: ${{ secrets.HOMEBREW_REPO }}
     with:
       go-version: "1.26.5"
       release-mode: ${{ github.ref_type == 'tag' && 'full' || inputs.release-mode }}
