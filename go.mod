@@ -13,12 +13,12 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/lrstanley/bubblezone/v2 v2.0.0
-	github.com/pkg/sftp v1.13.10
+	github.com/pkg/sftp v1.13.11
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	golang.org/x/crypto v0.53.0
-	golang.org/x/sys v0.46.0
-	golang.org/x/term v0.44.0
+	golang.org/x/crypto v0.54.0
+	golang.org/x/sys v0.47.0
+	golang.org/x/term v0.45.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -86,6 +86,6 @@ require (
 	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )
