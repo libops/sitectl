@@ -1161,7 +1161,7 @@ func groupContexts(cfg *config.Config) []siteGroup {
 
 	siteMap := map[string][]config.Context{}
 	for _, ctx := range cfg.Contexts {
-		siteName := helpers.FirstNonEmpty(ctx.Site, ctx.ProjectName, ctx.Name, "default")
+		siteName := helpers.FirstNonEmpty(ctx.Site, ctx.Name, "default")
 		siteMap[siteName] = append(siteMap[siteName], ctx)
 	}
 

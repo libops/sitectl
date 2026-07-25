@@ -52,13 +52,13 @@ func AddCreateFlags(cmd *cobra.Command, options ...CreateOption) {
 	seenFollowUpFlags := map[string]bool{}
 	for _, option := range options {
 		defaultDisposition := option.normalizedDispositionDefault()
-		usage := fmt.Sprintf("%s disposition", option.Name)
+		usage := fmt.Sprintf("Choose whether the %s component is configured in the new stack", option.Name)
 		if len(option.AllowedDispositions) > 0 {
 			allowed := []string{}
 			for _, disposition := range option.AllowedDispositions {
 				allowed = append(allowed, string(disposition))
 			}
-			usage = fmt.Sprintf("%s disposition: %s", option.Name, strings.Join(allowed, ", "))
+			usage = fmt.Sprintf("Choose how the %s component is configured in the new stack: %s", option.Name, strings.Join(allowed, ", "))
 		}
 		if option.Shorthand != "" {
 			cmd.Flags().StringP(option.Name, option.Shorthand, string(defaultDisposition), usage)
@@ -66,7 +66,7 @@ func AddCreateFlags(cmd *cobra.Command, options ...CreateOption) {
 			cmd.Flags().String(option.Name, string(defaultDisposition), usage)
 		}
 		for _, followUp := range option.FollowUps {
-			flagName := followUpFlagName(option.Name, followUp)
+			flagName := FollowUpFlagName(option.Name, followUp)
 			if flagName == "" || seenFollowUpFlags[flagName] || cmd.Flags().Lookup(flagName) != nil {
 				continue
 			}
@@ -164,7 +164,7 @@ func PromptCreateFollowUps(cmd *cobra.Command, option CreateOption, decision *Re
 	}
 
 	for _, followUp := range followUpsForDisposition(option.FollowUps, decision.Disposition, decision.State) {
-		flagName := followUpFlagName(option.Name, followUp)
+		flagName := FollowUpFlagName(option.Name, followUp)
 		if flagName != "" && cmd != nil && cmd.Flags().Lookup(flagName) != nil && cmd.Flags().Changed(flagName) {
 			if followUp.BoolValue {
 				value, err := cmd.Flags().GetBool(flagName)

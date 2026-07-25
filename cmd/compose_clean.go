@@ -120,6 +120,7 @@ func confirmComposeClean(ctx *config.Context, yes bool) error {
 func runComposeDownVolumes(cmd *cobra.Command, ctx *config.Context) error {
 	commandText := ctx.DockerComposeShellCommand("docker compose down -v")
 	fmt.Fprintf(cmd.OutOrStdout(), "Running %s\n", commandText)
+	config.LogDockerComposeCommand(ctx, commandText)
 	command := exec.CommandContext(cmd.Context(), "bash", "-lc", commandText) // #nosec G204 -- fixed docker compose command rewritten from context-owned metadata.
 	command.Dir = ctx.ProjectDir
 	command.Env = os.Environ()

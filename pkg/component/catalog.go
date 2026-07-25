@@ -133,7 +133,7 @@ func writeCatalogFollowUps(out io.Writer, def Definition) error {
 	}
 	wrote := false
 	for _, followUp := range def.FollowUps {
-		flagName := followUpFlagName(def.Name, followUp)
+		flagName := FollowUpFlagName(def.Name, followUp)
 		if flagName == "" {
 			continue
 		}
@@ -195,7 +195,7 @@ func followUpFlagList(def Definition) string {
 	values := make([]string, 0, len(def.FollowUps))
 	seen := map[string]bool{}
 	for _, followUp := range def.FollowUps {
-		flagName := followUpFlagName(def.Name, followUp)
+		flagName := FollowUpFlagName(def.Name, followUp)
 		if flagName == "" || seen[flagName] {
 			continue
 		}

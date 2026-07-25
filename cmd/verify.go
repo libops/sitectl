@@ -11,7 +11,7 @@ import (
 )
 
 var verifyCmd = &cobra.Command{
-	Use:   "verify [flags]",
+	Use:   "verify",
 	Short: "Run plugin verification checks for the active site",
 	Long: `Run plugin verification checks for the active site.
 

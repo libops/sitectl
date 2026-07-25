@@ -23,7 +23,6 @@ func TestLoadFromFlags(t *testing.T) {
 	flags.String("project-dir", "/path/to/project", "Project directory")
 	flags.String("site", "", "Site")
 	flags.String("plugin", "core", "Plugin")
-	flags.String("project-name", "foo", "Composer Project Name")
 	flags.String("compose-project-name", "", "Docker Compose project name")
 	flags.String("compose-network", "", "Docker Compose network name")
 	flags.String("environment", "", "Environment name")
@@ -46,7 +45,6 @@ func TestLoadFromFlags(t *testing.T) {
 		"--project-dir", "/custom/project",
 		"--site", "museum",
 		"--plugin", "isle",
-		"--project-name", "bar",
 		"--compose-project-name", "bar-compose",
 		"--compose-network", "bar-net",
 		"--environment", "staging",
@@ -94,9 +92,6 @@ func TestLoadFromFlags(t *testing.T) {
 	if ctx.Plugin != "isle" {
 		t.Errorf("Expected plugin 'isle', got %q", ctx.Plugin)
 	}
-	if ctx.ProjectName != "bar" {
-		t.Errorf("Expected project-name 'bar', got %q", ctx.ProjectName)
-	}
 	if ctx.ComposeProjectName != "bar-compose" {
 		t.Errorf("Expected compose-project-name 'bar-compose', got %q", ctx.ComposeProjectName)
 	}
@@ -113,6 +108,45 @@ func TestLoadFromFlags(t *testing.T) {
 	expectedComposeFiles := []string{"docker-compose.yml", "docker-compose.override.yml"}
 	if !reflect.DeepEqual(ctx.ComposeFile, expectedComposeFiles) {
 		t.Errorf("expected compose-file slice %v but got %v", expectedComposeFiles, ctx.ComposeFile)
+	}
+}
+
+func TestLoadFromFlagsMapsDeprecatedProjectName(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantCompose string
+	}{
+		{
+			name:        "legacy flag fills canonical compose identity",
+			args:        []string{"--project-name", "legacy-runtime"},
+			wantCompose: "legacy-runtime",
+		},
+		{
+			name:        "canonical flag wins when both are supplied",
+			args:        []string{"--project-name", "legacy-runtime", "--compose-project-name", "canonical-runtime"},
+			wantCompose: "canonical-runtime",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+			flags.String("project-name", "", "deprecated")
+			flags.String("compose-project-name", "", "canonical")
+			if err := flags.Parse(tt.args); err != nil {
+				t.Fatal(err)
+			}
+			ctx, err := LoadFromFlags(flags, Context{})
+			if err != nil {
+				t.Fatalf("LoadFromFlags() error = %v", err)
+			}
+			if ctx.ComposeProjectName != tt.wantCompose {
+				t.Fatalf("ComposeProjectName = %q, want %q", ctx.ComposeProjectName, tt.wantCompose)
+			}
+			if ctx.Site != "legacy-runtime" {
+				t.Fatalf("Site = %q, want legacy-runtime", ctx.Site)
+			}
+		})
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 )
 
 var validateCmd = &cobra.Command{
-	Use:   "validate [flags]",
+	Use:   "validate",
 	Short: "Validate the context configuration and project layout",
 	Long: `Validate the active context's configuration and project layout.
 

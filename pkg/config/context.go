@@ -31,37 +31,98 @@ const (
 )
 
 type Context struct {
-	Name                string      `yaml:"name"`
-	Site                string      `yaml:"site"`
-	Plugin              string      `yaml:"plugin"`
-	DockerHostType      ContextType `mapstructure:"type" yaml:"type"`
-	Environment         string      `yaml:"environment,omitempty"`
-	DockerSocket        string      `yaml:"docker-socket"`
-	ProjectName         string      `yaml:"project-name"`
-	ComposeProjectName  string      `yaml:"compose-project-name,omitempty"`
-	ComposeNetwork      string      `yaml:"compose-network,omitempty"`
-	ProjectDir          string      `yaml:"project-dir"`
-	DrupalRootfs        string      `yaml:"drupal-rootfs,omitempty"`
-	DrupalContainerRoot string      `yaml:"drupal-container-root,omitempty"`
-	SSHUser             string      `yaml:"ssh-user"`
-	SSHHostname         string      `yaml:"ssh-hostname,omitempty"`
-	SSHPort             uint        `yaml:"ssh-port,omitempty"`
-	SSHKeyPath          string      `yaml:"ssh-key,omitempty"`
-	EnvFile             []string    `yaml:"env-file"`
-	ComposeFile         []string    `yaml:"compose-file,omitempty"`
+	// Name is the unique sitectl identifier selected with --context.
+	Name string `yaml:"name"`
+	// Site groups multiple environment contexts for the same logical site.
+	Site string `yaml:"site"`
+	// Plugin identifies the plugin responsible for this stack's lifecycle.
+	Plugin string `yaml:"plugin"`
+	// DockerHostType selects local execution or SSH-backed remote execution.
+	DockerHostType ContextType `mapstructure:"type" yaml:"type"`
+	// Environment distinguishes deployments of a site, such as local or prod.
+	Environment string `yaml:"environment,omitempty"`
+	// DockerSocket is the Unix socket Docker exposes on the target machine.
+	DockerSocket string `yaml:"docker-socket"`
+	// ComposeProjectName is Docker Compose's runtime project identity.
+	ComposeProjectName string `yaml:"compose-project-name,omitempty"`
+	// ProjectName is retained for source compatibility with older plugins.
+	// Deprecated: use Site for logical identity and ComposeProjectName for the
+	// Docker Compose runtime identity. This alias is never persisted.
+	ProjectName string `json:"-" yaml:"-"`
+	// ComposeNetwork is the primary network used to resolve stack services.
+	ComposeNetwork string `yaml:"compose-network,omitempty"`
+	// ProjectDir is the compose checkout path on the target machine.
+	ProjectDir string `yaml:"project-dir"`
+	// DrupalRootfs locates Drupal within ProjectDir for Drupal-aware plugins.
+	DrupalRootfs string `yaml:"drupal-rootfs,omitempty"`
+	// DrupalContainerRoot is Drupal's corresponding path inside its container.
+	DrupalContainerRoot string `yaml:"drupal-container-root,omitempty"`
+	// SSHUser, SSHHostname, SSHPort, and SSHKeyPath define remote transport.
+	SSHUser     string `yaml:"ssh-user"`
+	SSHHostname string `yaml:"ssh-hostname,omitempty"`
+	SSHPort     uint   `yaml:"ssh-port,omitempty"`
+	SSHKeyPath  string `yaml:"ssh-key,omitempty"`
+	// EnvFile and ComposeFile select the ordered inputs passed to Compose.
+	EnvFile     []string `yaml:"env-file"`
+	ComposeFile []string `yaml:"compose-file,omitempty"`
 
-	// Database connection configuration
+	// Database fields describe the compose service and secret references used
+	// by shared database jobs; they never contain the password itself.
 	DatabaseService        string `yaml:"database-service,omitempty"`
 	DatabaseUser           string `yaml:"database-user,omitempty"`
 	DatabasePasswordSecret string `yaml:"database-password-secret,omitempty"`
 	DatabaseName           string `yaml:"database-name,omitempty"`
 
+	// ReadSmallFileFunc is an injectable runtime reader and is never persisted.
 	ReadSmallFileFunc func(filename string) (string, error) `yaml:"-"`
-	Ephemeral         bool                                  `yaml:"-"`
+	// Ephemeral marks discovered contexts that must not be saved implicitly.
+	Ephemeral bool `yaml:"-"`
 
 	// Extra holds plugin-specific configuration.
 	// Each plugin uses its own key (e.g., "drupal", "isle", "wordpress").
 	Extra map[string]yaml.Node `yaml:"extra,omitempty"`
+}
+
+// MarshalYAML writes only canonical context keys while normalizing values from
+// callers that still populate the deprecated ProjectName field.
+func (c Context) MarshalYAML() (any, error) {
+	c.mergeLegacyProjectName("")
+	type contextAlias Context
+	return contextAlias(c), nil
+}
+
+// UnmarshalYAML accepts the retired project-name key so existing configs keep
+// working. Site owns logical identity and ComposeProjectName owns Compose's
+// runtime identity, so newly saved contexts contain no duplicate project name.
+func (c *Context) UnmarshalYAML(value *yaml.Node) error {
+	type contextAlias Context
+	var stored struct {
+		contextAlias `yaml:",inline"`
+		ProjectName  string `yaml:"project-name"`
+	}
+	// yaml.v3 normally preserves fields absent from a document when decoding
+	// into a populated struct. Seed the alias to retain that behavior for
+	// partial flag overlays that also pass through this compatibility hook.
+	stored.contextAlias = contextAlias(*c)
+	if err := value.Decode(&stored); err != nil {
+		return err
+	}
+	*c = Context(stored.contextAlias)
+	c.mergeLegacyProjectName(stored.ProjectName)
+	return nil
+}
+
+func (c *Context) mergeLegacyProjectName(value string) {
+	legacyValue := helpers.FirstNonEmpty(strings.TrimSpace(value), strings.TrimSpace(c.ProjectName))
+	if strings.TrimSpace(c.ComposeProjectName) == "" {
+		c.ComposeProjectName = legacyValue
+	}
+	if strings.TrimSpace(c.Site) == "" {
+		c.Site = legacyValue
+	}
+	// Keep callers that still read ProjectName working without writing the
+	// retired YAML key back to disk.
+	c.ProjectName = c.ComposeProjectName
 }
 
 // FileReader defines the behavior needed to read small files.
@@ -116,6 +177,7 @@ func GetContextForPlugin(name, pluginName string) (Context, error) {
 }
 
 func (context Context) String() (string, error) {
+	context.mergeLegacyProjectName("")
 	out, err := yaml.Marshal(context) // #nosec G117 -- context contains secret reference names, not secret values.
 	if err != nil {
 		return "", fmt.Errorf("unable to parse context: %v", err)
@@ -125,6 +187,7 @@ func (context Context) String() (string, error) {
 }
 
 func SaveContext(ctx *Context, setDefault bool) error {
+	ctx.mergeLegacyProjectName("")
 	cfg, err := Load()
 	if err != nil {
 		return err
@@ -175,7 +238,7 @@ func CurrentContext(f *pflag.FlagSet) (*Context, error) {
 	}
 	cfg, err := Load()
 	if err != nil {
-		return nil, fmt.Errorf("unable to load sitectl config. Have you ran `sitectl config set-context`?")
+		return nil, fmt.Errorf("unable to load sitectl config. Have you run `sitectl config set-context`?")
 	}
 	for _, context := range cfg.Contexts {
 		if context.Name == c {
@@ -183,7 +246,7 @@ func CurrentContext(f *pflag.FlagSet) (*Context, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("unable to set current context. Have you ran `sitectl config use-context`?")
+	return nil, fmt.Errorf("unable to set current context. Have you run `sitectl config use-context`?")
 }
 
 func ResolveCurrentContextName(f *pflag.FlagSet) (string, error) {
@@ -199,7 +262,7 @@ func ResolveCurrentContextNameForPlugin(f *pflag.FlagSet, pluginName string) (st
 		if c == "default" {
 			cfg, err := Load()
 			if err != nil {
-				return "", fmt.Errorf("unable to load sitectl config. Have you ran `sitectl config set-context`?")
+				return "", fmt.Errorf("unable to load sitectl config. Have you run `sitectl config set-context`?")
 			}
 			return cfg.CurrentContext, nil
 		}
@@ -208,7 +271,7 @@ func ResolveCurrentContextNameForPlugin(f *pflag.FlagSet, pluginName string) (st
 
 	c, err := CurrentForPluginWithDiagnostics(pluginName, os.Stderr)
 	if err != nil {
-		return "", fmt.Errorf("unable to load sitectl config. Have you ran `sitectl config set-context`?")
+		return "", fmt.Errorf("unable to load sitectl config. Have you run `sitectl config set-context`?")
 	}
 	return c, nil
 }

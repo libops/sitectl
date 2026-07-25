@@ -10,7 +10,7 @@ import (
 )
 
 var setCmd = &cobra.Command{
-	Use:   "set <component> [disposition] [flags]",
+	Use:   "set <component> [disposition]",
 	Short: "Enable, disable, or reconfigure a component",
 	Long: `Set the state or disposition of a named component for the active context.
 

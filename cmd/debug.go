@@ -178,9 +178,6 @@ func renderCoreDebug(runCtx context.Context, ctx config.Context) string {
 		{Label: "Docker host type", Value: string(ctx.DockerHostType)},
 		{Label: "Project dir", Value: ctx.ProjectDir},
 	}
-	if strings.TrimSpace(ctx.ProjectName) != "" {
-		meta = append(meta, debugui.Row{Label: "Project name", Value: ctx.ProjectName})
-	}
 	if strings.TrimSpace(ctx.ComposeProjectName) != "" {
 		meta = append(meta, debugui.Row{Label: "Compose project", Value: ctx.ComposeProjectName})
 	}

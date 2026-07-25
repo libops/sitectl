@@ -81,7 +81,9 @@ func followUpsForDisposition(specs []FollowUpSpec, disposition Disposition, stat
 	return out
 }
 
-func followUpFlagName(componentName string, spec FollowUpSpec) string {
+// FollowUpFlagName returns the public create flag that supplies a component
+// follow-up decision.
+func FollowUpFlagName(componentName string, spec FollowUpSpec) string {
 	if strings.TrimSpace(spec.FlagName) != "" {
 		return strings.TrimSpace(spec.FlagName)
 	}
@@ -100,9 +102,9 @@ func createFollowUpUsage(componentName string, spec FollowUpSpec) string {
 		label = strings.TrimSpace(spec.Name)
 	}
 	if componentName == "" {
-		return label
+		return "Configure " + label + " for this component decision"
 	}
-	return fmt.Sprintf("%s for %s", label, componentName)
+	return fmt.Sprintf("Configure %s when the %s component is selected", label, componentName)
 }
 
 func PromptFollowUp(componentName string, spec FollowUpSpec, defaultValue string, input InputFunc, promptChoice PromptChoiceFunc) (string, error) {
@@ -142,7 +144,7 @@ func PromptFollowUp(componentName string, spec FollowUpSpec, defaultValue string
 		return strings.TrimSpace(value), nil
 	}
 
-	promptName := followUpFlagName(componentName, spec)
+	promptName := FollowUpFlagName(componentName, spec)
 	if promptName == "" {
 		promptName = spec.Name
 	}

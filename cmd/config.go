@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,24 +17,18 @@ import (
 
 var configCmd = &cobra.Command{
 	Use:   "config",
-	Short: "Manage sitectl command configuration",
-	Long: `
-A sitectl config can have multiple contexts.
+	Short: "Manage saved site contexts and their default selection",
+	Long: `Manage the saved connection records sitectl uses to target Docker Compose sites.
 
-A sitectl context is a docker compose site running somewhere. "Somewhere" meaning:
-
-- on your laptop (--type local)
-- on a remote server (--type remote).
-
-Remote contexts require SSH access to the remote server from where sitectl is being ran from.
-When creating a context the remote server DNS name, SSH port, SSH username, and the path to your SSH private key will need to be set in the context configuration.
-
-You can have a default context which will be used when running sitectl commands, unless the context is overridden with the --context flag.`,
+Each context identifies one local or SSH-accessible site environment, its project and
+Compose identity, and the application plugin that owns stack-specific behavior. The
+default context is used only when neither --context nor the current directory selects
+another environment.`,
 }
 
 var viewConfigCmd = &cobra.Command{
 	Use:   "view",
-	Short: "Print your sitectl config",
+	Short: "Print the complete persisted sitectl configuration",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path, err := config.ConfigFilePath()
 		if err != nil {
@@ -270,54 +263,29 @@ var validateConfigCmd = &cobra.Command{
 }
 
 var setContextCmd = &cobra.Command{
-	Use:   "set-context [context-name]",
-	Short: "Set or update properties of a context. Creates a new context if it does not exist.",
-	Args:  cobra.ExactArgs(1),
+	Use:   "set-context <context-name>",
+	Short: "Create or update the connection record for one site environment",
+	Long: `Create or update a context that tells sitectl which Docker Compose project to operate.
+
+The context records the site and environment identity, project directory, Compose
+identity, Docker endpoint, and—when the target is remote—its SSH connection. Use
+--default to make this the fallback target for commands that omit --context.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		context, err := config.GetContext(args[0])
-		if err != nil {
-			if !errors.Is(err, config.ErrContextNotFound) {
-				return err
-			}
-			context = config.Context{Name: args[0]}
-		}
-
-		f := cmd.Flags()
-		cc, err := config.LoadFromFlags(f, context)
+		cc, defaultContext, err := reviewSetContext(cmd, args[0], config.GetInput)
 		if err != nil {
 			return err
 		}
-		cc.Name = args[0]
-
-		defaultContext, err := f.GetBool("default")
-		if err != nil {
-			return err
-		}
-
-		// override local defaults for remote environments
-		switch cc.DockerHostType {
-		case config.ContextRemote:
-			err = cc.VerifyRemoteInput(true)
-			if err != nil {
-				return err
-			}
-		case config.ContextLocal:
-			cc.SSHKeyPath = ""
-			cc.DockerSocket = config.GetDefaultLocalDockerSocket(cc.DockerSocket)
-		default:
-			return fmt.Errorf("unknown context type %q", cc.DockerHostType)
-		}
-
 		if err = config.SaveContext(cc, defaultContext); err != nil {
 			return err
 		}
-
+		fmt.Fprintf(cmd.OutOrStdout(), "Saved context %s for %s (%s).\n", cc.Name, cc.ProjectDir, cc.DockerHostType)
 		return nil
 	},
 }
 
 var useContextCmd = &cobra.Command{
-	Use:   "use-context [context-name]",
+	Use:   "use-context <context-name>",
 	Short: "Switch to the specified context",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -346,7 +314,7 @@ var useContextCmd = &cobra.Command{
 }
 
 var deleteContextCmd = &cobra.Command{
-	Use:   "delete-context [context-name]",
+	Use:   "delete-context <context-name>",
 	Short: "Delete a site context",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -394,7 +362,7 @@ func writeContextTable(out io.Writer, cfg *config.Config) {
 			helpers.FirstNonEmpty(ctx.Plugin, "-"),
 			helpers.FirstNonEmpty(ctx.Environment, "-"),
 			helpers.FirstNonEmpty(string(ctx.DockerHostType), "-"),
-			helpers.FirstNonEmpty(ctx.ProjectName, "-"),
+			helpers.FirstNonEmpty(ctx.ComposeProjectName, "-"),
 		)
 	}
 	_ = w.Flush()
@@ -474,10 +442,11 @@ func uniqueSortedContextValues(contexts []config.Context, getter func(config.Con
 func init() {
 	setFlags := setContextCmd.Flags()
 	config.SetCommandFlags(setFlags)
-	setFlags.Bool("default", false, "set to default context")
+	setFlags.Bool("default", false, "Use this context when a command does not select one explicitly.")
+	setFlags.Bool("yolo", false, "Save resolved flag, stored-context, and product defaults without reviewing each decision.")
 
-	validateConfigCmd.Flags().BoolVar(&configValidateAll, "all", false, "Validate all configured contexts")
-	validateConfigCmd.Flags().StringVar(&configValidateSite, "site", "", "Validate all contexts for a specific site")
+	validateConfigCmd.Flags().BoolVar(&configValidateAll, "all", false, "Validate configuration and target access for every saved context.")
+	validateConfigCmd.Flags().StringVar(&configValidateSite, "site", "", "Validate every environment context belonging to this logical site.")
 	corecomponent.AddReportFlags(validateConfigCmd, nil, &configValidateFormat)
 
 	configCmd.AddCommand(viewConfigCmd)

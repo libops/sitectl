@@ -49,8 +49,8 @@ func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
 	if ctx.Name != "isle-local" {
 		t.Fatalf("expected name isle-local, got %q", ctx.Name)
 	}
-	if ctx.Site != "docker-compose" {
-		t.Fatalf("expected default site docker-compose, got %q", ctx.Site)
+	if ctx.Site != "project" {
+		t.Fatalf("expected default site project, got %q", ctx.Site)
 	}
 	if ctx.Plugin != "core" {
 		t.Fatalf("expected default plugin core, got %q", ctx.Plugin)
@@ -60,9 +60,6 @@ func TestPromptAndSaveLocalContextUsesProvidedValues(t *testing.T) {
 	}
 	if ctx.ProjectDir != projectDir {
 		t.Fatalf("expected project dir %q, got %q", projectDir, ctx.ProjectDir)
-	}
-	if ctx.ProjectName != "docker-compose" {
-		t.Fatalf("expected default project name docker-compose, got %q", ctx.ProjectName)
 	}
 	if ctx.ComposeProjectName != "isle-local" {
 		t.Fatalf("expected detected compose project name isle-local, got %q", ctx.ComposeProjectName)
@@ -142,8 +139,8 @@ func TestPromptAndSaveLocalContextPromptsForMissingValues(t *testing.T) {
 	if ctx.Name != "site-a" {
 		t.Fatalf("expected defaulted name site-a, got %q", ctx.Name)
 	}
-	if ctx.Site != "docker-compose" {
-		t.Fatalf("expected default site docker-compose, got %q", ctx.Site)
+	if ctx.Site != "site-a" {
+		t.Fatalf("expected default site site-a, got %q", ctx.Site)
 	}
 	if ctx.Plugin != "core" {
 		t.Fatalf("expected default plugin core, got %q", ctx.Plugin)

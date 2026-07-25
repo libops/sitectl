@@ -14,7 +14,7 @@ import (
 )
 
 var healthcheckCmd = &cobra.Command{
-	Use:   "healthcheck [flags]",
+	Use:   "healthcheck",
 	Short: "Check whether the active site is online",
 	Long: `Check whether the active site is online.
 

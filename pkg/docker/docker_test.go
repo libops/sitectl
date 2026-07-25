@@ -125,8 +125,8 @@ func TestGetSecret_MountedSecret(t *testing.T) {
 		},
 	}
 	fakeConfig := &config.Context{
-		ProjectDir:  "/tmp/project",
-		ProjectName: "test",
+		ProjectDir:         "/tmp/project",
+		ComposeProjectName: "test",
 		ReadSmallFileFunc: func(path string) (string, error) {
 			if strings.HasSuffix(path, filepath.Join("secrets", "secretName")) {
 				return "fileSecret", nil
@@ -156,8 +156,8 @@ func TestGetServiceIp(t *testing.T) {
 		},
 	}
 	fakeConfig := &config.Context{
-		ProjectName:    "test",
-		ComposeNetwork: "test_default",
+		ComposeProjectName: "test",
+		ComposeNetwork:     "test_default",
 	}
 	dClient := &DockerClient{
 		CLI: fake,
@@ -184,8 +184,8 @@ func TestGetServiceIpFallsBackToSingleNetwork(t *testing.T) {
 		},
 	}
 	fakeConfig := &config.Context{
-		ProjectName:    "test",
-		ComposeNetwork: "missing-network",
+		ComposeProjectName: "test",
+		ComposeNetwork:     "missing-network",
 	}
 	dClient := &DockerClient{CLI: fake}
 	ip, err := dClient.GetServiceIp(context.Background(), fakeConfig, "dummyContainer")
@@ -212,7 +212,7 @@ func TestGetDatabaseURIsWithClient_LocalContextUsesLoopback(t *testing.T) {
 	}
 	ctxCfg := &config.Context{
 		DockerHostType:         config.ContextLocal,
-		ProjectName:            "stack",
+		ComposeProjectName:     "stack",
 		DatabaseService:        "mariadb",
 		DatabaseUser:           "root",
 		DatabasePasswordSecret: "DB_ROOT_PASSWORD",
@@ -265,7 +265,7 @@ func TestGetDatabaseURIsWithClient_RemoteContextUsesContainerIP(t *testing.T) {
 	}
 	ctxCfg := &config.Context{
 		DockerHostType:         config.ContextRemote,
-		ProjectName:            "stack",
+		ComposeProjectName:     "stack",
 		ComposeNetwork:         "stack_default",
 		DatabaseService:        "mariadb",
 		DatabaseUser:           "root",

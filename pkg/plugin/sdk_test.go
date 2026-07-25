@@ -23,14 +23,14 @@ func TestGetContextAllowsIncludedPlugin(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 
 	ctx := config.Context{
-		Name:           "museum",
-		Site:           "museum",
-		Plugin:         "isle",
-		DockerHostType: config.ContextLocal,
-		Environment:    "local",
-		DockerSocket:   "/var/run/docker.sock",
-		ProjectName:    "museum",
-		ProjectDir:     tempHome,
+		Name:               "museum",
+		Site:               "museum",
+		Plugin:             "isle",
+		DockerHostType:     config.ContextLocal,
+		Environment:        "local",
+		DockerSocket:       "/var/run/docker.sock",
+		ComposeProjectName: "museum",
+		ProjectDir:         tempHome,
 	}
 	if err := config.SaveContext(&ctx, true); err != nil {
 		t.Fatalf("SaveContext() error = %v", err)
@@ -99,14 +99,14 @@ func TestGetContextRejectsUnsupportedPlugin(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 
 	ctx := config.Context{
-		Name:           "museum",
-		Site:           "museum",
-		Plugin:         "drupal",
-		DockerHostType: config.ContextLocal,
-		Environment:    "local",
-		DockerSocket:   "/var/run/docker.sock",
-		ProjectName:    "museum",
-		ProjectDir:     tempHome,
+		Name:               "museum",
+		Site:               "museum",
+		Plugin:             "drupal",
+		DockerHostType:     config.ContextLocal,
+		Environment:        "local",
+		DockerSocket:       "/var/run/docker.sock",
+		ComposeProjectName: "museum",
+		ProjectDir:         tempHome,
 	}
 	if err := config.SaveContext(&ctx, true); err != nil {
 		t.Fatalf("SaveContext() error = %v", err)
@@ -711,7 +711,6 @@ func TestRefreshCreateContextComposeIdentityDetectsClonedTemplateName(t *testing
 		DockerHostType:     config.ContextLocal,
 		Environment:        "local",
 		DockerSocket:       "/var/run/docker.sock",
-		ProjectName:        "generated-wp",
 		ComposeProjectName: "generated-wp",
 		ComposeNetwork:     "generated-wp_default",
 		ProjectDir:         projectDir,

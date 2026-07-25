@@ -11,10 +11,10 @@ import (
 func TestWriteComposePortOverrideUsesComposeOverrideTag(t *testing.T) {
 	projectDir := t.TempDir()
 	ctx := Context{
-		DockerHostType: ContextLocal,
-		Environment:    "dev",
-		ProjectDir:     projectDir,
-		ProjectName:    "ports-test",
+		DockerHostType:     ContextLocal,
+		Environment:        "dev",
+		ProjectDir:         projectDir,
+		ComposeProjectName: "ports-test",
 	}
 	if err := os.WriteFile(filepath.Join(projectDir, LocalDevComposeOverrideName), []byte("services:\n  app:\n    image: ghcr.io/example/app:test\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(override) error = %v", err)
@@ -57,10 +57,10 @@ func TestWriteComposePortOverrideUsesComposeOverrideTag(t *testing.T) {
 func TestWriteComposePortOverrideRemovesManagedPortsWhenDefaultsAreAvailable(t *testing.T) {
 	projectDir := t.TempDir()
 	ctx := Context{
-		DockerHostType: ContextLocal,
-		Environment:    "dev",
-		ProjectDir:     projectDir,
-		ProjectName:    "ports-test",
+		DockerHostType:     ContextLocal,
+		Environment:        "dev",
+		ProjectDir:         projectDir,
+		ComposeProjectName: "ports-test",
 	}
 	initial := `services:
   traefik:
@@ -216,10 +216,10 @@ func TestComposeTLSProviderIgnoresNonTraefikACMECommands(t *testing.T) {
 func TestComposePublishedHostPortReadsLocalDevOverride(t *testing.T) {
 	projectDir := t.TempDir()
 	ctx := Context{
-		DockerHostType: ContextLocal,
-		Environment:    "dev",
-		ProjectDir:     projectDir,
-		ProjectName:    "ports-test",
+		DockerHostType:     ContextLocal,
+		Environment:        "dev",
+		ProjectDir:         projectDir,
+		ComposeProjectName: "ports-test",
 	}
 	writePortCompose(t, projectDir, `services:
   traefik:

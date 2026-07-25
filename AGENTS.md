@@ -39,10 +39,10 @@ The core abstraction is the **Context**, which represents a Docker Compose site 
 
 Contexts are stored in `~/.sitectl/config.yaml` and include:
 - Docker socket path
-- Compose project name and profile
+- Logical site and environment identity
+- Compose project name, network, Compose files, and environment files
 - Project directory
 - For remote: SSH connection details (hostname, user, port, key path)
-- Environment file paths
 
 ### Command Flow
 
@@ -50,7 +50,7 @@ Contexts are stored in `~/.sitectl/config.yaml` and include:
 2. The context determines how Docker commands are executed:
    - Local: Direct Docker socket connection
    - Remote: SSH tunnel to remote Docker socket
-3. Docker Compose commands automatically inject `--profile` and `--env-file` flags based on context
+3. Docker Compose commands automatically inject the project directory, project name, Compose files, and environment files from the context
 
 ### Key Packages
 
@@ -95,13 +95,6 @@ Remote contexts use SSH as a transport layer:
 2. Docker API calls tunneled through SSH to remote socket
 3. HTTP transport uses SSH connection's `Dial()` for Unix socket forwarding
 4. File operations (reading .env, secrets) execute via SSH session or SFTP
-
-### Authentication
-
-- `sitectl login`: Opens browser for authentication (Google OAuth or email/password)
-- `sitectl logout`: Removes stored credentials
-- `sitectl whoami`: Shows current authentication status
-- Token storage: `~/.sitectl/oauth.json` with 0600 permissions
 
 ## Go Coding Conventions
 
@@ -183,6 +176,17 @@ if err := doSomething(); err != nil {
 ```go
 slog.Info("user authenticated", "user_id", userID, "ip_address", ipAddr)
 ```
+
+### Command UX and Documentation Contract
+
+- Treat Cobra command metadata as the canonical command reference. Every public command needs a precise `Use` and outcome-oriented `Short`; add `Long` when target, side effects, prerequisites, risk, or core/plugin interaction are not obvious.
+- Flag help must explain what the value controls and its operational consequence. Avoid circular text such as "Set X", bare nouns such as "Path", and vague bypass text such as "Apply without confirmation".
+- Design for technical operators who may know Docker, the managed application, or systems administration without knowing the other domains. Connect application outcomes, Docker resources, and operational risk in one explanation rather than separate audience tracks.
+- Keep shared service commands in core and application-specific commands in the owning plugin. Implementation ownership must not leak into the operator experience.
+- Interactive workflows, including `config set-context` and application create, must establish the working path first and explain each material decision. Use explicit flags as the first default, stored context values second, detected values third, and product defaults last. `--yolo` is the explicit noninteractive bypass.
+- Log every Docker Compose command actually executed with `slog.Info`, including context and target metadata, without logging secret values.
+- Command and flag references are generated into `sitectl-docs/snippets/commands`; never hand-edit generated snippets. Update source help, regenerate with `make docs-snippets`, place the reference on the matching command/service/plugin page, and run snippet drift plus docs link/build checks.
+- When changing command architecture, help, or docs generation, use the `maintain-sitectl-cli-docs` skill when installed.
 
 ### Testing
 

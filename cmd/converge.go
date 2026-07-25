@@ -10,7 +10,7 @@ import (
 )
 
 var convergeCmd = &cobra.Command{
-	Use:   "converge [flags]",
+	Use:   "converge",
 	Short: "Detect and repair component configuration drift",
 	Long: `Inspect each component registered by the active context's plugin and apply
 any changes needed to bring the project back into alignment.
