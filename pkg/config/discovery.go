@@ -543,7 +543,6 @@ func claimedLocalContext(claim *ProjectClaim) *Context {
 		DockerHostType:     ContextLocal,
 		Environment:        "local",
 		DockerSocket:       GetDefaultLocalDockerSocket("/var/run/docker.sock"),
-		ProjectName:        projectName,
 		ComposeProjectName: composeProjectName,
 		ComposeNetwork:     DetectComposeNetworkName(projectDir, composeProjectName),
 		ProjectDir:         projectDir,

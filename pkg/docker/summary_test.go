@@ -28,7 +28,7 @@ func TestSummarizeProjectWithClient(t *testing.T) {
 		},
 	}
 
-	summary, err := SummarizeProjectWithClient(context.Background(), fake, &config.Context{ProjectName: "museum"})
+	summary, err := SummarizeProjectWithClient(context.Background(), fake, &config.Context{ComposeProjectName: "museum"})
 	if err != nil {
 		t.Fatalf("SummarizeProjectWithClient() error = %v", err)
 	}

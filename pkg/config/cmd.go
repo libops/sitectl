@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -36,6 +37,7 @@ func (c *Context) runCommandContext(ctx context.Context, cmd *exec.Cmd, printOut
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var output strings.Builder
+	LogDockerComposeCommand(c, cmd.String())
 	if c.DockerHostType == ContextLocal {
 		original := cmd
 		cmd = exec.CommandContext(runCtx, original.Path, original.Args[1:]...) // #nosec G204 -- command path is selected by sitectl and arguments are forwarded without a shell.
@@ -91,7 +93,7 @@ func (c *Context) runCommandContext(ctx context.Context, cmd *exec.Cmd, printOut
 	remoteCmd := fmt.Sprintf("cd %s && ", shellquote.Join(c.ProjectDir))
 	remoteCmd += shellquote.Join(cmd.Args...)
 
-	slog.Info("Running remote command", "host", c.SSHHostname, "cmd", remoteCmd)
+	slog.Info("Running remote command", "host", c.SSHHostname, "cmd", redactCommandForLog(remoteCmd))
 	session, err := sshClient.NewSession()
 	if err != nil {
 		_ = sshClient.Close()
@@ -198,6 +200,33 @@ func (c *Context) runCommandContext(ctx context.Context, cmd *exec.Cmd, printOut
 	}
 
 	return output.String(), nil
+}
+
+// LogDockerComposeCommand records Compose commands at info level so normal
+// sitectl operation also teaches operators the underlying command line.
+func LogDockerComposeCommand(ctx *Context, command string) {
+	if !strings.Contains(command, "docker compose") {
+		return
+	}
+	args := []any{"command", redactCommandForLog(command)}
+	if ctx != nil {
+		args = append(args, "context", ctx.Name, "target", ctx.DockerHostType, "project_dir", ctx.ProjectDir)
+	}
+	slog.Info("Running Docker Compose command", args...)
+}
+
+var (
+	sensitiveEnvironmentAssignment = regexp.MustCompile(`(?i)(\b[A-Z0-9_]*(?:PASSWORD|PASSWD|TOKEN|SECRET|CREDENTIAL|API_KEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*=)(?:"[^"]*"|'[^']*'|[^\s]+)`)
+	sensitiveCommandFlag           = regexp.MustCompile(`(?i)(--(?:password|passwd|token|api-key|access-key|access-token|private-key)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s]+)`)
+)
+
+// redactCommandForLog keeps commands useful as operational examples without
+// copying credential values into logs. Secret reference names and key paths are
+// intentionally retained; only flags and assignments that carry values are
+// redacted.
+func redactCommandForLog(command string) string {
+	command = sensitiveEnvironmentAssignment.ReplaceAllString(command, `${1}<redacted>`)
+	return sensitiveCommandFlag.ReplaceAllString(command, `${1}<redacted>`)
 }
 
 func remoteCommandWaitError(runCtx context.Context, remoteCmd string, waitErr error) error {

@@ -45,7 +45,7 @@ func GetInput(question ...string) (string, error) {
 	}
 	input, err := reader.ReadString('\n')
 	if err != nil {
-		return "", fmt.Errorf("unable to readon from stdin: %v", err)
+		return "", fmt.Errorf("unable to read from stdin: %v", err)
 	}
 	input = strings.TrimSpace(input)
 	fmt.Fprintln(out)
@@ -123,6 +123,20 @@ func LoadFromFlags(f *pflag.FlagSet, context Context) (*Context, error) {
 	if err := yaml.Unmarshal(data, &cc); err != nil {
 		return nil, err
 	}
+	if legacyFlag := f.Lookup("project-name"); legacyFlag != nil && legacyFlag.Changed {
+		legacyValue, getErr := f.GetString("project-name")
+		if getErr != nil {
+			return nil, fmt.Errorf("error getting flag %q: %w", "project-name", getErr)
+		}
+		composeFlag := f.Lookup("compose-project-name")
+		if composeFlag == nil || !composeFlag.Changed {
+			cc.ComposeProjectName = strings.TrimSpace(legacyValue)
+		}
+		if strings.TrimSpace(cc.Site) == "" {
+			cc.Site = strings.TrimSpace(legacyValue)
+		}
+	}
+	cc.mergeLegacyProjectName("")
 
 	return &cc, nil
 }
@@ -208,24 +222,30 @@ func SetCommandFlags(flags *pflag.FlagSet) {
 	// NB: these flags must match the corresponding config.Context yaml struct tag
 	// though we can add additional flags that have no match for additional functionality
 	// in the command logic (e.g. default)
-	flags.String("docker-socket", "/var/run/docker.sock", "Path to Docker socket")
-	flags.String("type", "local", "Type of context: local or remote")
-	flags.String("ssh-hostname", "", "Remote contexts DNS name for the host.")
-	flags.Uint("ssh-port", 2222, "Port number")
-	flags.String("ssh-user", "", "SSH user for remote context")
-	flags.String("ssh-key", "", "Path to SSH private key for remote context. e.g. "+key)
-	flags.String("project-dir", "", "Path to docker compose project directory")
-	flags.String("site", "", "Logical site name this context belongs to")
-	flags.String("plugin", "core", "Owning plugin identifier for this context, such as core, isle, or drupal")
-	flags.String("project-name", "docker-compose", "Logical project name for this context")
-	flags.String("compose-project-name", "", "Docker Compose project name, matching COMPOSE_PROJECT_NAME or compose name:")
-	flags.String("compose-network", "", "Primary Docker Compose network name for this environment")
-	flags.String("environment", "", "Environment name for this context, such as local, dev, staging, or prod")
-	flags.Bool("sudo", false, "for remote contexts, run docker commands as sudo")
-	flags.StringSlice("env-file", []string{}, "when running remote docker commands, the --env-file paths to pass to docker compose")
-	flags.StringSliceP("compose-file", "f", []string{}, "docker compose file paths to use (equivalent to docker compose -f flag). Multiple files can be specified.")
-	flags.String("database-service", "mariadb", "Name of the database service in Docker Compose")
-	flags.String("database-user", "root", "Database user to connect as (e.g. root, admin)")
-	flags.String("database-password-secret", "DB_ROOT_PASSWORD", "Name of the docker compose secret containing the database password")
-	flags.String("database-name", "drupal_default", "Name of the database to connect to (e.g. drupal_default)")
+	flags.String("docker-socket", "/var/run/docker.sock", "Unix socket where Docker accepts API requests on the target machine.")
+	flags.String("type", "local", "Execution target: local runs Docker on this machine; remote runs it over SSH.")
+	flags.String("ssh-hostname", "", "DNS name or IP address of the remote machine that hosts the stack.")
+	flags.Uint("ssh-port", 22, "TCP port used to establish the remote SSH connection.")
+	flags.String("ssh-user", "", "Remote account whose permissions sitectl uses for Docker and filesystem operations.")
+	flags.String("ssh-key", "", "Private key used to authenticate to the remote host; the key contents are not stored in the context. Example: "+key)
+	flags.String("project-dir", "", "Docker Compose project directory on the target machine; relative Compose and env files resolve from here.")
+	flags.String("site", "", "Logical site shared by related environment contexts, such as museum-local and museum-prod.")
+	flags.String("plugin", "core", "Application plugin that owns stack-specific behavior for this context, such as isle or drupal.")
+	flags.String("project-name", "", "Deprecated compatibility alias for --compose-project-name.")
+	if err := flags.MarkDeprecated("project-name", "use --site and --compose-project-name instead"); err != nil {
+		panic(fmt.Sprintf("deprecate project-name flag: %v", err))
+	}
+	flags.String("compose-project-name", "", "Docker Compose identity used to name and label this stack's containers, volumes, and networks.")
+	flags.String("compose-network", "", "Primary Docker Compose network sitectl uses to resolve and connect to stack services.")
+	flags.String("environment", "", "Deployment label within the site, such as local, dev, staging, or prod.")
+	flags.Bool("sudo", false, "Deprecated compatibility flag; remote execution uses the configured SSH account's Docker permissions.")
+	if err := flags.MarkDeprecated("sudo", "configure Docker access for the SSH account instead"); err != nil {
+		panic(fmt.Sprintf("deprecate sudo flag: %v", err))
+	}
+	flags.StringSlice("env-file", []string{}, "Environment files passed to Docker Compose in this order; paths resolve on the target machine.")
+	flags.StringSliceP("compose-file", "f", []string{}, "Compose files passed as Docker Compose -f options in this order; may be repeated.")
+	flags.String("database-service", "mariadb", "Compose service that shared database backup, restore, and sync jobs execute against.")
+	flags.String("database-user", "root", "Database account shared jobs use inside the database service; no password is stored here.")
+	flags.String("database-password-secret", "DB_ROOT_PASSWORD", "Compose secret name shared jobs read for the database password; this stores the reference, not the password.")
+	flags.String("database-name", "drupal_default", "Default database schema shared backup, restore, and sync jobs operate on.")
 }

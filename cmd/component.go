@@ -157,7 +157,7 @@ what would change without applying it.`,
 }
 
 var componentSetCmd = &cobra.Command{
-	Use:                "set <component> [disposition] [flags]",
+	Use:                "set <component> [disposition]",
 	Short:              "Enable, disable, or reconfigure a component",
 	DisableFlagParsing: true,
 	Long: `Set the state or disposition of a named component in the active context's plugin.
@@ -505,10 +505,10 @@ EXAMPLES
 
 COMMON FLAGS
 
-  --context        The sitectl context to use. See sitectl config --help for more info
+  --context        Saved site environment to target instead of the context selected by the current directory or default configuration
   --disposition    Disposition to apply. Valid values depend on the component.
   -h, --help       Help for set
-  --log-level      The logging level for the command
+  --log-level      Minimum structured log severity to print: DEBUG, INFO, WARN, or ERROR
   --path           Path to the project directory. Defaults to the active context project directory.
   --state          State to apply (on, off).
   --tls-mode       TLS mode for TLS-related components.

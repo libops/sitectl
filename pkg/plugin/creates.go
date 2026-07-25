@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -90,14 +91,16 @@ type CreateRunner interface {
 }
 
 type ComposeCreateRequest struct {
-	ContextName        string
-	TargetType         config.ContextType
-	CheckoutSource     CheckoutSource
-	Path               string
-	TemplateRepo       string
-	TemplateBranch     string
-	Site               string
-	Environment        string
+	ContextName    string
+	TargetType     config.ContextType
+	CheckoutSource CheckoutSource
+	Path           string
+	TemplateRepo   string
+	TemplateBranch string
+	Site           string
+	Environment    string
+	// ProjectName is retained for source compatibility with older plugins.
+	// Deprecated: use ComposeProjectName.
 	ProjectName        string
 	ComposeProjectName string
 	ComposeNetwork     string
@@ -266,7 +269,7 @@ func (s *SDK) BindComposeCreateFlags(cmd *cobra.Command, spec CreateSpec, drupal
 	cmd.Flags().String("template-branch", normalizeCreateSpec(spec).DockerComposeBranch, "Branch or ref to clone from the template repository.")
 	cmd.Flags().Bool("default-context", false, "Set the new context as the default sitectl context.")
 	cmd.Flags().Bool("setup-only", false, "Clone and configure the checkout but do not start the stack.")
-	cmd.Flags().Bool("yolo", false, "Skip confirmation prompts for create-time host changes.")
+	cmd.Flags().Bool("yolo", false, "Accept resolved defaults without reviewing context, component, or host-change decisions.")
 	cmd.Flags().StringArray("tag", []string{}, "Set a LibOps image tag for a known Compose service as SERVICE=TAG; may be passed more than once.")
 	cmd.Flags().StringArray("image", []string{}, "Override a non-buildable Compose service image as SERVICE=IMAGE; may be passed more than once.")
 	cmd.Flags().StringArray("build-arg", []string{}, "Override a Compose service build arg as SERVICE.ARG=VALUE; may be passed more than once.")
@@ -276,7 +279,10 @@ func (s *SDK) BindComposeCreateFlags(cmd *cobra.Command, spec CreateSpec, drupal
 	cmd.Flags().String("ssh-key", "", "Path to the SSH private key for a remote target.")
 	cmd.Flags().String("site", "", "Logical site name this stack belongs to.")
 	cmd.Flags().String("environment", "", "Environment name for the stack, such as local, dev, staging, or prod.")
-	cmd.Flags().String("project-name", "", "Logical project name for this stack.")
+	cmd.Flags().String("project-name", "", "Deprecated compatibility alias for --compose-project-name.")
+	if err := cmd.Flags().MarkDeprecated("project-name", "use --site and --compose-project-name instead"); err != nil {
+		return fmt.Errorf("deprecate project-name flag: %w", err)
+	}
 	cmd.Flags().String("compose-project-name", "", "Docker Compose project name for this stack.")
 	cmd.Flags().String("compose-network", "", "Primary Docker Compose network name for this stack.")
 	cmd.Flags().String("docker-socket", "", "Docker socket path for the target machine.")
@@ -303,6 +309,11 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 		input = config.GetInput
 	}
 
+	yolo, err := cmd.Flags().GetBool("yolo")
+	if err != nil {
+		return ComposeCreateRequest{}, fmt.Errorf("get yolo flag: %w", err)
+	}
+
 	contextName := ""
 	if flag := cmd.Flags().Lookup("context"); flag != nil && cmd.Flags().Changed("context") {
 		value, err := cmd.Flags().GetString("context")
@@ -311,16 +322,30 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 		}
 		contextName = strings.TrimSpace(value)
 	}
+	existing := config.Context{}
+	if contextName != "" {
+		stored, getErr := config.GetContext(contextName)
+		if getErr == nil {
+			existing = stored
+		} else if !errors.Is(getErr, config.ErrContextNotFound) {
+			return ComposeCreateRequest{}, getErr
+		}
+	}
 
-	targetType, err := resolveCreateTargetType(cmd, input)
+	pathValue, err := resolveCreateProjectDir(cmd, input, defaultPath, existing.ProjectDir, yolo)
 	if err != nil {
 		return ComposeCreateRequest{}, err
 	}
-	checkoutSource, err := resolveCheckoutSource(cmd, input, targetType)
+	contextName, err = reviewCreateContextName(contextName, filepath.Base(pathValue), input, yolo)
 	if err != nil {
 		return ComposeCreateRequest{}, err
 	}
-	pathValue, err := resolveCreateProjectDir(cmd, defaultPath)
+
+	targetType, err := resolveCreateTargetType(cmd, input, existing.DockerHostType, yolo)
+	if err != nil {
+		return ComposeCreateRequest{}, err
+	}
+	checkoutSource, err := resolveCheckoutSource(cmd, input, targetType, yolo)
 	if err != nil {
 		return ComposeCreateRequest{}, err
 	}
@@ -331,6 +356,12 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 	if strings.TrimSpace(templateRepo) == "" {
 		templateRepo = defaultRepo
 	}
+	if checkoutSource == CheckoutSourceTemplate {
+		templateRepo, err = resolveCreateStringDecision(cmd, input, "template-repo", "Template repository", "This Git repository supplies every initial project file for the new checkout.", templateRepo, yolo)
+		if err != nil {
+			return ComposeCreateRequest{}, err
+		}
+	}
 	templateBranch, err := cmd.Flags().GetString("template-branch")
 	if err != nil {
 		return ComposeCreateRequest{}, fmt.Errorf("get template-branch flag: %w", err)
@@ -338,17 +369,36 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 	if strings.TrimSpace(templateBranch) == "" {
 		templateBranch = defaultBranch
 	}
-	setDefaultContext, err := cmd.Flags().GetBool("default-context")
-	if err != nil {
-		return ComposeCreateRequest{}, fmt.Errorf("get default-context flag: %w", err)
+	if checkoutSource == CheckoutSourceTemplate {
+		templateBranch, err = resolveCreateStringDecision(cmd, input, "template-branch", "Template version", "This branch or ref selects the exact template revision used for the new checkout.", templateBranch, yolo)
+		if err != nil {
+			return ComposeCreateRequest{}, err
+		}
 	}
-	setupOnly, err := cmd.Flags().GetBool("setup-only")
+	cfg, err := config.Load()
 	if err != nil {
-		return ComposeCreateRequest{}, fmt.Errorf("get setup-only flag: %w", err)
+		return ComposeCreateRequest{}, err
 	}
-	yolo, err := cmd.Flags().GetBool("yolo")
+	firstContext := strings.TrimSpace(cfg.CurrentContext) == ""
+	defaultContextFallback := firstContext || (contextName != "" && strings.EqualFold(cfg.CurrentContext, contextName))
+	defaultContextImplication := "Make this the context used when --context and directory discovery do not select another site. This changes which site later commands target by default."
+	if firstContext {
+		defaultContextImplication += " Because no fallback exists yet, the first saved context must become the default."
+	}
+	setDefaultContext, err := resolveCreateBoolDecision(cmd, input, "default-context", "Default context", defaultContextImplication, defaultContextFallback, yolo)
 	if err != nil {
-		return ComposeCreateRequest{}, fmt.Errorf("get yolo flag: %w", err)
+		return ComposeCreateRequest{}, err
+	}
+	if firstContext && !setDefaultContext {
+		if yolo {
+			setDefaultContext = true
+		} else {
+			return ComposeCreateRequest{}, fmt.Errorf("the first saved context must be the default context")
+		}
+	}
+	setupOnly, err := resolveCreateBoolDecision(cmd, input, "setup-only", "Startup", "Choose whether creation should only prepare files or also start the Docker Compose stack.", false, yolo)
+	if err != nil {
+		return ComposeCreateRequest{}, err
 	}
 	request := ComposeCreateRequest{
 		ContextName:       contextName,
@@ -362,18 +412,39 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 		SetupOnly:         setupOnly,
 		Yolo:              yolo,
 	}
-	request.Site, _ = cmd.Flags().GetString("site")
-	request.Site = strings.TrimSpace(request.Site)
-	request.Environment, _ = cmd.Flags().GetString("environment")
-	request.Environment = strings.TrimSpace(request.Environment)
-	request.ProjectName, _ = cmd.Flags().GetString("project-name")
-	request.ProjectName = strings.TrimSpace(request.ProjectName)
-	request.ComposeProjectName, _ = cmd.Flags().GetString("compose-project-name")
-	request.ComposeProjectName = strings.TrimSpace(request.ComposeProjectName)
-	request.ComposeNetwork, _ = cmd.Flags().GetString("compose-network")
-	request.ComposeNetwork = strings.TrimSpace(request.ComposeNetwork)
-	request.DockerSocket, _ = cmd.Flags().GetString("docker-socket")
-	request.DockerSocket = strings.TrimSpace(request.DockerSocket)
+	request.Site, err = resolveCreateStringDecision(cmd, input, "site", "Site identity", "Contexts with the same site value are treated as environments of one logical site.", helpers.FirstNonEmpty(existing.Site, filepath.Base(pathValue)), yolo)
+	if err != nil {
+		return ComposeCreateRequest{}, err
+	}
+	defaultEnvironment := helpers.FirstNonEmpty(existing.Environment, "local")
+	if targetType == config.ContextRemote {
+		defaultEnvironment = helpers.FirstNonEmpty(existing.Environment, "remote")
+	}
+	request.Environment, err = resolveCreateStringDecision(cmd, input, "environment", "Environment", "This labels where the site runs (for example local, staging, or prod) and distinguishes contexts for the same site.", defaultEnvironment, yolo)
+	if err != nil {
+		return ComposeCreateRequest{}, err
+	}
+	legacyProjectName := ""
+	if flag := cmd.Flags().Lookup("project-name"); flag != nil && flag.Changed {
+		legacyProjectName, err = cmd.Flags().GetString("project-name")
+		if err != nil {
+			return ComposeCreateRequest{}, fmt.Errorf("get project-name flag: %w", err)
+		}
+		legacyProjectName = strings.TrimSpace(legacyProjectName)
+	}
+	request.ProjectName = legacyProjectName
+	request.ComposeProjectName, err = resolveCreateStringDecision(cmd, input, "compose-project-name", "Compose project identity", "Docker Compose uses this name to label containers, volumes, and networks. Changing it makes Compose treat the stack as a different project.", helpers.FirstNonEmpty(legacyProjectName, existing.ComposeProjectName, filepath.Base(pathValue)), yolo)
+	if err != nil {
+		return ComposeCreateRequest{}, err
+	}
+	request.ComposeNetwork, err = resolveCreateStringDecision(cmd, input, "compose-network", "Compose network", "sitectl uses this network to resolve and connect to services in the stack.", helpers.FirstNonEmpty(existing.ComposeNetwork, request.ComposeProjectName+"_default"), yolo)
+	if err != nil {
+		return ComposeCreateRequest{}, err
+	}
+	request.DockerSocket, err = resolveCreateStringDecision(cmd, input, "docker-socket", "Docker socket", "This Unix socket is where sitectl sends Docker API requests on the target machine.", helpers.FirstNonEmpty(existing.DockerSocket, "/var/run/docker.sock"), yolo)
+	if err != nil {
+		return ComposeCreateRequest{}, err
+	}
 	request.SSHHostname, _ = cmd.Flags().GetString("ssh-hostname")
 	request.SSHHostname = strings.TrimSpace(request.SSHHostname)
 	request.SSHUser, _ = cmd.Flags().GetString("ssh-user")
@@ -381,13 +452,13 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 	request.SSHPort, _ = cmd.Flags().GetUint("ssh-port")
 	request.SSHKeyPath, _ = cmd.Flags().GetString("ssh-key")
 	request.SSHKeyPath = strings.TrimSpace(request.SSHKeyPath)
-	request.ImageOverrides, err = resolveCreateImageOverrides(cmd, request, pluginName)
+	request.ImageOverrides, err = resolveCreateImageOverrides(cmd, pluginName)
 	if err != nil {
 		return ComposeCreateRequest{}, err
 	}
 
 	if request.TargetType == config.ContextRemote {
-		if err := populateRemoteCreateRequest(&request, input); err != nil {
+		if err := populateRemoteCreateRequest(&request, existing, input, yolo); err != nil {
 			return ComposeCreateRequest{}, err
 		}
 	}
@@ -400,12 +471,137 @@ func (s *SDK) ResolveComposeCreateRequest(cmd *cobra.Command, input config.Input
 	for _, def := range defs {
 		options = append(options, def.CreateOption())
 	}
+	options, restoreFlags, err := prepareCreateDecisionReview(cmd, options, yolo)
+	if err != nil {
+		return ComposeCreateRequest{}, err
+	}
+	defer restoreFlags()
 	decisions, err := corecomponent.ResolveCreateDecisions(cmd, componentInput(input), options...)
 	if err != nil {
 		return ComposeCreateRequest{}, err
 	}
 	request.Decisions = decisions
+	if !yolo {
+		if err := confirmComposeCreateRequest(request, input); err != nil {
+			return ComposeCreateRequest{}, err
+		}
+	}
 	return request, nil
+}
+
+func confirmComposeCreateRequest(request ComposeCreateRequest, input config.InputFunc) error {
+	defaultBehavior := "keep the current default context"
+	if request.SetDefaultContext {
+		defaultBehavior = "make this the default context"
+	}
+	startupBehavior := "start the Docker Compose stack after setup"
+	if request.SetupOnly {
+		startupBehavior = "prepare files without starting the stack"
+	}
+	summary := fmt.Sprintf(
+		"Create context %q for %s on the %s target. Operate Compose project %q as site %q, environment %q; %s; %s.",
+		request.ContextName,
+		request.Path,
+		request.TargetType,
+		request.ComposeProjectName,
+		request.Site,
+		request.Environment,
+		defaultBehavior,
+		startupBehavior,
+	)
+	if request.CheckoutSource == CheckoutSourceTemplate {
+		summary += fmt.Sprintf(" Clone %s at %s.", request.TemplateRepo, request.TemplateBranch)
+	} else {
+		summary += " Use the existing project checkout."
+	}
+	selected, err := corecomponent.PromptChoice(
+		"create review",
+		[]corecomponent.Choice{
+			{Value: "yes", Label: "yes", Help: "Apply these reviewed context and stack-creation decisions."},
+			{Value: "no", Label: "no", Help: "Leave the context configuration and project files unchanged."},
+		},
+		"yes",
+		componentInput(input),
+		strings.Split(corecomponent.RenderSection("Review create", summary), "\n")...,
+	)
+	if err != nil {
+		return err
+	}
+	if selected != "yes" {
+		return fmt.Errorf("stack creation cancelled")
+	}
+	return nil
+}
+
+func prepareCreateDecisionReview(cmd *cobra.Command, options []corecomponent.CreateOption, yolo bool) ([]corecomponent.CreateOption, func(), error) {
+	prepared := append([]corecomponent.CreateOption{}, options...)
+	restore := []func(){}
+	for i := range prepared {
+		prepared[i].FollowUps = append([]corecomponent.FollowUpSpec{}, prepared[i].FollowUps...)
+		if yolo {
+			prepared[i].PromptOnCreate = false
+			for j := range prepared[i].FollowUps {
+				prepared[i].FollowUps[j].PromptOnCreate = false
+			}
+			continue
+		}
+		flag := cmd.Flags().Lookup(prepared[i].Name)
+		if flag != nil && flag.Changed && prepared[i].PromptOnCreate {
+			value, err := cmd.Flags().GetString(prepared[i].Name)
+			if err != nil {
+				return nil, func() {}, fmt.Errorf("get %s flag: %w", prepared[i].Name, err)
+			}
+			disposition, err := corecomponent.ParseDisposition(value)
+			if err != nil {
+				return nil, func() {}, fmt.Errorf("invalid %s value %q: %w", prepared[i].Name, value, err)
+			}
+			disposition, err = corecomponent.ResolveAllowedDisposition(prepared[i].AllowedDispositions, disposition)
+			if err != nil {
+				return nil, func() {}, fmt.Errorf("invalid %s value %q: %w", prepared[i].Name, value, err)
+			}
+			prepared[i].DefaultDisposition = disposition
+			flag.Changed = false
+			restore = append(restore, func() { flag.Changed = true })
+		}
+		for j := range prepared[i].FollowUps {
+			followUp := &prepared[i].FollowUps[j]
+			if !followUp.PromptOnCreate {
+				continue
+			}
+			flagName := corecomponent.FollowUpFlagName(prepared[i].Name, *followUp)
+			followUpFlag := cmd.Flags().Lookup(flagName)
+			if followUpFlag == nil || !followUpFlag.Changed {
+				continue
+			}
+			switch {
+			case followUp.BoolValue:
+				value, getErr := cmd.Flags().GetBool(flagName)
+				if getErr != nil {
+					return nil, func() {}, fmt.Errorf("get %s flag: %w", flagName, getErr)
+				}
+				followUp.DefaultValue = corecomponent.FormatFollowUpBool(value)
+			case followUp.MultiValue:
+				value, getErr := cmd.Flags().GetStringArray(flagName)
+				if getErr != nil {
+					return nil, func() {}, fmt.Errorf("get %s flag: %w", flagName, getErr)
+				}
+				followUp.DefaultValue = corecomponent.JoinFollowUpValues(value)
+			default:
+				value, getErr := cmd.Flags().GetString(flagName)
+				if getErr != nil {
+					return nil, func() {}, fmt.Errorf("get %s flag: %w", flagName, getErr)
+				}
+				followUp.DefaultValue = strings.TrimSpace(value)
+			}
+			followUpFlag.Changed = false
+			restore = append(restore, func() { followUpFlag.Changed = true })
+		}
+	}
+	return prepared, func() {
+		for _, restoreFlag := range restore {
+			restoreFlag()
+		}
+	}, nil
 }
 
 func (s *SDK) EnsureComposeCreateContext(req ComposeCreateRequest, opts ComposeCreateContextOptions) (*config.Context, error) {
@@ -421,7 +617,7 @@ func (s *SDK) EnsureComposeCreateContext(req ComposeCreateRequest, opts ComposeC
 	defaultName := helpers.FirstNonEmpty(strings.TrimSpace(req.ContextName), strings.TrimSpace(opts.DefaultName), filepath.Base(defaultDir))
 	defaultSite := helpers.FirstNonEmpty(strings.TrimSpace(req.Site), strings.TrimSpace(opts.DefaultSite), filepath.Base(defaultDir))
 	defaultPlugin := helpers.FirstNonEmpty(strings.TrimSpace(opts.DefaultPlugin), s.Metadata.Name, "core")
-	defaultProjectName := helpers.FirstNonEmpty(strings.TrimSpace(req.ProjectName), strings.TrimSpace(opts.DefaultProjectName), filepath.Base(defaultDir), "docker-compose")
+	defaultProjectName := helpers.FirstNonEmpty(strings.TrimSpace(req.ComposeProjectName), strings.TrimSpace(req.ProjectName), strings.TrimSpace(opts.DefaultProjectName), filepath.Base(defaultDir), "docker-compose")
 	defaultEnvironment := helpers.FirstNonEmpty(strings.TrimSpace(req.Environment), strings.TrimSpace(opts.DefaultEnvironment))
 	if req.TargetType == config.ContextLocal && defaultEnvironment == "" {
 		defaultEnvironment = "local"
@@ -611,13 +807,15 @@ func normalizeComposeImageSpecs(values []ComposeImageSpec) []ComposeImageSpec {
 }
 
 type ComposeRemoteContextOptions struct {
-	ContextName         string
-	DefaultName         string
-	Site                string
-	DefaultSite         string
-	Plugin              string
-	ProjectDir          string
-	DefaultProjectDir   string
+	ContextName       string
+	DefaultName       string
+	Site              string
+	DefaultSite       string
+	Plugin            string
+	ProjectDir        string
+	DefaultProjectDir string
+	// ProjectName is retained for source compatibility with older plugins.
+	// Deprecated: use ComposeProjectName.
 	ProjectName         string
 	DefaultProjectName  string
 	Environment         string
@@ -672,9 +870,8 @@ func promptAndSaveRemoteContext(opts ComposeRemoteContextOptions) (*config.Conte
 		}
 	}
 	site := helpers.FirstNonEmpty(strings.TrimSpace(opts.Site), strings.TrimSpace(opts.DefaultSite), filepath.Base(projectDir))
-	projectName := helpers.FirstNonEmpty(strings.TrimSpace(opts.ProjectName), strings.TrimSpace(opts.DefaultProjectName), filepath.Base(projectDir), "docker-compose")
 	environment := helpers.FirstNonEmpty(strings.TrimSpace(opts.Environment), strings.TrimSpace(opts.DefaultEnvironment), "remote")
-	composeProjectName := helpers.FirstNonEmpty(strings.TrimSpace(opts.ComposeProjectName), projectName)
+	composeProjectName := helpers.FirstNonEmpty(strings.TrimSpace(opts.ComposeProjectName), strings.TrimSpace(opts.ProjectName), strings.TrimSpace(opts.DefaultProjectName), filepath.Base(projectDir), "docker-compose")
 	composeNetwork := helpers.FirstNonEmpty(strings.TrimSpace(opts.ComposeNetwork), composeProjectName+"_default")
 	hostname := strings.TrimSpace(opts.SSHHostname)
 	if hostname == "" {
@@ -718,7 +915,6 @@ func promptAndSaveRemoteContext(opts ComposeRemoteContextOptions) (*config.Conte
 		DockerHostType:         config.ContextRemote,
 		Environment:            environment,
 		DockerSocket:           dockerSocket,
-		ProjectName:            projectName,
 		ComposeProjectName:     composeProjectName,
 		ComposeNetwork:         composeNetwork,
 		ProjectDir:             projectDir,
@@ -739,17 +935,21 @@ func promptAndSaveRemoteContext(opts ComposeRemoteContextOptions) (*config.Conte
 	return ctx, nil
 }
 
-func resolveCreateTargetType(cmd *cobra.Command, input config.InputFunc) (config.ContextType, error) {
+func resolveCreateTargetType(cmd *cobra.Command, input config.InputFunc, existing config.ContextType, yolo bool) (config.ContextType, error) {
 	value, err := cmd.Flags().GetString("type")
 	if err != nil {
 		return "", fmt.Errorf("get type flag: %w", err)
 	}
 	value = strings.TrimSpace(value)
-	if value != "" {
-		if value != string(config.ContextLocal) && value != string(config.ContextRemote) {
-			return "", fmt.Errorf("unknown create target type %q", value)
-		}
-		return config.ContextType(value), nil
+	defaultValue := value
+	if defaultValue == "" {
+		defaultValue = helpers.FirstNonEmpty(string(existing), string(config.ContextLocal))
+	}
+	if defaultValue != string(config.ContextLocal) && defaultValue != string(config.ContextRemote) {
+		return "", fmt.Errorf("unknown create target type %q", defaultValue)
+	}
+	if yolo {
+		return config.ContextType(defaultValue), nil
 	}
 	selected, err := corecomponent.PromptChoice(
 		"create target",
@@ -757,7 +957,7 @@ func resolveCreateTargetType(cmd *cobra.Command, input config.InputFunc) (config
 			{Value: string(config.ContextLocal), Label: "local", Help: "Run this stack on your local machine."},
 			{Value: string(config.ContextRemote), Label: "remote", Help: "Run this stack on a remote machine over SSH."},
 		},
-		string(config.ContextLocal),
+		defaultValue,
 		componentInput(input),
 		strings.Split(corecomponent.RenderSection("Target machine", "Choose where this stack will run."), "\n")...,
 	)
@@ -767,21 +967,24 @@ func resolveCreateTargetType(cmd *cobra.Command, input config.InputFunc) (config
 	return config.ContextType(strings.TrimSpace(selected)), nil
 }
 
-func resolveCheckoutSource(cmd *cobra.Command, input config.InputFunc, targetType config.ContextType) (CheckoutSource, error) {
+func resolveCheckoutSource(cmd *cobra.Command, input config.InputFunc, targetType config.ContextType, yolo bool) (CheckoutSource, error) {
 	value, err := cmd.Flags().GetString("checkout-source")
 	if err != nil {
 		return "", fmt.Errorf("get checkout-source flag: %w", err)
 	}
 	value = strings.TrimSpace(value)
-	if value != "" {
-		if value != string(CheckoutSourceTemplate) && value != string(CheckoutSourceExisting) {
-			return "", fmt.Errorf("unknown checkout source %q", value)
-		}
-		return CheckoutSource(value), nil
-	}
 	defaultChoice := string(CheckoutSourceTemplate)
 	if targetType == config.ContextRemote {
 		defaultChoice = string(CheckoutSourceExisting)
+	}
+	if value != "" {
+		defaultChoice = value
+	}
+	if defaultChoice != string(CheckoutSourceTemplate) && defaultChoice != string(CheckoutSourceExisting) {
+		return "", fmt.Errorf("unknown checkout source %q", defaultChoice)
+	}
+	if yolo {
+		return CheckoutSource(defaultChoice), nil
 	}
 	selected, err := corecomponent.PromptChoice(
 		"checkout source",
@@ -799,7 +1002,7 @@ func resolveCheckoutSource(cmd *cobra.Command, input config.InputFunc, targetTyp
 	return CheckoutSource(strings.TrimSpace(selected)), nil
 }
 
-func resolveCreateProjectDir(cmd *cobra.Command, defaultPath string) (string, error) {
+func resolveCreateProjectDir(cmd *cobra.Command, input config.InputFunc, defaultPath, existingPath string, yolo bool) (string, error) {
 	pathValue, err := cmd.Flags().GetString("project-dir")
 	if err != nil {
 		return "", fmt.Errorf("get project-dir flag: %w", err)
@@ -811,12 +1014,25 @@ func resolveCreateProjectDir(cmd *cobra.Command, defaultPath string) (string, er
 		}
 	}
 	if strings.TrimSpace(pathValue) == "" {
-		pathValue = defaultPath
+		pathValue = helpers.FirstNonEmpty(strings.TrimSpace(existingPath), strings.TrimSpace(defaultPath))
 	}
-	return strings.TrimSpace(pathValue), nil
+	if strings.TrimSpace(pathValue) == "" {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			return "", fmt.Errorf("resolve current directory: %w", cwdErr)
+		}
+		pathValue = cwd
+	}
+	if yolo {
+		return strings.TrimSpace(pathValue), nil
+	}
+	return resolveRequiredCreateValue(input, "Project path", strings.TrimSpace(pathValue), strings.Split(corecomponent.RenderSection(
+		"Working path",
+		"sitectl derives context names, Compose identity, checkout behavior, and several later defaults from this directory. Enter a different path now, or press Ctrl-C, change directory, and run create again if these assumptions should be based somewhere else.",
+	), "\n"))
 }
 
-func populateRemoteCreateRequest(req *ComposeCreateRequest, input config.InputFunc) error {
+func populateRemoteCreateRequest(req *ComposeCreateRequest, existing config.Context, input config.InputFunc, yolo bool) error {
 	if req == nil {
 		return fmt.Errorf("create request is nil")
 	}
@@ -827,25 +1043,37 @@ func populateRemoteCreateRequest(req *ComposeCreateRequest, input config.InputFu
 	defaultKey := filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa")
 	var err error
 	if strings.TrimSpace(req.SSHHostname) == "" {
-		req.SSHHostname, err = resolveRequiredCreateValue(input, "SSH hostname", "", strings.Split(corecomponent.RenderSection("Remote SSH connection", "Enter the SSH connection details for the remote machine that hosts this stack."), "\n"))
+		req.SSHHostname = strings.TrimSpace(existing.SSHHostname)
+	}
+	if strings.TrimSpace(req.SSHHostname) == "" || !yolo {
+		req.SSHHostname, err = resolveRequiredCreateValue(input, "SSH hostname", req.SSHHostname, strings.Split(corecomponent.RenderSection("Remote SSH connection", "This host receives Docker and filesystem operations over SSH. Changing it targets a different machine."), "\n"))
 		if err != nil {
 			return err
 		}
 	}
 	if strings.TrimSpace(req.SSHUser) == "" {
-		req.SSHUser, err = resolveRequiredCreateValue(input, "SSH user", helpers.FirstNonEmpty(currentUser, "root"), nil)
+		req.SSHUser = strings.TrimSpace(existing.SSHUser)
+	}
+	if strings.TrimSpace(req.SSHUser) == "" || !yolo {
+		req.SSHUser, err = resolveRequiredCreateValue(input, "SSH user", helpers.FirstNonEmpty(req.SSHUser, currentUser, "root"), strings.Split(corecomponent.RenderSection("SSH user", "Commands and remote file changes run with this account's permissions."), "\n"))
 		if err != nil {
 			return err
 		}
 	}
 	if req.SSHPort == 0 {
-		req.SSHPort, err = resolveRequiredCreateUint(input, "SSH port", defaultCreateSSHPort(req.SSHPort), nil)
+		req.SSHPort = existing.SSHPort
+	}
+	if req.SSHPort == 0 || !yolo {
+		req.SSHPort, err = resolveRequiredCreateUint(input, "SSH port", defaultCreateSSHPort(req.SSHPort), strings.Split(corecomponent.RenderSection("SSH port", "This is the TCP port used to establish the remote transport."), "\n"))
 		if err != nil {
 			return err
 		}
 	}
 	if strings.TrimSpace(req.SSHKeyPath) == "" {
-		req.SSHKeyPath, err = resolveRequiredCreateValue(input, "Path to SSH private key", defaultKey, nil)
+		req.SSHKeyPath = strings.TrimSpace(existing.SSHKeyPath)
+	}
+	if strings.TrimSpace(req.SSHKeyPath) == "" || !yolo {
+		req.SSHKeyPath, err = resolveRequiredCreateValue(input, "Path to SSH private key", helpers.FirstNonEmpty(req.SSHKeyPath, defaultKey), strings.Split(corecomponent.RenderSection("SSH identity", "This private key authenticates sitectl to the remote host; the key contents are never stored in the context."), "\n"))
 		if err != nil {
 			return err
 		}
@@ -854,6 +1082,51 @@ func populateRemoteCreateRequest(req *ComposeCreateRequest, input config.InputFu
 		req.DockerSocket = "/var/run/docker.sock"
 	}
 	return nil
+}
+
+func resolveCreateStringDecision(cmd *cobra.Command, input config.InputFunc, flagName, title, implication, fallback string, yolo bool) (string, error) {
+	value := ""
+	if flag := cmd.Flags().Lookup(flagName); flag != nil && cmd.Flags().Changed(flagName) {
+		var err error
+		value, err = cmd.Flags().GetString(flagName)
+		if err != nil {
+			return "", fmt.Errorf("get %s flag: %w", flagName, err)
+		}
+	}
+	defaultValue := helpers.FirstNonEmpty(strings.TrimSpace(value), strings.TrimSpace(fallback))
+	if yolo {
+		if defaultValue == "" {
+			return "", fmt.Errorf("%s cannot be empty", strings.ReplaceAll(flagName, "-", " "))
+		}
+		return defaultValue, nil
+	}
+	return resolveRequiredCreateValue(input, strings.ReplaceAll(flagName, "-", " "), defaultValue, strings.Split(corecomponent.RenderSection(title, implication), "\n"))
+}
+
+func resolveCreateBoolDecision(cmd *cobra.Command, input config.InputFunc, flagName, title, implication string, fallback, yolo bool) (bool, error) {
+	value := fallback
+	if flag := cmd.Flags().Lookup(flagName); flag != nil && cmd.Flags().Changed(flagName) {
+		var err error
+		value, err = cmd.Flags().GetBool(flagName)
+		if err != nil {
+			return false, fmt.Errorf("get %s flag: %w", flagName, err)
+		}
+	}
+	if yolo {
+		return value, nil
+	}
+	defaultValue := "no"
+	if value {
+		defaultValue = "yes"
+	}
+	selected, err := corecomponent.PromptChoice(flagName, []corecomponent.Choice{
+		{Value: "yes", Label: "yes", Help: "Enable this behavior."},
+		{Value: "no", Label: "no", Help: "Leave this behavior disabled."},
+	}, defaultValue, componentInput(input), strings.Split(corecomponent.RenderSection(title, implication), "\n")...)
+	if err != nil {
+		return false, err
+	}
+	return selected == "yes", nil
 }
 
 func resolveCreateContextName(explicitName, defaultName string, input config.InputFunc) (string, error) {
@@ -886,6 +1159,24 @@ func resolveCreateContextName(explicitName, defaultName string, input config.Inp
 		return candidate, nil
 	}
 	return value, nil
+}
+
+func reviewCreateContextName(explicitName, defaultName string, input config.InputFunc, yolo bool) (string, error) {
+	defaultValue := strings.TrimSpace(explicitName)
+	if defaultValue == "" {
+		var err error
+		defaultValue, err = resolveCreateContextName("", defaultName, func(...string) (string, error) { return "", nil })
+		if err != nil {
+			return "", err
+		}
+	}
+	if yolo {
+		return defaultValue, nil
+	}
+	return resolveRequiredCreateValue(input, "Context name", defaultValue, strings.Split(corecomponent.RenderSection(
+		"sitectl context",
+		"This unique name is what --context selects. It does not rename the site or any Docker Compose resources.",
+	), "\n"))
 }
 
 func nextAvailableCreateContextName(base string) (string, error) {

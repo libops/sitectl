@@ -247,7 +247,7 @@ func imageOverrideContext(ctx *config.Context) (*config.Context, string, error) 
 	return ctx, projectDir, nil
 }
 
-func resolveCreateImageOverrides(cmd *cobra.Command, req ComposeCreateRequest, pluginName string) (ComposeImageOverrides, error) {
+func resolveCreateImageOverrides(cmd *cobra.Command, pluginName string) (ComposeImageOverrides, error) {
 	imageTags, err := cmd.Flags().GetStringArray("tag")
 	if err != nil {
 		return ComposeImageOverrides{}, fmt.Errorf("get tag flag: %w", err)
@@ -261,9 +261,6 @@ func resolveCreateImageOverrides(cmd *cobra.Command, req ComposeCreateRequest, p
 		return ComposeImageOverrides{}, fmt.Errorf("get build-arg flag: %w", err)
 	}
 	name := strings.TrimSpace(pluginName)
-	if name == "" {
-		name = strings.TrimSpace(req.ProjectName)
-	}
 	return ResolveComposeImageOverrides(name, imageTags, images, buildArgs)
 }
 

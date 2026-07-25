@@ -84,7 +84,7 @@ func TestPublicURLFromEnvPrefersSiteURL(t *testing.T) {
 
 func TestServiceEnvReadsConfiguredContainerEnv(t *testing.T) {
 	checker := &DockerChecker{
-		Context: &config.Context{Name: "test", ProjectName: "project"},
+		Context: &config.Context{Name: "test", ComposeProjectName: "project"},
 		Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{
 			containers: []dockercontainer.Summary{{
 				ID:     "abc123",
@@ -123,7 +123,7 @@ func TestCheckHTTPRouteUsesRunningTraefikHostPort(t *testing.T) {
 	}
 
 	checker := &DockerChecker{
-		Context: &config.Context{Name: "test", ProjectName: "archives"},
+		Context: &config.Context{Name: "test", ComposeProjectName: "archives"},
 		Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{
 			containers: []dockercontainer.Summary{{
 				ID:     "traefik123",
@@ -170,10 +170,10 @@ func TestCheckHTTPRouteUsesRemoteSSHHostForLocalhostRoute(t *testing.T) {
 
 	checker := &DockerChecker{
 		Context: &config.Context{
-			Name:           "test",
-			ProjectName:    "wp",
-			DockerHostType: config.ContextRemote,
-			SSHHostname:    "203.0.113.10",
+			Name:               "test",
+			ComposeProjectName: "wp",
+			DockerHostType:     config.ContextRemote,
+			SSHHostname:        "203.0.113.10",
 		},
 		Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{
 			containers: []dockercontainer.Summary{{
@@ -224,10 +224,10 @@ func TestCheckHTTPRouteUsesRemoteOriginForDomainRoute(t *testing.T) {
 
 	checker := &DockerChecker{
 		Context: &config.Context{
-			Name:           "test",
-			ProjectName:    "wp",
-			DockerHostType: config.ContextRemote,
-			SSHHostname:    "203.0.113.10",
+			Name:               "test",
+			ComposeProjectName: "wp",
+			DockerHostType:     config.ContextRemote,
+			SSHHostname:        "203.0.113.10",
 		},
 		Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{
 			containers: []dockercontainer.Summary{{
@@ -483,9 +483,9 @@ cat "$COMPOSE_CONFIG_FIXTURE"
 			}
 			checker := &DockerChecker{
 				Context: &config.Context{
-					DockerHostType: config.ContextLocal,
-					ProjectDir:     t.TempDir(),
-					ProjectName:    "project",
+					DockerHostType:     config.ContextLocal,
+					ProjectDir:         t.TempDir(),
+					ComposeProjectName: "project",
 				},
 				Client: &sitectldocker.DockerClient{CLI: fakeDockerAPI{containers: containers, inspect: inspect}},
 			}

@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -84,5 +86,55 @@ func TestRemoteCommandWaitErrorReportsContextCancellation(t *testing.T) {
 	err := remoteCommandWaitError(runCtx, "docker compose up", errors.New("EOF"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("remoteCommandWaitError() = %v, want context cancellation", err)
+	}
+}
+
+func TestRedactCommandForLog(t *testing.T) {
+	t.Parallel()
+
+	command := `docker compose run --rm -e DB_PASSWORD="open sesame" -e API_TOKEN=abc123 app migrate --password hunter2 --private-key /keys/deploy`
+	got := redactCommandForLog(command)
+
+	for _, secret := range []string{"open sesame", "abc123", "hunter2"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("redacted command contains %q: %s", secret, got)
+		}
+	}
+	for _, teachingDetail := range []string{"docker compose run --rm", "DB_PASSWORD=<redacted>", "API_TOKEN=<redacted>", "--password <redacted>", "--private-key <redacted>"} {
+		if !strings.Contains(got, teachingDetail) {
+			t.Fatalf("redacted command does not contain %q: %s", teachingDetail, got)
+		}
+	}
+}
+
+func TestRedactCommandForLogRetainsSecretReferencesAndKeyPaths(t *testing.T) {
+	t.Parallel()
+
+	command := `docker compose --env-file .env config --secret database-password-secret --ssh-key /keys/deploy`
+	if got := redactCommandForLog(command); got != command {
+		t.Fatalf("redactCommandForLog() = %q, want %q", got, command)
+	}
+}
+
+func TestLogDockerComposeCommandLogsTeachingContextAndRedactsCredentials(t *testing.T) {
+	var output bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(original) })
+
+	LogDockerComposeCommand(&Context{
+		Name:           "museum-prod",
+		DockerHostType: ContextRemote,
+		ProjectDir:     "/srv/museum",
+	}, `docker compose run -e API_TOKEN=secret app migrate`)
+
+	got := output.String()
+	for _, want := range []string{"Running Docker Compose command", "docker compose run", "museum-prod", "/srv/museum", "API_TOKEN=<redacted>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Compose teaching log missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "API_TOKEN=secret") {
+		t.Fatalf("Compose teaching log leaked credential: %s", got)
 	}
 }

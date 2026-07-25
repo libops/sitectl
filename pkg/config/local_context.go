@@ -13,14 +13,16 @@ import (
 type InputFunc func(question ...string) (string, error)
 
 type LocalContextCreateOptions struct {
-	Name                string
-	DefaultName         string
-	Site                string
-	DefaultSite         string
-	Plugin              string
-	DefaultPlugin       string
-	ProjectDir          string
-	DefaultProjectDir   string
+	Name              string
+	DefaultName       string
+	Site              string
+	DefaultSite       string
+	Plugin            string
+	DefaultPlugin     string
+	ProjectDir        string
+	DefaultProjectDir string
+	// ProjectName is retained for source compatibility with older plugins.
+	// Deprecated: use ComposeProjectName.
 	ProjectName         string
 	DefaultProjectName  string
 	ComposeProjectName  string
@@ -93,10 +95,9 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 		return nil, fmt.Errorf("project directory cannot be empty")
 	}
 
-	projectName := helpers.FirstNonEmpty(opts.ProjectName, existing.ProjectName, opts.DefaultProjectName, "docker-compose")
-	composeProjectName := helpers.FirstNonEmpty(opts.ComposeProjectName, existing.ComposeProjectName, DetectComposeProjectName(projectDir), projectName)
+	composeProjectName := helpers.FirstNonEmpty(opts.ComposeProjectName, opts.ProjectName, existing.ComposeProjectName, DetectComposeProjectName(projectDir), opts.DefaultProjectName, "docker-compose")
 	composeNetwork := helpers.FirstNonEmpty(opts.ComposeNetwork, existing.ComposeNetwork, DetectComposeNetworkName(projectDir, composeProjectName))
-	site := helpers.FirstNonEmpty(opts.Site, existing.Site, opts.DefaultSite, projectName, name)
+	site := helpers.FirstNonEmpty(opts.Site, existing.Site, opts.DefaultSite, opts.ProjectName, filepath.Base(projectDir), name)
 	plugin := helpers.FirstNonEmpty(opts.Plugin, existing.Plugin, opts.DefaultPlugin, "core")
 	environment := helpers.FirstNonEmpty(opts.Environment, existing.Environment, "local")
 	dockerSocket := GetDefaultLocalDockerSocket(helpers.FirstNonEmpty(opts.DockerSocket, existing.DockerSocket, "/var/run/docker.sock"))
@@ -108,7 +109,6 @@ func PromptAndSaveLocalContext(opts LocalContextCreateOptions) (*Context, error)
 		DockerHostType:         ContextLocal,
 		Environment:            environment,
 		DockerSocket:           dockerSocket,
-		ProjectName:            projectName,
 		ComposeProjectName:     composeProjectName,
 		ComposeNetwork:         composeNetwork,
 		ProjectDir:             projectDir,

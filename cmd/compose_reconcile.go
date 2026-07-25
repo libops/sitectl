@@ -541,6 +541,7 @@ func readComposeConfigDocument(ctx *config.Context) (composeConfigDocument, erro
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
+	config.LogDockerComposeCommand(ctx, command.String())
 	if err := command.Run(); err != nil {
 		return composeConfigDocument{}, fmt.Errorf("docker compose config: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
@@ -766,6 +767,7 @@ func runComposeReconcileCommands(cmd *cobra.Command, ctx *config.Context, decisi
 		}
 		commandText = ctx.DockerComposeShellCommand(commandText)
 		fmt.Fprintf(cmd.OutOrStdout(), "Running %s\n", commandText)
+		config.LogDockerComposeCommand(ctx, commandText)
 		command := exec.CommandContext(cmd.Context(), "bash", "-lc", commandText) // #nosec G204 -- commands come from trusted plugin create metadata.
 		command.Dir = ctx.ProjectDir
 		command.Env = env

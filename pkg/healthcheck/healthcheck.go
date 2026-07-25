@@ -472,6 +472,7 @@ func (c *DockerChecker) readComposeDependencyConfig(ctx context.Context) (compos
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
+	config.LogDockerComposeCommand(c.Context, command.String())
 	if err := command.Run(); err != nil {
 		return composeDependencyConfigDocument{}, fmt.Errorf("docker compose config: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}

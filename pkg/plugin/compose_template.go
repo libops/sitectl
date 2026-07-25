@@ -495,6 +495,7 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 	}
 	composeUp := isComposeProjectUpCommand(command)
 	command = ctx.DockerComposeShellCommand(command)
+	config.LogDockerComposeCommand(ctx, command)
 	if ctx.DockerHostType == config.ContextRemote {
 		remoteCommand := command
 		if strings.TrimSpace(projectDir) != "" {

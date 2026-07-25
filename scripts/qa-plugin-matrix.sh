@@ -137,7 +137,6 @@ create_stack() {
 		--project-dir "$dir"
 		--site "$ctx"
 		--environment qa
-		--project-name "$ctx"
 		--compose-project-name "$app"
 		--yolo
 	)

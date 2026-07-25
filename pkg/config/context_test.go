@@ -53,13 +53,13 @@ func TestContextExistsAndGetContext(t *testing.T) {
 
 	// Save a context and test retrieval
 	ctx := Context{
-		Name:           "foo",
-		Site:           "museum",
-		Plugin:         "isle",
-		DockerHostType: ContextLocal,
-		DockerSocket:   "/var/run/docker.sock",
-		ProjectName:    "myproject",
-		ProjectDir:     tempHome,
+		Name:               "foo",
+		Site:               "museum",
+		Plugin:             "isle",
+		DockerHostType:     ContextLocal,
+		DockerSocket:       "/var/run/docker.sock",
+		ComposeProjectName: "myproject",
+		ProjectDir:         tempHome,
 	}
 	err = SaveContext(&ctx, true)
 	if err != nil {
@@ -109,7 +109,6 @@ func contextsEqual(a, b Context) bool {
 		a.DockerHostType == b.DockerHostType &&
 		a.Environment == b.Environment &&
 		a.DockerSocket == b.DockerSocket &&
-		a.ProjectName == b.ProjectName &&
 		a.ComposeProjectName == b.ComposeProjectName &&
 		a.ComposeNetwork == b.ComposeNetwork &&
 		a.ProjectDir == b.ProjectDir &&
@@ -132,7 +131,6 @@ func TestContextString(t *testing.T) {
 		Plugin:             "isle",
 		DockerHostType:     ContextLocal,
 		DockerSocket:       "/var/run/docker.sock",
-		ProjectName:        "project",
 		ComposeProjectName: "project-compose",
 		ProjectDir:         "/tmp",
 	}
@@ -143,6 +141,75 @@ func TestContextString(t *testing.T) {
 	// check that YAML output contains expected fields
 	if !strings.Contains(s, "test") || !strings.Contains(s, "local") || !strings.Contains(s, "museum") || !strings.Contains(s, "isle") {
 		t.Fatalf("unexpected context string: %s", s)
+	}
+}
+
+func TestContextMigratesLegacyProjectNameWithoutPersistingDuplicate(t *testing.T) {
+	tests := []struct {
+		name        string
+		document    string
+		wantSite    string
+		wantCompose string
+	}{
+		{
+			name:        "legacy value fills both canonical identities",
+			document:    "name: museum-local\nproject-name: museum\n",
+			wantSite:    "museum",
+			wantCompose: "museum",
+		},
+		{
+			name:        "canonical values take precedence",
+			document:    "name: museum-local\nsite: collections\nproject-name: museum\ncompose-project-name: runtime\n",
+			wantSite:    "collections",
+			wantCompose: "runtime",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var ctx Context
+			if err := yaml.Unmarshal([]byte(tt.document), &ctx); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if ctx.Site != tt.wantSite {
+				t.Fatalf("Site = %q, want %q", ctx.Site, tt.wantSite)
+			}
+			if ctx.ComposeProjectName != tt.wantCompose {
+				t.Fatalf("ComposeProjectName = %q, want %q", ctx.ComposeProjectName, tt.wantCompose)
+			}
+			if ctx.ProjectName != tt.wantCompose {
+				t.Fatalf("deprecated ProjectName alias = %q, want %q", ctx.ProjectName, tt.wantCompose)
+			}
+			rendered, err := ctx.String()
+			if err != nil {
+				t.Fatalf("String() error = %v", err)
+			}
+			if strings.HasPrefix(rendered, "project-name:") || strings.Contains(rendered, "\nproject-name:") {
+				t.Fatalf("legacy project-name was persisted:\n%s", rendered)
+			}
+		})
+	}
+}
+
+func TestSaveContextNormalizesDeprecatedProjectName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx := Context{
+		Name:           "museum-local",
+		ProjectName:    "museum",
+		DockerHostType: ContextLocal,
+		ProjectDir:     "/srv/museum",
+	}
+	if err := SaveContext(&ctx, false); err != nil {
+		t.Fatalf("SaveContext() error = %v", err)
+	}
+	if ctx.Site != "museum" || ctx.ComposeProjectName != "museum" {
+		t.Fatalf("deprecated project name was not normalized: %+v", ctx)
+	}
+	data, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".sitectl", "config.yaml"))
+	if err != nil {
+		t.Fatalf("ReadFile(config) error = %v", err)
+	}
+	if strings.HasPrefix(string(data), "project-name:") || strings.Contains(string(data), "\nproject-name:") {
+		t.Fatalf("saved config contains retired project-name key:\n%s", data)
 	}
 }
 
@@ -181,7 +248,6 @@ func TestSaveContext(t *testing.T) {
 	}
 
 	// Test updating context.
-	ctx.ProjectName = "updated-project"
 	ctx.ComposeProjectName = "updated-compose"
 	err = SaveContext(&ctx, false)
 	if err != nil {
@@ -190,9 +256,6 @@ func TestSaveContext(t *testing.T) {
 	loadedCfg, err = Load()
 	if err != nil {
 		t.Fatalf("Load error: %v", err)
-	}
-	if loadedCfg.Contexts[0].ProjectName != "updated-project" {
-		t.Fatalf("expected updated project name, got %s", loadedCfg.Contexts[0].ProjectName)
 	}
 	if loadedCfg.Contexts[0].ComposeProjectName != "updated-compose" {
 		t.Fatalf("expected updated compose project name, got %s", loadedCfg.Contexts[0].ComposeProjectName)
@@ -504,11 +567,11 @@ func TestVerifyRemoteInputExistingConfig(t *testing.T) {
 	os.Stdin = inR
 
 	original := Context{
-		SSHHostname: "foo.example.com.dev",
-		SSHUser:     "bar",
-		SSHPort:     123,
-		SSHKeyPath:  "/assuming/we/already/checked",
-		ProjectName: "baz",
+		SSHHostname:        "foo.example.com.dev",
+		SSHUser:            "bar",
+		SSHPort:            123,
+		SSHKeyPath:         "/assuming/we/already/checked",
+		ComposeProjectName: "baz",
 	}
 	cc := original
 

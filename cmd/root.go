@@ -79,8 +79,8 @@ func init() {
 		ll = "INFO"
 	}
 
-	RootCmd.PersistentFlags().String("context", "", "The sitectl context to use. See sitectl config --help for more info")
-	RootCmd.PersistentFlags().String("log-level", ll, "The logging level for the command")
+	RootCmd.PersistentFlags().String("context", "", "Saved site environment to target instead of the context selected by the current directory or default configuration.")
+	RootCmd.PersistentFlags().String("log-level", ll, "Minimum structured log severity to print: DEBUG, INFO, WARN, or ERROR.")
 
 	RootCmd.AddGroup(
 		&cobra.Group{ID: "setup", Title: "Setup:"},

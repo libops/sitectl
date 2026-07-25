@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	corecomponent "github.com/libops/sitectl/pkg/component"
@@ -50,6 +51,151 @@ func TestEnsureComposeCreateContextUsesDatabaseDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveComposeCreateRequestReviewsPathFirstAndUsesFlagDefaults(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sdk := NewSDK(Metadata{Name: "wp"})
+	cmd := &cobra.Command{Use: "create"}
+	if err := sdk.BindComposeCreateFlags(cmd, CreateSpec{DockerComposeRepo: "https://example.org/wp.git", DockerComposeBranch: "main"}, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"path":            "/srv/wp",
+		"type":            "local",
+		"checkout-source": "template",
+		"site":            "museum",
+	} {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var prompts []string
+	req, err := sdk.ResolveComposeCreateRequest(cmd, func(question ...string) (string, error) {
+		prompts = append(prompts, strings.Join(question, "\n"))
+		return "", nil
+	}, "wp", "", "", "", "")
+	if err != nil {
+		t.Fatalf("ResolveComposeCreateRequest() error = %v", err)
+	}
+	if len(prompts) == 0 || !strings.Contains(strings.ToLower(prompts[0]), "working path") {
+		t.Fatalf("first prompt does not establish the working path: %v", prompts)
+	}
+	if req.Path != "/srv/wp" || req.Site != "museum" || req.TargetType != config.ContextLocal {
+		t.Fatalf("request did not preserve reviewed flag defaults: %+v", req)
+	}
+	if !strings.Contains(strings.ToLower(prompts[len(prompts)-1]), "review create") {
+		t.Fatalf("last prompt does not review the combined create decisions: %v", prompts)
+	}
+}
+
+func TestResolveComposeCreateRequestYoloSkipsDecisionReview(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sdk := NewSDK(Metadata{Name: "wp"})
+	cmd := &cobra.Command{Use: "create"}
+	if err := sdk.BindComposeCreateFlags(cmd, CreateSpec{DockerComposeRepo: "https://example.org/wp.git", DockerComposeBranch: "main"}, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"path": "/srv/wp", "type": "local", "checkout-source": "template", "yolo": "true"} {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req, err := sdk.ResolveComposeCreateRequest(cmd, func(question ...string) (string, error) {
+		t.Fatalf("--yolo prompted for %v", question)
+		return "", nil
+	}, "wp", "", "", "", "")
+	if err != nil {
+		t.Fatalf("ResolveComposeCreateRequest() error = %v", err)
+	}
+	if !req.SetDefaultContext {
+		t.Fatal("--yolo did not automatically select the first created context as default")
+	}
+}
+
+func TestResolveComposeCreateRequestMapsDeprecatedProjectNameFlag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sdk := NewSDK(Metadata{Name: "wp"})
+	cmd := &cobra.Command{Use: "create"}
+	if err := sdk.BindComposeCreateFlags(cmd, CreateSpec{DockerComposeRepo: "https://example.org/wp.git", DockerComposeBranch: "main"}, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"path":            "/srv/wp",
+		"type":            "local",
+		"checkout-source": "existing",
+		"project-name":    "legacy-runtime",
+		"yolo":            "true",
+	} {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("Set(%s) error = %v", name, err)
+		}
+	}
+
+	req, err := sdk.ResolveComposeCreateRequest(cmd, func(question ...string) (string, error) {
+		t.Fatalf("--yolo prompted for %v", question)
+		return "", nil
+	}, "wp", "", "", "", "")
+	if err != nil {
+		t.Fatalf("ResolveComposeCreateRequest() error = %v", err)
+	}
+	if req.ComposeProjectName != "legacy-runtime" || req.ProjectName != "legacy-runtime" {
+		t.Fatalf("deprecated project name was not mapped to the compose identity: %+v", req)
+	}
+}
+
+func TestPrepareCreateDecisionReviewUsesFollowUpFlagAsPromptDefault(t *testing.T) {
+	cmd := &cobra.Command{Use: "create"}
+	options := []corecomponent.CreateOption{{
+		Name:           "ingress",
+		PromptOnCreate: true,
+		FollowUps: []corecomponent.FollowUpSpec{{
+			Name:           "domain",
+			PromptOnCreate: true,
+		}},
+	}}
+	corecomponent.AddCreateFlags(cmd, options...)
+	if err := cmd.Flags().Set("ingress-domain", "app.example.org"); err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, restore, err := prepareCreateDecisionReview(cmd, options, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared[0].FollowUps[0].DefaultValue; got != "app.example.org" {
+		t.Fatalf("follow-up prompt default = %q, want app.example.org", got)
+	}
+	if cmd.Flags().Changed("ingress-domain") {
+		t.Fatal("explicit follow-up flag should be reviewed instead of skipping its prompt")
+	}
+	restore()
+	if !cmd.Flags().Changed("ingress-domain") {
+		t.Fatal("follow-up flag changed state was not restored")
+	}
+}
+
+func TestPrepareCreateDecisionReviewMapsLegacyStateToAllowedDisposition(t *testing.T) {
+	cmd := &cobra.Command{Use: "create"}
+	options := []corecomponent.CreateOption{{
+		Name:                "fcrepo",
+		PromptOnCreate:      true,
+		DefaultDisposition:  corecomponent.DispositionEnabled,
+		AllowedDispositions: []corecomponent.Disposition{corecomponent.DispositionEnabled, corecomponent.DispositionSuperseded},
+	}}
+	corecomponent.AddCreateFlags(cmd, options...)
+	if err := cmd.Flags().Set("fcrepo", "off"); err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, restore, err := prepareCreateDecisionReview(cmd, options, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restore()
+	if got := prepared[0].DefaultDisposition; got != corecomponent.DispositionSuperseded {
+		t.Fatalf("review default = %q, want %q", got, corecomponent.DispositionSuperseded)
+	}
+}
+
 func TestPopulateRemoteCreateRequestUsesProvidedSSHValuesWithoutPrompt(t *testing.T) {
 	req := &ComposeCreateRequest{
 		SSHHostname: "192.0.2.10",
@@ -58,10 +204,10 @@ func TestPopulateRemoteCreateRequestUsesProvidedSSHValuesWithoutPrompt(t *testin
 		SSHKeyPath:  "/tmp/sitectl-key",
 	}
 
-	err := populateRemoteCreateRequest(req, func(question ...string) (string, error) {
+	err := populateRemoteCreateRequest(req, config.Context{}, func(question ...string) (string, error) {
 		t.Fatalf("did not expect prompt: %v", question)
 		return "", fmt.Errorf("unexpected prompt")
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("populateRemoteCreateRequest() error = %v", err)
 	}
@@ -140,6 +286,7 @@ func TestResolveComposeCreateRequestBindsExplicitContextForRemoteCreate(t *testi
 		"ssh-user":        "root",
 		"ssh-port":        "2222",
 		"ssh-key":         filepath.Join(tempHome, ".ssh", "id_ed25519"),
+		"yolo":            "true",
 	} {
 		if err := cmd.Flags().Set(name, value); err != nil {
 			t.Fatalf("Set(%s) error = %v", name, err)
@@ -174,7 +321,6 @@ func TestEnsureComposeCreateContextRemoteUsesProvidedValuesWithoutPrompt(t *test
 		Path:               projectDir,
 		Site:               "qa-site",
 		Environment:        "qa",
-		ProjectName:        "wp",
 		ComposeProjectName: "wp",
 		SSHHostname:        "192.0.2.10",
 		SSHUser:            "root",

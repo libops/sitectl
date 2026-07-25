@@ -75,7 +75,7 @@ func (s *Session) Close() error {
 	}
 	var firstErr error
 	if s.fileAccessor != nil {
-		if err := s.fileAccessor.Close(); err != nil && firstErr == nil {
+		if err := s.fileAccessor.Close(); err != nil {
 			firstErr = err
 		}
 		s.fileAccessor = nil
@@ -281,7 +281,13 @@ func CollectComposeDiagnosticsWithSession(runCtx context.Context, ctxCfg *config
 		diagnostics.Issues = append(diagnostics.Issues, err.Error())
 		return diagnostics
 	}
-	output, err := session.RunQuietCommandContext(runCtx, exec.Command("docker", composeConfigArgs(*ctxCfg)...)) // #nosec G204 -- docker compose config arguments are assembled from context configuration without a shell.
+	composeCommand := exec.Command("docker", composeConfigArgs(*ctxCfg)...) // #nosec G204 -- docker compose config arguments are assembled from context configuration without a shell.
+	if ctxCfg.DockerHostType == config.ContextRemote {
+		// Remote debug sessions reuse an existing SSH client and bypass the
+		// Context command runner that logs local Compose invocations.
+		config.LogDockerComposeCommand(ctxCfg, composeCommand.String())
+	}
+	output, err := session.RunQuietCommandContext(runCtx, composeCommand)
 	if err != nil {
 		diagnostics.Issues = append(diagnostics.Issues, fmt.Sprintf("compose config: %v", err))
 		return diagnostics
