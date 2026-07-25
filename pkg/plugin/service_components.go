@@ -170,14 +170,7 @@ func (r serviceComponentRegistry) reconcileCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if report {
-				views, err := r.detectViews(componentName, projectPath, rootfs)
-				if err != nil {
-					return err
-				}
-				return corecomponent.WriteComponentStatusReportWithFormat(cmd.OutOrStdout(), views, verbose, normalizeComponentReportFormat(format))
-			}
-			return r.reconcile(cmd, componentName, projectPath, rootfs, yolo)
+			return r.reconcile(cmd, componentName, projectPath, rootfs, report, verbose, normalizeComponentReportFormat(format), yolo)
 		},
 	}
 	// These flags intentionally mirror ComponentTargetParams rpc_flags tags.
@@ -303,70 +296,78 @@ func (r serviceComponentRegistry) detectViews(componentName, projectPath, codeba
 	return views, nil
 }
 
-func (r serviceComponentRegistry) reconcile(cmd *cobra.Command, componentName, projectPath, codebaseRootfs string, yolo bool) error {
+func (r serviceComponentRegistry) reconcile(cmd *cobra.Command, componentName, projectPath, codebaseRootfs string, report, verbose bool, format string, yolo bool) error {
 	ctx, err := r.resolveContext(projectPath)
 	if err != nil {
 		return fmt.Errorf("resolve component context: %w", err)
 	}
 	warnRemoteComponentMutation(cmd, ctx)
 
-	views, err := r.detectViews(componentName, projectPath, codebaseRootfs)
+	desired, err := corecomponent.LoadDesiredState(ctx)
 	if err != nil {
 		return err
 	}
-	drifted := make([]corecomponent.ReviewView, 0, len(views))
-	for _, view := range views {
-		if view.State == corecomponent.StateDrifted {
-			drifted = append(drifted, view)
-		}
+	defs := r.definitionsForDesiredState(desired)
+	plan, err := corecomponent.BuildReconciliationPlan(ctx, ctx.ProjectDir, desired, corecomponent.DetectOptions{
+		ComposeRoot:  ctx.ProjectDir,
+		DrupalRootfs: codebaseRootfs,
+	}, defs...)
+	if err != nil {
+		return err
 	}
-	if len(drifted) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No component drift detected")
+	plan, err = corecomponent.FilterReconciliationPlan(plan, componentName)
+	if err != nil {
+		return err
+	}
+	if err := corecomponent.WriteReconciliationPlan(cmd.OutOrStdout(), plan, format); err != nil {
+		return err
+	}
+	if report || plan.InSync {
 		return nil
 	}
-
-	decisions := make(map[string]corecomponent.ReviewDecision, len(drifted))
-	if yolo {
-		for _, view := range drifted {
-			decisions[view.Name] = corecomponent.ReviewDecision{
-				Disposition: corecomponent.ReviewDefaultDisposition(view),
-				State:       corecomponent.ReviewDefaultState(view),
-				Options:     map[string]string{},
-			}
-		}
-	} else {
-		decisions, err = corecomponent.RunReview(drifted, corecomponent.ReviewOptions{})
-		if err != nil {
-			return err
-		}
+	if !plan.Safe {
+		return fmt.Errorf("reconciliation is blocked because the plan contains unknowns")
 	}
 
 	manager := corecomponent.NewManager(ctx)
-	for _, view := range drifted {
-		component, ok := r.componentByName(view.Name)
-		if !ok {
-			return fmt.Errorf("unknown component %q", view.Name)
+	for _, item := range plan.Components {
+		if item.InSync {
+			continue
 		}
-		decision := decisions[view.Name]
-		spec := component.SpecForWithOptions(decision.State, decision.Options)
-		switch decision.State {
+		component, ok := r.componentByName(item.Name)
+		if !ok {
+			return fmt.Errorf("unknown component %q", item.Name)
+		}
+		state := corecomponent.DispositionToState(item.Desired)
+		spec := component.SpecForWithOptions(state, item.Selection.Settings)
+		switch state {
 		case corecomponent.StateOn:
-			err = manager.EnableComponentWithOptions(cmd.Context(), spec, corecomponent.ApplyOptions{Yolo: true})
+			err = manager.EnableComponentWithOptions(cmd.Context(), spec, corecomponent.ApplyOptions{Yolo: yolo})
 		case corecomponent.StateOff:
-			err = manager.DisableComponentWithOptions(cmd.Context(), spec, corecomponent.ApplyOptions{Yolo: true})
+			err = manager.DisableComponentWithOptions(cmd.Context(), spec, corecomponent.ApplyOptions{Yolo: yolo})
 		default:
-			err = fmt.Errorf("unsupported component state %q", decision.State)
+			err = fmt.Errorf("unsupported component state %q", state)
 		}
 		if err != nil {
 			return fmt.Errorf("reconcile component %q: %w", component.Name(), err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", component.Name(), decision.Disposition)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: reconciled to %s\n", component.Name(), item.Desired)
 	}
+	_ = verbose
 	return nil
 }
 
+func (r serviceComponentRegistry) definitionsForDesiredState(desired corecomponent.DesiredState) []corecomponent.Definition {
+	defs := make([]corecomponent.Definition, 0, len(r.components))
+	for _, serviceComponent := range r.components {
+		selection := desired.Spec.Components[serviceComponent.Name()]
+		defs = append(defs, serviceComponent.DefinitionForOptions(selection.Settings))
+	}
+	return defs
+}
+
 func (s *SDK) reconcileCreateServiceComponents(ctx context.Context, target *config.Context, decisions map[string]corecomponent.ReviewDecision) error {
-	if s == nil || target == nil || len(s.serviceComponents) == 0 || len(decisions) == 0 {
+	if s == nil || target == nil || len(s.serviceComponents) == 0 {
 		return nil
 	}
 
@@ -394,7 +395,29 @@ func (s *SDK) reconcileCreateServiceComponents(ctx context.Context, target *conf
 			return fmt.Errorf("unsupported create component state %q for component %q", state, serviceComponent.Name())
 		}
 	}
+	pluginName := strings.TrimSpace(target.Plugin)
+	if pluginName == "" {
+		pluginName = strings.TrimSpace(s.Metadata.Name)
+	}
+	if pluginName == "" {
+		pluginName = "plugin"
+	}
+	desired, err := corecomponent.DesiredStateFromDecisions(pluginName, definitionsForServiceComponents(s.serviceComponents), decisions)
+	if err != nil {
+		return fmt.Errorf("build component desired state: %w", err)
+	}
+	if err := corecomponent.SaveDesiredState(target, desired); err != nil {
+		return fmt.Errorf("save component desired state: %w", err)
+	}
 	return nil
+}
+
+func definitionsForServiceComponents(components []corecomponent.ComposeServiceComponent) []corecomponent.Definition {
+	defs := make([]corecomponent.Definition, 0, len(components))
+	for _, component := range components {
+		defs = append(defs, component.Definition())
+	}
+	return defs
 }
 
 func (r serviceComponentRegistry) set(cmd *cobra.Command, name, argDisposition, stateFlag, dispositionFlag, projectPath string, yolo bool, followUps map[string]string) error {
@@ -434,6 +457,16 @@ func (r serviceComponentRegistry) set(cmd *cobra.Command, name, argDisposition, 
 		}
 	default:
 		return fmt.Errorf("unsupported component state %q for component %q", state, component.Name())
+	}
+	desired, err := corecomponent.LoadOrInitializeDesiredState(ctx, r.definitions())
+	if err != nil {
+		return fmt.Errorf("load component desired state: %w", err)
+	}
+	if err := desired.Set(def, disposition, followUps); err != nil {
+		return err
+	}
+	if err := corecomponent.SaveDesiredState(ctx, desired); err != nil {
+		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", component.Name(), disposition)
 	return nil

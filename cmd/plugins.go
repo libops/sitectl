@@ -7,14 +7,6 @@ import (
 	"github.com/libops/sitectl/pkg/plugin"
 )
 
-func pluginSupportsConverge(pluginName string) (bool, error) {
-	installed, err := installedPluginWithMetadata(pluginName)
-	if err != nil {
-		return false, err
-	}
-	return installed.CanConverge, nil
-}
-
 func pluginSupportsSet(pluginName string) (bool, error) {
 	installed, err := installedPluginWithMetadata(pluginName)
 	if err != nil {

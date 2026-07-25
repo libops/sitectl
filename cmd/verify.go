@@ -19,6 +19,10 @@ Verification checks are deeper behavioral checks implemented by the active
 context's plugin. They are intended for CI, preview, development, and staging
 deployments after healthcheck has already confirmed the site is online.
 
+Before reporting success, verify consumes the same component reconciliation plan
+as converge and validate. Behavioral checks cannot hide missing desired state,
+unknown component ownership, or unapplied component changes.
+
 All flags not consumed by sitectl itself are forwarded to the plugin's verify
 handler, allowing plugin-specific flags such as --fcrepo or --bot-mitigation.
 
@@ -48,6 +52,11 @@ Examples:
 		if err != nil {
 			return err
 		}
+		plan, err := loadReconciliationPlan(cmd, contextName, strings.TrimSpace(ctx.Plugin), "")
+		if err != nil {
+			return err
+		}
+		results = append(results, reconciliationValidationResults(plan)...)
 		sitevalidate.SortResults(results)
 		report := sitevalidate.NewReport(ctx, results)
 		if err := sitevalidate.WriteReports(cmd.OutOrStdout(), []sitevalidate.Report{report}, verifyFormat); err != nil {

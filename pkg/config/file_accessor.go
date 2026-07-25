@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -227,18 +228,55 @@ func (a *FileAccessor) WriteFile(filename string, data []byte) error {
 		if err := os.MkdirAll(filepath.Dir(filename), 0o750); err != nil {
 			return err
 		}
-		return os.WriteFile(filename, data, 0o600)
+		mode := fs.FileMode(0o600)
+		if info, statErr := os.Stat(filename); statErr == nil {
+			mode = info.Mode().Perm()
+		} else if !errors.Is(statErr, fs.ErrNotExist) {
+			return statErr
+		}
+		return atomicCopyLocalWithMode(strings.NewReader(string(data)), filename, mode)
 	}
 	if err := mkdirAllRemote(a.sftp, filepath.Dir(filename)); err != nil {
 		return err
 	}
-	remoteFile, err := a.sftp.Create(filename)
+	tempFilename, err := remoteUploadTempPath(filename)
 	if err != nil {
 		return err
 	}
-	defer remoteFile.Close()
-	_, err = remoteFile.Write(data)
-	return err
+	remoteFile, err := a.sftp.OpenFile(tempFilename, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
+	if err != nil {
+		return err
+	}
+	published := false
+	defer func() {
+		_ = remoteFile.Close()
+		if !published {
+			_ = a.sftp.Remove(tempFilename)
+		}
+	}()
+	mode := fs.FileMode(0o600)
+	if info, statErr := a.sftp.Stat(filename); statErr == nil {
+		mode = info.Mode().Perm()
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return statErr
+	}
+	if err := a.sftp.Chmod(tempFilename, mode); err != nil {
+		return err
+	}
+	if _, err := remoteFile.Write(data); err != nil {
+		return err
+	}
+	if err := remoteFile.Sync(); err != nil {
+		return err
+	}
+	if err := remoteFile.Close(); err != nil {
+		return err
+	}
+	if err := a.sftp.PosixRename(tempFilename, filename); err != nil {
+		return fmt.Errorf("atomically publish remote file: %w", err)
+	}
+	published = true
+	return nil
 }
 
 func (a *FileAccessor) MkdirAll(path string) error {
@@ -414,6 +452,10 @@ func (a *FileAccessor) UploadFile(source, destination string) error {
 }
 
 func atomicCopyLocal(source io.Reader, destination string) (err error) {
+	return atomicCopyLocalWithMode(source, destination, 0o600)
+}
+
+func atomicCopyLocalWithMode(source io.Reader, destination string, mode fs.FileMode) (err error) {
 	directory := filepath.Dir(destination)
 	temp, err := os.CreateTemp(directory, "."+filepath.Base(destination)+".sitectl-upload-*") // #nosec G304 -- destination is an explicit caller-selected upload target.
 	if err != nil {
@@ -426,7 +468,7 @@ func atomicCopyLocal(source io.Reader, destination string) (err error) {
 			_ = os.Remove(tempPath)
 		}
 	}()
-	if err = temp.Chmod(0o600); err != nil {
+	if err = temp.Chmod(mode); err != nil {
 		return err
 	}
 	if _, err = io.Copy(temp, source); err != nil {
