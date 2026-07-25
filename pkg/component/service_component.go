@@ -186,6 +186,21 @@ func (c ComposeServiceComponent) Definition() Definition {
 	return c.definition
 }
 
+// DefinitionForOptions returns the detection contract for a persisted
+// component selection. Option-derived YAML rules are included so changing a
+// setting is reported as drift even when the component's disposition is
+// unchanged.
+func (c ComposeServiceComponent) DefinitionForOptions(options map[string]string) Definition {
+	definition := c.definition
+	if c.applyFollowUps != nil {
+		definition.On.Compose.Rules = append(
+			append([]YAMLRule{}, definition.On.Compose.Rules...),
+			c.applyFollowUps(options)...,
+		)
+	}
+	return definition
+}
+
 // Name returns the component name.
 func (c ComposeServiceComponent) Name() string {
 	return c.component.Name()

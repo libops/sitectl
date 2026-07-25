@@ -11,20 +11,24 @@ import (
 
 var convergeCmd = &cobra.Command{
 	Use:   "converge",
-	Short: "Detect and repair component configuration drift",
-	Long: `Inspect each component registered by the active context's plugin and apply
-any changes needed to bring the project back into alignment.
+	Short: "Plan and safely repair component configuration drift",
+	Long: `Compare the active project's component-owned configuration with the
+durable desired state in .libops/site.yaml, show the complete change plan, and
+apply the approved changes needed to restore alignment.
 
-By default the command is interactive and asks before applying changes. Pass
---report to preview what would change without applying it.
+Unknown components, invalid desired state, and changes sitectl cannot classify
+block mutation. Destructive changes are identified in the plan. By default each
+component change requires confirmation; --yolo skips that safeguard. Pass
+--report to inspect the plan without changing files.
 
-This command dispatches to the plugin associated with the active context.
-All flags and arguments are forwarded to the plugin's converge handler.
+The active plugin supplies the component contracts while sitectl uses the same
+planning and reconciliation path as component reconcile, validate, and verify.
 
 Examples:
-  sitectl converge
-  sitectl converge --report
-  sitectl converge --component fcrepo`,
+	  sitectl converge
+	  sitectl converge --report
+	  sitectl converge --component fcrepo
+	  sitectl converge --yolo`,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filteredArgs, contextName, err := getContextFromArgs(cmd, args)
@@ -41,19 +45,17 @@ Examples:
 		if pluginName == "" || pluginName == "core" {
 			return fmt.Errorf("context %q does not define a plugin that supports converge", ctx.Name)
 		}
-		hasConverge, err := pluginSupportsConverge(pluginName)
-		if err != nil {
-			return err
-		}
-		if !hasConverge {
-			return fmt.Errorf("plugin %q does not support converge", pluginName)
-		}
-
 		params, pluginArgs, err := extractConvergeRPCParams(filteredArgs)
 		if err != nil {
 			return err
 		}
-		req, err := plugin.NewConvergeRunRequest(params, pluginArgs...)
+		req, err := plugin.NewComponentReconcileRequest(plugin.ComponentTargetParams{
+			Path:           params.Path,
+			CodebaseRootfs: params.CodebaseRootfs,
+			Report:         params.Report,
+			Verbose:        params.Verbose,
+			Format:         params.Format,
+		}, pluginArgs...)
 		if err != nil {
 			return err
 		}

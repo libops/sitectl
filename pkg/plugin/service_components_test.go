@@ -244,6 +244,14 @@ func TestServiceComponentTopLevelSetFallsBackToComponentRPC(t *testing.T) {
 		DockerHostType: config.ContextLocal,
 		ProjectDir:     projectDir,
 	}
+	def := sdk.serviceComponents[0].Definition()
+	desired := corecomponent.NewDesiredState("app")
+	if err := desired.Set(def, corecomponent.DispositionDisabled, nil); err != nil {
+		t.Fatalf("Set(desired state) error = %v", err)
+	}
+	if err := corecomponent.SaveDesiredState(sdk.contextCache, desired); err != nil {
+		t.Fatalf("SaveDesiredState() error = %v", err)
+	}
 
 	req, err := NewSetRunRequest(SetRunParams{}, "queue", "disabled", "--yolo")
 	if err != nil {
@@ -285,6 +293,14 @@ func TestServiceComponentConvergePreservesValidDisabledState(t *testing.T) {
 		DockerHostType: config.ContextLocal,
 		ProjectDir:     projectDir,
 	}
+	def := sdk.serviceComponents[0].Definition()
+	desired := corecomponent.NewDesiredState("app")
+	if err := desired.Set(def, corecomponent.DispositionDisabled, nil); err != nil {
+		t.Fatalf("Set(desired state) error = %v", err)
+	}
+	if err := corecomponent.SaveDesiredState(sdk.contextCache, desired); err != nil {
+		t.Fatalf("SaveDesiredState() error = %v", err)
+	}
 
 	req, err := NewConvergeRunRequest(ConvergeRunParams{}, "--yolo")
 	if err != nil {
@@ -297,7 +313,7 @@ func TestServiceComponentConvergePreservesValidDisabledState(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("converge.run response = %#v", resp)
 	}
-	if !strings.Contains(resp.Output, "No component drift detected") {
+	if !strings.Contains(resp.Output, "Components are in sync: `true`") {
 		t.Fatalf("converge output = %q", resp.Output)
 	}
 	data, err := os.ReadFile(composePath)
@@ -376,6 +392,7 @@ func TestReconcileCreateServiceComponentsDispatchesStates(t *testing.T) {
 
 			target := &config.Context{
 				Name:           "local",
+				Plugin:         "test",
 				DockerHostType: config.ContextLocal,
 				ProjectDir:     projectDir,
 			}
@@ -403,6 +420,54 @@ func TestReconcileCreateServiceComponentsDispatchesStates(t *testing.T) {
 				t.Fatalf("expected compose not to contain %q, got:\n%s", tt.wantNot, string(data))
 			}
 		})
+	}
+}
+
+func TestDefinitionsForDesiredStateDetectPersistedOptionDrift(t *testing.T) {
+	projectDir := t.TempDir()
+	composePath := filepath.Join(projectDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte("services:\n  app:\n    image: example/app\n    environment:\n      FEATURE_MODE: old\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(compose) error = %v", err)
+	}
+	ctx := &config.Context{
+		Name:           "local",
+		Plugin:         "test",
+		DockerHostType: config.ContextLocal,
+		ProjectDir:     projectDir,
+	}
+	serviceComponent, err := corecomponent.NewComposeServiceComponent(corecomponent.ComposeServiceComponentOptions{
+		Name:         "feature",
+		ServiceNames: []string{"feature"},
+		ApplyFollowUps: func(options map[string]string) []corecomponent.YAMLRule {
+			return []corecomponent.YAMLRule{{
+				Files: []string{"docker-compose.yml"},
+				Op:    corecomponent.OpSet,
+				Path:  ".services.app.environment.FEATURE_MODE",
+				Value: options["mode"],
+			}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewComposeServiceComponent() error = %v", err)
+	}
+	desired := corecomponent.NewDesiredState("test")
+	if err := desired.Set(serviceComponent.Definition(), corecomponent.DispositionEnabled, map[string]string{"mode": "new"}); err != nil {
+		t.Fatalf("DesiredState.Set() error = %v", err)
+	}
+
+	registry := serviceComponentRegistry{components: []corecomponent.ComposeServiceComponent{serviceComponent}}
+	plan, err := corecomponent.BuildReconciliationPlan(
+		ctx,
+		projectDir,
+		desired,
+		corecomponent.DetectOptions{},
+		registry.definitionsForDesiredState(desired)...,
+	)
+	if err != nil {
+		t.Fatalf("BuildReconciliationPlan() error = %v", err)
+	}
+	if plan.InSync || len(plan.Components) != 1 || len(plan.Components[0].Changes) == 0 {
+		t.Fatalf("expected persisted option drift, got %#v", plan)
 	}
 }
 

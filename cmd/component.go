@@ -24,6 +24,7 @@ var (
 	componentReconcileReport       bool
 	componentReconcileVerbose      bool
 	componentReconcileFormat       string
+	componentReconcileYolo         bool
 	componentSetPath               string
 	componentSetState              string
 	componentSetDisposition        string
@@ -125,11 +126,15 @@ it into alignment.`,
 var componentReconcileCmd = &cobra.Command{
 	Use:     "reconcile",
 	Aliases: []string{"review", "align"},
-	Short:   "Detect and repair component configuration drift",
-	Long: `Inspect each component and apply any changes needed to bring the project back into alignment.
+	Short:   "Plan and safely repair component configuration drift",
+	Long: `Compare component-owned project configuration with .libops/site.yaml, print
+the complete reconciliation plan, and apply approved changes needed to restore
+the selected dispositions and settings.
 
-By default the command is interactive and asks before applying changes. Pass --report to preview
-what would change without applying it.`,
+Unknown or unclassified changes block mutation. Destructive operations are
+identified in the plan. By default each component change requires confirmation.
+Pass --report to preview without changing files, or --yolo to skip confirmation
+after reviewing the same plan in automation.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName, owner, name, err := resolveComponentOwner(cmd, componentReconcileName)
 		if err != nil {
@@ -147,6 +152,7 @@ what would change without applying it.`,
 			Report:         componentReconcileReport,
 			Verbose:        componentReconcileVerbose,
 			Format:         componentReconcileFormat,
+			Yolo:           componentReconcileYolo,
 		})
 		if err != nil {
 			return err
@@ -160,7 +166,9 @@ var componentSetCmd = &cobra.Command{
 	Use:                "set <component> [disposition]",
 	Short:              "Enable, disable, or reconfigure a component",
 	DisableFlagParsing: true,
-	Long: `Set the state or disposition of a named component in the active context's plugin.
+	Long: `Set the desired disposition and settings of a named component, apply its
+component-owned project changes, and persist the reviewed intent in
+.libops/site.yaml for later validation and convergence.
 
 Prefix the component name with the plugin namespace to target it directly:
 
@@ -208,7 +216,8 @@ func init() {
 	componentReconcileCmd.Flags().StringVar(&componentReconcileDrupalRoot, "drupal-rootfs", "", "Deprecated alias for --codebase-rootfs.")
 	componentReconcileCmd.Flags().BoolVar(&componentReconcileReport, "report", false, "Preview changes without applying them.")
 	componentReconcileCmd.Flags().BoolVar(&componentReconcileVerbose, "verbose", false, "Show additional details for each component.")
-	componentReconcileCmd.Flags().StringVar(&componentReconcileFormat, "format", "", "Output format (default: table).")
+	componentReconcileCmd.Flags().StringVar(&componentReconcileFormat, "format", "", "Plan output format: section, table, json, or yaml.")
+	componentReconcileCmd.Flags().BoolVar(&componentReconcileYolo, "yolo", false, "Skip confirmation and apply every non-blocked change in the displayed plan.")
 
 	componentSetCmd.Flags().StringVar(&componentSetPath, "path", "", "Path to the project directory. Defaults to the active context project directory.")
 	componentSetCmd.Flags().StringVar(&componentSetState, "state", "", "State to apply (on, off).")

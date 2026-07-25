@@ -15,8 +15,10 @@ var validateCmd = &cobra.Command{
 	Short: "Validate the context configuration and project layout",
 	Long: `Validate the active context's configuration and project layout.
 
-Core checks include: required context fields, compose project presence,
-context file accessibility, override symlink, and Docker socket access.
+Core checks include required context fields, Compose project presence, context
+file accessibility, override symlink, and Docker socket access. The same
+component reconciliation plan used by converge must also be reproducible and in
+sync; missing intent, unknown ownership, or drift fails validation.
 
 If the active context's plugin registers a validate handler, plugin-specific
 checks (e.g. Drupal rootfs path, component state consistency) are also run
@@ -87,6 +89,11 @@ Examples:
 					results = append(results, pluginResults...)
 				}
 			}
+			plan, err := loadReconciliationPlan(cmd, contextName, pluginName, validateParams.CodebaseRootfs)
+			if err != nil {
+				return err
+			}
+			results = append(results, reconciliationValidationResults(plan)...)
 		}
 
 		sitevalidate.SortResults(results)
