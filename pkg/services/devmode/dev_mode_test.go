@@ -59,6 +59,40 @@ func TestComponentWritesAndRemovesOverride(t *testing.T) {
 	}
 }
 
+func TestComponentPreservesUnownedOverrideEntries(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services:\n  drupal:\n    image: drupal\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(compose) error = %v", err)
+	}
+	override := "services:\n  traefik:\n    ports:\n      - 8080:80\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.override.yml"), []byte(override), 0o644); err != nil {
+		t.Fatalf("WriteFile(override) error = %v", err)
+	}
+	ctx := &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir}
+	component, err := Component(Options{AppService: "drupal"})
+	if err != nil {
+		t.Fatalf("Component() error = %v", err)
+	}
+
+	manager := corecomponent.NewManager(ctx)
+	if err := manager.EnableComponentWithOptions(context.Background(), component.SpecFor(corecomponent.StateOn), corecomponent.ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("EnableComponentWithOptions() error = %v", err)
+	}
+	if rendered := readOverrideForTest(t, projectDir); !strings.Contains(rendered, "traefik:") || !strings.Contains(rendered, "drupal:") {
+		t.Fatalf("expected shared and dev-mode services after enable, got:\n%s", rendered)
+	}
+
+	if err := manager.DisableComponentWithOptions(context.Background(), component.SpecFor(corecomponent.StateOff), corecomponent.ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("DisableComponentWithOptions() error = %v", err)
+	}
+	rendered := readOverrideForTest(t, projectDir)
+	if !strings.Contains(rendered, "traefik:") || strings.Contains(rendered, "drupal:") {
+		t.Fatalf("expected only the shared service after disable, got:\n%s", rendered)
+	}
+}
+
 func TestComponentAssistantWritesCliSandboxService(t *testing.T) {
 	t.Parallel()
 

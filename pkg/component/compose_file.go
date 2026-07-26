@@ -598,6 +598,10 @@ func (c *ComposeFile) deleteSectionEntry(section, key string) error {
 	}
 	end := findBlockEnd(c.lines, entryIdx, 2)
 	c.lines = append(c.lines[:entryIdx], c.lines[end:]...)
+	sectionEnd := findBlockEnd(c.lines, sectionIdx, 0)
+	if len(composeContentLines(c.lines[sectionIdx+1:sectionEnd])) == 0 {
+		c.lines = append(c.lines[:sectionIdx], c.lines[sectionEnd:]...)
+	}
 	return nil
 }
 
