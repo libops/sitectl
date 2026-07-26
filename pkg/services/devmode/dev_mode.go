@@ -1,6 +1,7 @@
 package devmode
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
@@ -60,7 +61,15 @@ func Component(opts Options) (corecomponent.ComposeServiceComponent, error) {
 		DefinitionOffRules: []corecomponent.YAMLRule{{
 			Files: []string{opts.OverrideFile},
 			Op:    corecomponent.OpDelete,
-			Path:  ".",
+			Path:  ".services." + opts.AppService,
+		}, {
+			Files: []string{opts.OverrideFile},
+			Op:    corecomponent.OpDelete,
+			Path:  ".services." + opts.AssistantService,
+		}, {
+			Files: []string{opts.OverrideFile},
+			Op:    corecomponent.OpDelete,
+			Path:  ".networks." + opts.AssistantService,
 		}},
 		AfterEnable: []corecomponent.Hook{func(_ context.Context, runtime *corecomponent.Runtime) error {
 			return writeOverride(runtime.Context, opts, AssistantOptions{})
@@ -125,23 +134,54 @@ func writeOverride(ctx *config.Context, opts Options, assistant AssistantOptions
 	if len(opts.Volumes) > 0 {
 		service["volumes"] = opts.Volumes
 	}
-	services := map[string]any{
-		opts.AppService: service,
+	composePath := ctx.ResolveProjectPath(opts.OverrideFile)
+	compose, err := corecomponent.LoadComposeFileOptionalForContext(ctx, composePath)
+	if err != nil {
+		return err
 	}
-	root := map[string]any{
-		"services": services,
+	if err := compose.DeleteService(opts.AppService); err != nil {
+		return err
+	}
+	if err := compose.DeleteService(opts.AssistantService); err != nil {
+		return err
+	}
+	if err := compose.DeleteSectionEntry("networks", opts.AssistantService); err != nil {
+		return err
+	}
+	appBlock, err := composeSectionEntryBlock(opts.AppService, service)
+	if err != nil {
+		return err
+	}
+	if err := compose.AddServiceBlock(opts.AppService, appBlock); err != nil {
+		return err
 	}
 	if assistant.Enabled {
-		services[opts.AssistantService] = assistantService(ctx, opts, assistant)
-		root["networks"] = map[string]any{
-			opts.AssistantService: map[string]any{},
+		assistantBlock, err := composeSectionEntryBlock(opts.AssistantService, assistantService(ctx, opts, assistant))
+		if err != nil {
+			return err
+		}
+		if err := compose.AddServiceBlock(opts.AssistantService, assistantBlock); err != nil {
+			return err
+		}
+		if err := compose.AddSectionEntryBlock("networks", opts.AssistantService, "  "+opts.AssistantService+": {}"); err != nil {
+			return err
 		}
 	}
-	data, err := yaml.Marshal(root)
-	if err != nil {
-		return fmt.Errorf("marshal dev mode override: %w", err)
+	return compose.Save()
+}
+
+func composeSectionEntryBlock(name string, value map[string]any) (string, error) {
+	var buffer bytes.Buffer
+	encoder := yaml.NewEncoder(&buffer)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(map[string]any{name: value}); err != nil {
+		return "", fmt.Errorf("marshal dev mode override entry: %w", err)
 	}
-	return ctx.WriteFile(ctx.ResolveProjectPath(opts.OverrideFile), data)
+	lines := strings.Split(strings.TrimRight(buffer.String(), "\n"), "\n")
+	for index := range lines {
+		lines[index] = "  " + lines[index]
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 func devModeFollowUps() []corecomponent.FollowUpSpec {
@@ -402,7 +442,20 @@ func removeOverride(ctx *config.Context, opts Options) error {
 	if ctx == nil {
 		return fmt.Errorf("context is nil")
 	}
-	return ctx.RemoveFile(ctx.ResolveProjectPath(opts.OverrideFile))
+	compose, err := corecomponent.LoadComposeFileOptionalForContext(ctx, ctx.ResolveProjectPath(opts.OverrideFile))
+	if err != nil {
+		return err
+	}
+	if err := compose.DeleteService(opts.AppService); err != nil {
+		return err
+	}
+	if err := compose.DeleteService(opts.AssistantService); err != nil {
+		return err
+	}
+	if err := compose.DeleteSectionEntry("networks", opts.AssistantService); err != nil {
+		return err
+	}
+	return compose.Save()
 }
 
 func sortedStringMap(values map[string]string) map[string]string {
