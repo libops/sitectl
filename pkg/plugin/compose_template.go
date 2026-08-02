@@ -256,6 +256,12 @@ func composeTemplateNeedsInit(ctx *config.Context, spec CreateSpec) (bool, error
 	if ctx == nil {
 		return false, fmt.Errorf("context is nil")
 	}
+	// An empty artifact list means Compose owns the init-state contract. The
+	// init commands must remain idempotent so forks can add or rename Compose
+	// secrets and volumes without requiring a matching plugin release.
+	if len(spec.InitArtifacts) == 0 && len(spec.DockerComposeInit) > 0 {
+		return true, nil
+	}
 	for _, artifact := range spec.InitArtifacts {
 		path := strings.TrimSpace(artifact.Path)
 		if path == "" {

@@ -784,6 +784,20 @@ func TestComposeTemplateNeedsInitDetectsMissingArtifacts(t *testing.T) {
 	}
 }
 
+func TestComposeTemplateNeedsInitRunsComposeOwnedLifecycle(t *testing.T) {
+	t.Parallel()
+	ctx := &config.Context{ProjectDir: t.TempDir(), DockerHostType: config.ContextLocal}
+	spec := CreateSpec{DockerComposeInit: []string{"docker compose run --rm init"}}
+
+	needsInit, err := composeTemplateNeedsInit(ctx, spec)
+	if err != nil {
+		t.Fatalf("composeTemplateNeedsInit() error = %v", err)
+	}
+	if !needsInit {
+		t.Fatal("Compose-owned init lifecycle must run without hardcoded plugin artifacts")
+	}
+}
+
 func TestDockerComposeExecCommandQuotesArgs(t *testing.T) {
 	got := DockerComposeExecCommand("wp", "wp", "--path=/var/www/wp", "post", "get", "hello's world")
 	want := "'docker' 'compose' 'exec' '-T' 'wp' 'wp' '--path=/var/www/wp' 'post' 'get' 'hello'\\''s world'"
