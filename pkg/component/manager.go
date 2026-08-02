@@ -380,7 +380,7 @@ func (m *Manager) composePath() string {
 			return path
 		}
 	}
-	return filepath.Join(m.ctx.ProjectDir, "docker-compose.yml")
+	return filepath.Join(m.ctx.ProjectDir, "compose.yaml")
 }
 
 func (s DrupalSpec) configSyncDir(ctx *config.Context) string {

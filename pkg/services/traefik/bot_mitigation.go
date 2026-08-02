@@ -294,7 +294,14 @@ func disableBotMitigation(projectDir string, opts BotMitigationOptions) error {
 }
 
 func updateComposeForBotMitigation(projectDir string, enabled bool) error {
-	path := filepath.Join(projectDir, "docker-compose.yml")
+	path := filepath.Join(projectDir, "compose.yaml")
+	for _, name := range []string{"compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"} {
+		candidate := filepath.Join(projectDir, name)
+		if _, err := os.Stat(candidate); err == nil {
+			path = candidate
+			break
+		}
+	}
 	data, err := os.ReadFile(path) // #nosec G304 -- compose file path is an explicit project configuration path.
 	if err != nil {
 		return fmt.Errorf("read compose file: %w", err)
@@ -304,7 +311,7 @@ func updateComposeForBotMitigation(projectDir string, enabled bool) error {
 		return fmt.Errorf("parse compose file: %w", err)
 	}
 	if defs == nil || defs.Services == nil || defs.Services["traefik"] == nil {
-		return fmt.Errorf("docker-compose.yml does not define services.traefik")
+		return fmt.Errorf("%s does not define services.traefik", filepath.Base(path))
 	}
 	compose, err := corecomponent.LoadComposeFile(path)
 	if err != nil {

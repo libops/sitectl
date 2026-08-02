@@ -300,7 +300,7 @@ func (c Context) composeFilesForPortDetection() []string {
 	if len(c.ComposeFile) > 0 {
 		return append([]string{}, c.ComposeFile...)
 	}
-	return []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}
+	return []string{"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
 }
 
 func composeDataPublishesSecurePort(data []byte) bool {

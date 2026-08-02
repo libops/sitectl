@@ -13,10 +13,10 @@ import (
 )
 
 var composeProjectCandidates = []string{
-	"docker-compose.yml",
-	"docker-compose.yaml",
-	"compose.yml",
 	"compose.yaml",
+	"compose.yml",
+	"docker-compose.yaml",
+	"docker-compose.yml",
 }
 
 func LooksLikeComposeProject(projectDir string) bool {

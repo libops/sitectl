@@ -160,14 +160,14 @@ func traefikComposeFiles(ctx *config.Context) []string {
 		return out
 	}
 	for _, file := range []string{
-		"docker-compose.yml",
-		"docker-compose.yaml",
-		"compose.yml",
 		"compose.yaml",
-		"compose.override.yml",
+		"compose.yml",
 		"compose.override.yaml",
-		"docker-compose.override.yml",
+		"compose.override.yml",
 		"docker-compose.override.yaml",
+		"docker-compose.override.yml",
+		"docker-compose.yaml",
+		"docker-compose.yml",
 	} {
 		add(file)
 	}

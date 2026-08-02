@@ -60,11 +60,37 @@ func mariaDBCommand() *cobra.Command {
 	}
 	cmd.AddCommand(
 		serviceStatusCommand(defaultMariaDBService),
+		mariaDBCLICommand(),
 		mariaDBBackupCommand(),
 		mariaDBRestoreCommand(),
 		mariaDBSyncCommand(),
 		mariaDBUpgradeCommand(),
 	)
+	return cmd
+}
+
+func mariaDBCLICommand() *cobra.Command {
+	opts := struct{ service, user, database string }{service: defaultMariaDBService, user: "root"}
+	cmd := &cobra.Command{
+		Use:   "cli",
+		Short: "Open an interactive MariaDB client in the database container",
+		Long: `Open the MariaDB command-line client inside the active site's database container.
+
+The password is read inside the container from /run/secrets/DB_ROOT_PASSWORD and is
+never copied to the host command line, environment, or sitectl output.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, err := resolveCurrentContext(cmd)
+			if err != nil {
+				return err
+			}
+			clientArgs := []string{"exec", opts.service, "sh", "-euc", `password="$(cat /run/secrets/DB_ROOT_PASSWORD)"; export MYSQL_PWD="${password}"; exec mariadb --user "$1" ${2:+"$2"}`, "sitectl-mariadb", opts.user, opts.database}
+			return runContextCompose(cmd, *ctx, clientArgs)
+		},
+	}
+	cmd.Flags().StringVar(&opts.service, "service", defaultMariaDBService, "Compose service containing the MariaDB client and root secret.")
+	cmd.Flags().StringVar(&opts.user, "user", "root", "Database account used by the interactive client.")
+	cmd.Flags().StringVar(&opts.database, "database", "", "Database selected when the client starts; empty leaves it unselected.")
 	return cmd
 }
 

@@ -78,6 +78,26 @@ credential helper for private templates; never put a credential in
 
 ## Common Operations
 
+Secrets declared by Compose default to files under `./secrets`. Keep only
+references in sitectl configuration; secret values are never stored there. To
+place selected values in Vault instead, add `.sitectl/secrets.yaml`:
+
+```yaml
+backend: filesystem
+directory: ./secrets
+secrets:
+  DRUPAL_DEFAULT_DB_PASSWORD:
+    backend: vault
+    path: secret/sites/example/drupal
+    field: database_password
+```
+
+`sitectl secrets generate` and `sitectl secrets rotate NAME` pipe Vault values
+to `vault kv put` over stdin and do not write them to the project directory.
+The runtime must independently project those Vault references into the
+container (for example with Vault Agent); sitectl deliberately does not copy a
+Vault value into a Compose file secret.
+
 Compose lifecycle is documented in [`sitectl compose`](https://sitectl.libops.io/commands/compose):
 
 ```bash

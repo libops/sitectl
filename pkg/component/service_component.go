@@ -7,10 +7,10 @@ import (
 )
 
 var defaultComposeRuleFiles = []string{
+	"compose.yaml",
+	"compose.yml",
 	"docker-compose.yml",
 	"docker-compose.yaml",
-	"compose.yml",
-	"compose.yaml",
 }
 
 // ComposeServiceComponentOptions describes a service component backed by

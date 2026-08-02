@@ -388,9 +388,12 @@ func inspectExplicitComposeReconcileNeed(ctx *config.Context, spec plugin.Create
 	var initMessages []string
 	var imageMessages []string
 	imageOverrides, buildArgOverrides := composeImageOverrideServices(ctx)
+	declaredArtifacts := map[string]bool{}
+	declaredVolumes := map[string]bool{}
 
 	for _, artifact := range spec.InitArtifacts {
 		path := composeProjectPath(ctx, artifact.Path)
+		declaredArtifacts[filepath.Clean(path)] = true
 		if artifact.ValueFrom == plugin.InitArtifactValueFromHostUID {
 			needsInit, reason := hostUIDArtifactNeedsInit(ctx, artifact)
 			if needsInit {
@@ -409,6 +412,7 @@ func inspectExplicitComposeReconcileNeed(ctx *config.Context, spec plugin.Create
 		} else {
 			configuredVolumes := composeConfiguredVolumeNames(ctx, composeConfig)
 			for _, volume := range spec.InitVolumes {
+				declaredVolumes[volume.Name] = true
 				dockerVolume, ok := configuredVolumes[volume.Name]
 				if !ok {
 					initMessages = append(initMessages, fmt.Sprintf("volume %s is not defined", volume.Name))
@@ -417,6 +421,28 @@ func inspectExplicitComposeReconcileNeed(ctx *config.Context, spec plugin.Create
 				if composeReconcileVolumeMissing(dockerVolume) {
 					initMessages = append(initMessages, fmt.Sprintf("volume %s is missing", dockerVolume))
 				}
+			}
+		}
+	}
+	// Compose is authoritative for generic secrets and volumes. Plugin metadata
+	// remains additive for genuinely application-specific artifacts such as a
+	// host UID marker; forks can add Compose resources without updating a plugin.
+	if composeConfig, err := composeReconcileReadConfig(ctx); err != nil {
+		initMessages = append(initMessages, "docker compose config could not be inspected")
+	} else {
+		for name, secret := range composeConfig.Secrets {
+			if strings.TrimSpace(secret.File) == "" {
+				continue
+			}
+			path := composeProjectPath(ctx, secret.File)
+			if !declaredArtifacts[filepath.Clean(path)] && fileMissingOrEmpty(path) {
+				initMessages = append(initMessages, fmt.Sprintf("secret %s is missing", name))
+			}
+		}
+		configuredVolumes := composeConfiguredVolumeNames(ctx, composeConfig)
+		for logical, volume := range configuredVolumes {
+			if !declaredVolumes[logical] && composeReconcileVolumeMissing(volume) {
+				initMessages = append(initMessages, fmt.Sprintf("volume %s is missing", volume))
 			}
 		}
 	}
@@ -634,12 +660,14 @@ func dockerVolumeRemove(volume string) error {
 
 func resetComposeReconcileInitState(ctx *config.Context, spec plugin.CreateSpec) ([]string, error) {
 	removed := []string{}
+	artifactPaths := map[string]bool{}
 	for _, artifact := range spec.InitArtifacts {
 		path := strings.TrimSpace(artifact.Path)
 		if path == "" {
 			continue
 		}
 		fullPath := composeProjectPath(ctx, path)
+		artifactPaths[filepath.Clean(fullPath)] = true
 		info, err := os.Lstat(fullPath)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -656,22 +684,53 @@ func resetComposeReconcileInitState(ctx *config.Context, spec plugin.CreateSpec)
 		removed = append(removed, "file "+path)
 	}
 
-	if len(spec.InitVolumes) == 0 {
-		return removed, nil
-	}
 	composeConfig, err := composeReconcileReadConfig(ctx)
 	if err != nil {
 		return removed, fmt.Errorf("inspect compose volumes: %w", err)
 	}
 	configuredVolumes := composeConfiguredVolumeNames(ctx, composeConfig)
+	for _, secret := range composeConfig.Secrets {
+		if strings.TrimSpace(secret.File) == "" {
+			continue
+		}
+		fullPath := composeProjectPath(ctx, secret.File)
+		if artifactPaths[filepath.Clean(fullPath)] {
+			continue
+		}
+		info, statErr := os.Lstat(fullPath)
+		if os.IsNotExist(statErr) {
+			continue
+		}
+		if statErr != nil {
+			return removed, statErr
+		}
+		if info.IsDir() {
+			return removed, fmt.Errorf("refusing to remove init artifact directory %s", secret.File)
+		}
+		if err := composeReconcileRemoveFile(fullPath); err != nil && !os.IsNotExist(err) {
+			return removed, err
+		}
+		removed = append(removed, "file "+secret.File)
+	}
+	requestedVolumes := map[string]bool{}
 	for _, volume := range spec.InitVolumes {
 		name := strings.TrimSpace(volume.Name)
+		requestedVolumes[name] = true
 		if name == "" {
 			continue
 		}
 		dockerVolume := configuredVolumes[name]
 		if strings.TrimSpace(dockerVolume) == "" {
 			dockerVolume = name
+		}
+		if err := composeReconcileVolumeRemove(dockerVolume); err != nil {
+			return removed, err
+		}
+		removed = append(removed, "volume "+dockerVolume)
+	}
+	for logical, dockerVolume := range configuredVolumes {
+		if requestedVolumes[logical] {
+			continue
 		}
 		if err := composeReconcileVolumeRemove(dockerVolume); err != nil {
 			return removed, err
