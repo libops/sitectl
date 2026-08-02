@@ -378,6 +378,20 @@ func refreshCreateContextComposeIdentity(ctx *config.Context, req ComposeCreateR
 		return nil
 	}
 	changed := false
+	if detected := config.DetectContextComposeFile(ctx); detected != "" {
+		configuredExists := false
+		for _, name := range ctx.ComposeFile {
+			exists, err := ctx.FileExists(ctx.ResolveProjectPath(name))
+			if err == nil && exists {
+				configuredExists = true
+				break
+			}
+		}
+		if !configuredExists && (len(ctx.ComposeFile) != 1 || ctx.ComposeFile[0] != detected) {
+			ctx.ComposeFile = []string{detected}
+			changed = true
+		}
+	}
 	if strings.TrimSpace(req.ComposeProjectName) == "" {
 		if detected := config.DetectContextComposeProjectName(ctx); detected != "" && detected != ctx.ComposeProjectName {
 			ctx.ComposeProjectName = detected

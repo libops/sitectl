@@ -19,6 +19,21 @@ var composeProjectCandidates = []string{
 	"docker-compose.yml",
 }
 
+// DetectContextComposeFile returns the first canonical Compose project file
+// that exists for a local or remote context.
+func DetectContextComposeFile(ctx *Context) string {
+	if ctx == nil {
+		return ""
+	}
+	for _, name := range composeProjectCandidates {
+		exists, err := ctx.FileExists(ctx.ResolveProjectPath(name))
+		if err == nil && exists {
+			return name
+		}
+	}
+	return ""
+}
+
 func LooksLikeComposeProject(projectDir string) bool {
 	projectDir = filepath.Clean(strings.TrimSpace(projectDir))
 	if projectDir == "" {

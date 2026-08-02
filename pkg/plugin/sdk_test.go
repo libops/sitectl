@@ -798,6 +798,21 @@ func TestComposeTemplateNeedsInitRunsComposeOwnedLifecycle(t *testing.T) {
 	}
 }
 
+func TestRefreshCreateContextDiscoversComposeFileAfterClone(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	ctx := &config.Context{ProjectDir: projectDir, DockerHostType: config.ContextLocal, ComposeFile: []string{"docker-compose.yaml"}}
+	if err := os.WriteFile(filepath.Join(projectDir, "compose.yaml"), []byte("name: example\nservices: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshCreateContextComposeIdentity(ctx, ComposeCreateRequest{}); err != nil {
+		t.Fatalf("refreshCreateContextComposeIdentity() error = %v", err)
+	}
+	if len(ctx.ComposeFile) != 1 || ctx.ComposeFile[0] != "compose.yaml" {
+		t.Fatalf("ComposeFile = %#v, want compose.yaml", ctx.ComposeFile)
+	}
+}
+
 func TestDockerComposeExecCommandQuotesArgs(t *testing.T) {
 	got := DockerComposeExecCommand("wp", "wp", "--path=/var/www/wp", "post", "get", "hello's world")
 	want := "'docker' 'compose' 'exec' '-T' 'wp' 'wp' '--path=/var/www/wp' 'post' 'get' 'hello'\\''s world'"
