@@ -32,8 +32,8 @@ const (
 	captchaProtectTemplateMount = "./conf/traefik/challenge.tmpl.html:/challenge.tmpl.html:ro"
 	turnstileSiteKeyDefault     = "${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}"
 	turnstileSecretKeyDefault   = "${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}" // #nosec G101 -- documented Cloudflare Turnstile test key fallback; runtime warning tells users to configure real keys.
-	captchaProtectSourceURL     = "https://github.com/libops/captcha-protect/archive/refs/tags/v2.0.1.zip"
-	captchaProtectSourceSHA256  = "cd92000015f5b9dddbbb845267559d6667b9d6b556b77645dc688568b8b97c76"
+	captchaProtectSourceURL     = "https://github.com/libops/captcha-protect/archive/refs/tags/v1.14.0.zip"
+	captchaProtectSourceSHA256  = "d35eb4edb5cf924a6c20f15847cf03e41e6143cf733383d8a736a934c6222b73"
 	// maxCaptchaProtectArchiveBytes bounds memory use before the archive hash is verified.
 	maxCaptchaProtectArchiveBytes = 8 << 20
 	captchaProtectInstallMarker   = ".sitectl-source"
@@ -47,7 +47,7 @@ const (
 	// before writeCaptchaProtectInstallMarker adds captchaProtectInstallMarker.
 	// The extraction filter intentionally drops ci/, .github/, renovate.json5,
 	// and *_test.go files before this hash is computed.
-	captchaProtectExtractedTreeSHA256 = "0c19ac70869c3e66b1176d722c366f9bd603af2d5acb2341db4e3853e041db56"
+	captchaProtectExtractedTreeSHA256 = "2b9e098e4a08802d415673e23f3572e9ee1041e40fd4cced085757b431770c1f"
 )
 
 var captchaProtectVolumes = []string{
