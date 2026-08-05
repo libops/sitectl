@@ -21,6 +21,7 @@ import (
 	"github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
+	"github.com/libops/sitectl/pkg/ui"
 	"github.com/libops/sitectl/pkg/validate"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -456,8 +457,9 @@ func (s *SDK) ExecInContainerInteractive(ctx context.Context, containerID string
 // CommandExecOptions controls subprocess execution for plugin RPC calls.
 // Stdout is always captured into RPCResponse.Output. LiveStdout mirrors command
 // stdout to the plugin process stderr while still capturing it, because process
-// stdout is reserved for the final RPC response envelope. Use Stdin only for
-// interactive RPC methods; when Stdin is nil the host sends the RPC envelope
+// stdout is reserved for the final RPC response envelope. Interactive terminal
+// calls attach stderr directly and tell shared prompts to render there. Use Stdin
+// only for interactive RPC methods; when Stdin is nil the host sends the RPC envelope
 // over stdin instead of argv. When Stdin is set, the request is encoded into
 // argv so request args and params may be visible in process listings; never
 // put secrets in any RPCRequest field. The argv safety gate validates typed
@@ -587,6 +589,10 @@ func runPluginRPCPath(pluginName, pluginPath string, req RPCRequest, opts plugin
 	if opts.LiveStdout {
 		cmd.Env = append(cmd.Env, "SITECTL_RPC_LIVE_STDOUT=1")
 	}
+	interactiveStderr, interactiveTerminal := interactiveRPCPromptStderr(opts, term.IsTerminal)
+	if interactiveTerminal {
+		cmd.Env = append(cmd.Env, ui.PromptOutputEnvironment+"="+ui.PromptOutputStderr)
+	}
 	cmd.Env = append(cmd.Env, opts.ExtraEnv...)
 	if width, ok := terminalColumns(); ok {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("COLUMNS=%d", width))
@@ -599,15 +605,19 @@ func runPluginRPCPath(pluginName, pluginPath string, req RPCRequest, opts plugin
 	stdout := newLimitedRPCBuffer(maxRPCResponseBytes)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
-	var stderrSink io.Writer
-	if opts.Stderr != nil && (opts.LiveStderr || opts.LiveStdout) {
-		stderrSink = io.MultiWriter(opts.Stderr, &stderr)
-	} else if opts.LiveStderr || opts.LiveStdout {
-		stderrSink = io.MultiWriter(os.Stderr, &stderr)
+	if interactiveTerminal {
+		cmd.Stderr = interactiveStderr
 	} else {
-		stderrSink = &stderr
+		var stderrSink io.Writer
+		if opts.Stderr != nil && (opts.LiveStderr || opts.LiveStdout) {
+			stderrSink = io.MultiWriter(opts.Stderr, &stderr)
+		} else if opts.LiveStderr || opts.LiveStdout {
+			stderrSink = io.MultiWriter(os.Stderr, &stderr)
+		} else {
+			stderrSink = &stderr
+		}
+		cmd.Stderr = stderrSink
 	}
-	cmd.Stderr = stderrSink
 
 	if err := cmd.Run(); err != nil {
 		if ctxErr := execCtx.Err(); ctxErr != nil {
@@ -631,6 +641,24 @@ func runPluginRPCPath(pluginName, pluginPath string, req RPCRequest, opts plugin
 		return resp, newRPCFailure(pluginName, req.Method, resp, nil)
 	}
 	return resp, nil
+}
+
+func interactiveRPCPromptStderr(opts pluginRPCPathOptions, isTerminal func(int) bool) (*os.File, bool) {
+	stdin, ok := opts.Stdin.(*os.File)
+	if !ok || stdin == nil || !isTerminal(int(stdin.Fd())) {
+		return nil, false
+	}
+	stderr := os.Stderr
+	if opts.Stderr != nil {
+		stderr, ok = opts.Stderr.(*os.File)
+		if !ok || stderr == nil {
+			return nil, false
+		}
+	}
+	if !isTerminal(int(stderr.Fd())) {
+		return nil, false
+	}
+	return stderr, true
 }
 
 func parsePluginRPCResponse(pluginName, method string, data []byte) (RPCResponse, error) {

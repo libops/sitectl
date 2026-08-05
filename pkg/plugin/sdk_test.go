@@ -207,6 +207,36 @@ func TestInvokePluginRPCUsesRequestFlagWhenStdinIsReserved(t *testing.T) {
 	}
 }
 
+func TestInteractiveRPCPromptStderrRequiresTerminalFiles(t *testing.T) {
+	terminal := func(int) bool { return true }
+	stderr, ok := interactiveRPCPromptStderr(pluginRPCPathOptions{CommandExecOptions: CommandExecOptions{
+		Stdin:  os.Stdin,
+		Stderr: os.Stderr,
+	}}, terminal)
+	if !ok || stderr != os.Stderr {
+		t.Fatalf("interactive stderr = %v, %t; want os.Stderr, true", stderr, ok)
+	}
+
+	if _, ok := interactiveRPCPromptStderr(pluginRPCPathOptions{CommandExecOptions: CommandExecOptions{
+		Stdin:  strings.NewReader("input"),
+		Stderr: os.Stderr,
+	}}, terminal); ok {
+		t.Fatal("non-terminal stdin unexpectedly enabled terminal prompt transport")
+	}
+	if _, ok := interactiveRPCPromptStderr(pluginRPCPathOptions{CommandExecOptions: CommandExecOptions{
+		Stdin:  os.Stdin,
+		Stderr: &bytes.Buffer{},
+	}}, terminal); ok {
+		t.Fatal("non-file stderr unexpectedly enabled terminal prompt transport")
+	}
+	if _, ok := interactiveRPCPromptStderr(pluginRPCPathOptions{CommandExecOptions: CommandExecOptions{
+		Stdin:  os.Stdin,
+		Stderr: os.Stderr,
+	}}, func(int) bool { return false }); ok {
+		t.Fatal("non-terminal file descriptors unexpectedly enabled terminal prompt transport")
+	}
+}
+
 func TestInvokePluginRPCRejectsSensitiveParamsOnRequestFlagPath(t *testing.T) {
 	req, err := withRPCParams(NewRPCRequest(MethodDebugRun), sensitiveRPCParamsForTest{Token: "secret"})
 	if err != nil {

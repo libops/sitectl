@@ -315,35 +315,23 @@ var useContextCmd = &cobra.Command{
 
 var deleteContextCmd = &cobra.Command{
 	Use:   "delete-context <context-name>",
-	Short: "Delete a site context",
-	Args:  cobra.ExactArgs(1),
+	Short: "Delete a saved site context and optionally its local project",
+	Long: `Delete a saved context from the local sitectl configuration.
+
+By default, this removes only the connection record and leaves containers, volumes,
+remote resources, and project files unchanged. With --delete-project, a local context
+requires two typed confirmations before sitectl runs 'docker compose down -v', deletes
+the complete project directory, and removes the saved context. Remote project files
+and containers are never deleted by this command.`,
+	Example: `  sitectl config delete-context old-stage
+  sitectl config delete-context local --delete-project`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		cfg, err := config.Load()
+		deleteProject, err := cmd.Flags().GetBool("delete-project")
 		if err != nil {
 			return err
 		}
-		if cfg.CurrentContext == name {
-			return fmt.Errorf("cannot delete the current context; switch to another context first")
-		}
-		found := false
-		var newContexts []config.Context
-		for _, ctx := range cfg.Contexts {
-			if ctx.Name == name {
-				found = true
-				continue
-			}
-			newContexts = append(newContexts, ctx)
-		}
-		if !found {
-			return fmt.Errorf("context %q not found", name)
-		}
-		cfg.Contexts = newContexts
-		if err = config.Save(cfg); err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Deleted context: %s\n", name)
-		return nil
+		return runDeleteContextCommand(cmd, args[0], deleteProject)
 	},
 }
 
@@ -444,6 +432,7 @@ func init() {
 	config.SetCommandFlags(setFlags)
 	setFlags.Bool("default", false, "Use this context when a command does not select one explicitly.")
 	setFlags.Bool("yolo", false, "Save resolved flag, stored-context, and product defaults without reviewing each decision.")
+	deleteContextCmd.Flags().Bool("delete-project", false, "For a local context, also delete its Compose volumes and complete project directory after a second typed confirmation.")
 
 	validateConfigCmd.Flags().BoolVar(&configValidateAll, "all", false, "Validate configuration and target access for every saved context.")
 	validateConfigCmd.Flags().StringVar(&configValidateSite, "site", "", "Validate every environment context belonging to this logical site.")
