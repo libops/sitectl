@@ -42,8 +42,11 @@ type textPromptModel struct {
 }
 
 func PromptText(opts TextPromptOptions) (string, bool, error) {
+	if !CanPromptInteractively() {
+		return "", false, nil
+	}
 	model := newTextPromptModel(opts)
-	resultModel, err := tea.NewProgram(model).Run()
+	resultModel, err := runPromptProgram(model)
 	if err != nil {
 		return "", true, err
 	}
@@ -61,6 +64,7 @@ func PromptText(opts TextPromptOptions) (string, bool, error) {
 func newTextPromptModel(opts TextPromptOptions) *textPromptModel {
 	input := textinput.New()
 	input.Prompt = strings.TrimSpace(opts.Prompt) + " "
+	stylePromptInput(&input)
 	input.Focus()
 
 	helpModel := help.New()
@@ -115,16 +119,16 @@ func (m *textPromptModel) View() tea.View {
 		headerParts = append(headerParts, "")
 	}
 
-	inputBox := customBoxStyle.Width(max(20, m.width-6)).Render(m.input.View())
+	inputBox := customBoxStyle.Width(promptLayoutWidth(m.width)).Render(m.input.View())
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
 		append(headerParts, inputBox, "", footerHelpStyle.Render(m.help.View(m.keys)))...,
 	)
-	return tea.NewView(promptDocStyle.Render(content))
+	return promptView(content, m.width)
 }
 
 func (m *textPromptModel) syncLayout() {
-	w := clampInt(m.width-4, 40, 100)
+	w := promptLayoutWidth(m.width)
 	m.help.SetWidth(w)
 	m.input.SetWidth(w - 8)
 }

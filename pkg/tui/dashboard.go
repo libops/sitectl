@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -22,7 +23,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/NimbleMarkets/ntcharts/v2/sparkline"
 	"github.com/kballard/go-shellquote"
 	"github.com/libops/sitectl/internal/tuitour"
 	"github.com/libops/sitectl/pkg/config"
@@ -48,6 +48,7 @@ const (
 const maxCommandOutputBytes = 1 << 20
 const maxCommandHistoryEntries = 100
 const commandHistoryBrowseNone = -1
+const localSummaryBatchSize = 3
 
 type refreshTickMsg time.Time
 
@@ -55,6 +56,27 @@ type summaryLoadedMsg struct {
 	ContextName string
 	Summary     docker.ProjectSummary
 	Err         error
+}
+
+type contextLifecycleFinishedMsg struct {
+	ContextName string
+	Action      string
+	Output      string
+	Err         error
+}
+
+type contextSummaryState struct {
+	Summary docker.ProjectSummary
+	Err     error
+	Loading bool
+	Loaded  bool
+}
+
+type contextPosition struct {
+	SiteIndex int
+	EnvIndex  int
+	SiteName  string
+	Context   config.Context
 }
 
 type logsLoadedMsg struct {
@@ -111,53 +133,76 @@ func (i menuItem) Title() string       { return i.title }
 func (i menuItem) Description() string { return i.desc }
 func (i menuItem) FilterValue() string { return i.title + " " + i.desc }
 
+const onboardingListZoneID = "onboarding:choices"
+
+type menuDelegate struct {
+	list.DefaultDelegate
+}
+
+func (d menuDelegate) Render(w io.Writer, model list.Model, index int, item list.Item) {
+	var rendered strings.Builder
+	d.DefaultDelegate.Render(&rendered, model, index, item)
+	_, _ = fmt.Fprint(w, zone.Mark(onboardingItemZoneID(index), rendered.String()))
+}
+
 type keyMap struct {
-	Left     key.Binding
-	Right    key.Binding
-	Up       key.Binding
-	Down     key.Binding
-	Command  key.Binding
-	Terminal key.Binding
-	Refresh  key.Binding
-	Enter    key.Binding
-	Back     key.Binding
-	Quit     key.Binding
+	Left      key.Binding
+	Right     key.Binding
+	Up        key.Binding
+	Down      key.Binding
+	Create    key.Binding
+	Delete    key.Binding
+	Lifecycle key.Binding
+	Command   key.Binding
+	Terminal  key.Binding
+	Refresh   key.Binding
+	Enter     key.Binding
+	Back      key.Binding
+	Quit      key.Binding
 }
 
 func defaultKeyMap() keyMap {
 	return keyMap{
-		Left:     key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("h/left", "site")),
-		Right:    key.NewBinding(key.WithKeys("right", "l", "tab"), key.WithHelp("l/right", "next site")),
-		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("k/up", "env up")),
-		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("j/down", "env down")),
-		Command:  key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "command bar")),
-		Terminal: key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "run in terminal")),
-		Refresh:  key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "refresh")),
-		Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
-		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Left:      key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("h/left", "select")),
+		Right:     key.NewBinding(key.WithKeys("right", "l", "tab"), key.WithHelp("l/right", "next")),
+		Up:        key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("k/up", "row up")),
+		Down:      key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("j/down", "row down")),
+		Create:    key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "add")),
+		Delete:    key.NewBinding(key.WithKeys("delete"), key.WithHelp("del", "delete")),
+		Lifecycle: key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "start/stop")),
+		Command:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "command")),
+		Terminal:  key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "terminal")),
+		Refresh:   key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "refresh")),
+		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
+		Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Left, k.Up, k.Command, k.Refresh, k.Terminal, k.Back, k.Quit}
+	return []key.Binding{k.Left, k.Create, k.Delete, k.Lifecycle, k.Command, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Left, k.Right, k.Up, k.Down}, {k.Command, k.Refresh, k.Terminal, k.Enter, k.Back, k.Quit}}
+	return [][]key.Binding{{k.Left, k.Right, k.Up, k.Down}, {k.Create, k.Delete, k.Lifecycle, k.Command, k.Refresh, k.Terminal, k.Enter, k.Back, k.Quit}}
 }
 
 type dashboardModel struct {
-	cfg            *config.Config
-	sites          []siteGroup
-	plugins        []plugin.InstalledPlugin
-	tourPanes      []tuitour.Pane
-	currentContext string
+	cfg                     *config.Config
+	sites                   []siteGroup
+	plugins                 []plugin.InstalledPlugin
+	tourPanes               []tuitour.Pane
+	currentContext          string
+	pendingContextSelection string
+	pendingWorkingDir       string
+	contextMenuName         string
 
-	siteIndex int
-	envIndex  int
-	width     int
-	height    int
+	siteIndex          int
+	envIndex           int
+	contextPage        int
+	localRefreshCursor int
+	width              int
+	height             int
 
 	screen screenMode
 
@@ -173,10 +218,8 @@ type dashboardModel struct {
 	detailBody  string
 	logsBody    string
 
-	historyCPU    map[string][]float64
-	historyMemory map[string][]float64
-	historyNet    map[string][]float64
-	lastNetSample map[string]networkSample
+	contextSummaries map[string]contextSummaryState
+	contextActions   map[string]string
 
 	help    help.Model
 	keys    keyMap
@@ -185,6 +228,8 @@ type dashboardModel struct {
 	logs    viewport.Model
 	chooser list.Model
 
+	contextNameInput textinput.Model
+	creatingContext  bool
 	commandInput     textinput.Model
 	commandRunning   bool
 	commandQuitArmed bool
@@ -194,11 +239,6 @@ type dashboardModel struct {
 	commandHistory   []string
 	commandHistoryAt int
 	commandDraft     string
-}
-
-type networkSample struct {
-	totalBytes uint64
-	at         time.Time
 }
 
 func Run() error {
@@ -237,14 +277,13 @@ func newDashboardModel(cfg *config.Config, plugins []plugin.InstalledPlugin) *da
 		keys:             keys,
 		help:             help.New(),
 		spin:             spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(spinnerStyle)),
-		historyCPU:       map[string][]float64{},
-		historyMemory:    map[string][]float64{},
-		historyNet:       map[string][]float64{},
-		lastNetSample:    map[string]networkSample{},
+		contextSummaries: map[string]contextSummaryState{},
+		contextActions:   map[string]string{},
 		commandHistoryAt: commandHistoryBrowseNone,
 	}
 	m.help.Styles = helpStyles()
 	m.siteIndex, m.envIndex = defaultSelection(m.sites, current)
+	m.syncContextPageToSelection()
 	m.detail = viewport.New(viewport.WithWidth(40), viewport.WithHeight(10))
 	m.detail.MouseWheelEnabled = true
 	m.detailBody = "Loading..."
@@ -255,12 +294,15 @@ func newDashboardModel(cfg *config.Config, plugins []plugin.InstalledPlugin) *da
 	m.logs.SetContent(m.logsBody)
 	m.logsTitle = "Logs"
 	m.chooser = newMenuModel(chooserTitle(m.sites), chooserItems(m.sites, m.plugins))
+	m.contextNameInput = textinput.New()
+	m.contextNameInput.Prompt = "Context name: "
+	m.contextNameInput.Placeholder = "museum-local"
+	m.contextNameInput.SetWidth(48)
 	m.commandInput = textinput.New()
 	m.commandInput.Prompt = "sitectl --context " + m.selectedContextName() + " "
 	m.commandInput.Placeholder = "compose ps"
 	m.commandInput.ShowSuggestions = true
 	m.commandInput.SetWidth(60)
-	m.commandInput.Focus()
 	m.refreshCommandSuggestions()
 	m.syncLayout()
 	return m
@@ -271,10 +313,7 @@ func (m *dashboardModel) Init() tea.Cmd {
 		m.spin.Tick,
 		nextRefreshCmd(),
 	}
-	if ctx, ok := m.selectedContext(); ok {
-		m.loading = true
-		cmds = append(cmds, loadSummaryCmd(ctx))
-	}
+	cmds = append(cmds, m.queueSummaryLoads(m.nextSummaryRefreshContexts())...)
 	return tea.Batch(cmds...)
 }
 
@@ -289,29 +328,45 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshTickMsg:
 		cmds := []tea.Cmd{nextRefreshCmd()}
 		if ctx, ok := m.selectedContext(); ok {
-			cmds = append(cmds, loadSummaryCmd(ctx))
 			if m.screen == screenLogs && strings.HasPrefix(m.logsTitle, "Logs") {
 				cmds = append(cmds, loadLogsCmd(ctx))
 			} else if m.screen == screenLogs && strings.TrimSpace(m.logTarget) != "" {
 				cmds = append(cmds, loadContainerLogsCmd(ctx, m.logTarget))
 			}
 		}
+		cmds = append(cmds, m.queueSummaryLoads(m.nextSummaryRefreshContexts())...)
 		return m, tea.Batch(cmds...)
 
 	case summaryLoadedMsg:
+		state := m.contextSummaries[msg.ContextName]
+		state.Loading = false
+		state.Err = msg.Err
+		if msg.Err == nil {
+			state.Summary = msg.Summary
+			state.Loaded = true
+		}
+		m.contextSummaries[msg.ContextName] = state
 		if ctx, ok := m.selectedContext(); ok && ctx.Name == msg.ContextName {
-			m.loading = false
-			m.summary = msg.Summary
-			m.summaryErr = msg.Err
-			if msg.Err == nil {
-				m.pushHistory(
-					msg.ContextName,
-					msg.Summary,
-				)
-			}
+			m.syncSelectedSummary()
 			m.syncDetailContent()
 		}
 		return m, nil
+
+	case contextLifecycleFinishedMsg:
+		delete(m.contextActions, msg.ContextName)
+		if msg.Err != nil {
+			m.lastMessage = fmt.Sprintf("Failed to %s context %s: %v", msg.Action, msg.ContextName, msg.Err)
+			if output := strings.TrimSpace(msg.Output); output != "" {
+				m.lastMessage += " · " + truncateMetricText(strings.Join(strings.Fields(output), " "), 120)
+			}
+		} else {
+			m.lastMessage = fmt.Sprintf("Context %s %s completed.", msg.ContextName, msg.Action)
+		}
+		ctx, ok := findContextByName(m.sites, msg.ContextName)
+		if !ok {
+			return m, nil
+		}
+		return m, tea.Batch(m.queueSummaryLoads([]config.Context{ctx})...)
 
 	case logsLoadedMsg:
 		if ctx, ok := m.selectedContext(); ok && ctx.Name == msg.ContextName {
@@ -396,6 +451,12 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case commandExecFinishedMsg:
 		m.commandRunning = false
 		m.commandQuitArmed = false
+		if msg.Err == nil && strings.TrimSpace(m.pendingWorkingDir) != "" {
+			if err := os.Chdir(m.pendingWorkingDir); err != nil {
+				msg.Err = fmt.Errorf("command completed but sitectl could not leave the deleted project directory: %w", err)
+			}
+		}
+		m.pendingWorkingDir = ""
 		if msg.Err != nil {
 			m.lastMessage = fmt.Sprintf("Command failed: %v", msg.Err)
 		} else {
@@ -413,7 +474,24 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sites = groupContexts(msg.Config)
 		m.plugins = msg.Plugins
 		m.currentContext = msg.CurrentContext
-		m.siteIndex, m.envIndex = defaultSelection(m.sites, m.currentContext)
+		selection := m.currentContext
+		if _, ok := findContextByName(m.sites, m.contextMenuName); ok {
+			selection = m.contextMenuName
+		}
+		if strings.TrimSpace(m.pendingContextSelection) != "" {
+			if _, ok := findContextByName(m.sites, m.pendingContextSelection); ok {
+				selection = m.pendingContextSelection
+			}
+			m.pendingContextSelection = ""
+		}
+		m.siteIndex, m.envIndex = defaultSelection(m.sites, selection)
+		m.contextPage = 0
+		m.localRefreshCursor = 0
+		m.contextSummaries = retainContextSummaries(m.contextSummaries, m.sites)
+		if _, ok := findContextByName(m.sites, m.contextMenuName); !ok {
+			m.contextMenuName = ""
+		}
+		m.syncContextPageToSelection()
 		m.summary = docker.ProjectSummary{}
 		m.summaryErr = nil
 		m.loading = false
@@ -427,11 +505,8 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chooser = newMenuModel(chooserTitle(m.sites), chooserItems(m.sites, m.plugins))
 		m.refreshCommandSuggestions()
 		m.syncLayout()
-		if ctx, ok := m.selectedContext(); ok {
-			m.loading = true
-			return m, loadSummaryCmd(ctx)
-		}
-		return m, nil
+		cmds := m.queueSummaryLoads(m.nextSummaryRefreshContexts())
+		return m, tea.Batch(cmds...)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -439,8 +514,8 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.MouseMsg:
-		if release, ok := msg.(tea.MouseReleaseMsg); ok {
-			return m.handleMouseRelease(release)
+		if click, ok := msg.(tea.MouseClickMsg); ok {
+			return m.handleMouseClick(click)
 		}
 		if m.screen == screenLogs {
 			var cmd tea.Cmd
@@ -449,6 +524,26 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg := msg.(type) {
 		case tea.MouseWheelMsg:
+			if !m.hasContexts() && !m.creatingContext && m.screen == screenDashboard {
+				if z := zone.Get(onboardingListZoneID); z != nil && z.InBounds(msg) {
+					switch msg.Mouse().Button {
+					case tea.MouseWheelUp:
+						m.chooser.CursorUp()
+					case tea.MouseWheelDown:
+						m.chooser.CursorDown()
+					}
+					return m, nil
+				}
+			}
+			if z := zone.Get("contexts:pager"); z != nil && z.InBounds(msg) {
+				switch msg.Mouse().Button {
+				case tea.MouseWheelUp:
+					m.changeContextPage(-1)
+				case tea.MouseWheelDown:
+					m.changeContextPage(1)
+				}
+				return m, nil
+			}
 			var cmd tea.Cmd
 			m.detail, cmd = m.detail.Update(msg)
 			return m, cmd
@@ -471,6 +566,9 @@ func (m *dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.creatingContext {
+		return m.handleContextNameKey(msg)
+	}
 	if !m.hasContexts() {
 		if m.screen == screenTour {
 			return m.handleTourKey(msg)
@@ -553,6 +651,10 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Back):
+		if m.contextMenuName != "" {
+			m.contextMenuName = ""
+			return m, nil
+		}
 		if m.screen == screenLogs {
 			if m.commandRunning && m.commandCancel != nil {
 				m.commandCancel()
@@ -589,34 +691,38 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, m.keys.Left):
-		if m.siteIndex > 0 {
-			m.siteIndex--
-			m.envIndex = defaultEnvIndex(m.selectedSiteContexts(), m.currentContext)
+		m.contextMenuName = ""
+		if m.moveContextSelection(-1) {
 			return m.reloadSelected()
 		}
 	case key.Matches(msg, m.keys.Right):
-		if m.siteIndex < len(m.sites)-1 {
-			m.siteIndex++
-			m.envIndex = defaultEnvIndex(m.selectedSiteContexts(), m.currentContext)
+		m.contextMenuName = ""
+		if m.moveContextSelection(1) {
 			return m.reloadSelected()
 		}
 	case key.Matches(msg, m.keys.Up):
-		if m.envIndex > 0 {
-			m.envIndex--
+		m.contextMenuName = ""
+		if m.moveContextSelection(-m.contextsPerPage()) {
 			return m.reloadSelected()
 		}
 	case key.Matches(msg, m.keys.Down):
-		if contexts := m.selectedSiteContexts(); m.envIndex < len(contexts)-1 {
-			m.envIndex++
+		m.contextMenuName = ""
+		if m.moveContextSelection(m.contextsPerPage()) {
 			return m.reloadSelected()
 		}
+	case key.Matches(msg, m.keys.Create):
+		return m.beginContextCreation()
+	case key.Matches(msg, m.keys.Delete):
+		return m.deleteSelectedContext()
+	case key.Matches(msg, m.keys.Lifecycle):
+		return m.toggleSelectedContext()
 	case key.Matches(msg, m.keys.Command):
+		m.contextMenuName = ""
 		m.commandInput.Focus()
 		return m, nil
 	case key.Matches(msg, m.keys.Refresh):
 		if ctx, ok := m.selectedContext(); ok {
-			m.loading = true
-			return m, loadSummaryCmd(ctx)
+			return m, tea.Batch(m.queueSummaryLoads([]config.Context{ctx})...)
 		}
 	}
 
@@ -632,47 +738,91 @@ func (m *dashboardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *dashboardModel) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
-	if msg.Mouse().Button != tea.MouseLeft {
-		return m, nil
-	}
+func (m *dashboardModel) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	if m.screen == screenLogs {
-		if z := zone.Get("logs:back"); z != nil && z.InBounds(msg) {
-			m.screen = screenDashboard
-			m.logTarget = ""
-			m.syncLayout()
-			return m, nil
+		if msg.Mouse().Button == tea.MouseLeft {
+			if z := zone.Get("logs:back"); z != nil && z.InBounds(msg) {
+				m.screen = screenDashboard
+				m.logTarget = ""
+				m.syncLayout()
+				return m, nil
+			}
 		}
 		var cmd tea.Cmd
 		m.logs, cmd = m.logs.Update(msg)
 		return m, cmd
 	}
 
-	for _, targetSite := range m.sites {
-		if z := zone.Get("tab:" + targetSite.Name); z != nil && z.InBounds(msg) {
-			for i, site := range m.sites {
-				if site.Name == targetSite.Name {
-					m.siteIndex = i
-					m.envIndex = defaultEnvIndex(site.Contexts, m.currentContext)
-					return m.reloadSelected()
+	if !m.hasContexts() && !m.creatingContext && m.screen == screenDashboard && msg.Mouse().Button == tea.MouseLeft {
+		for index := range m.chooser.Items() {
+			if z := zone.Get(onboardingItemZoneID(index)); z != nil && z.InBounds(msg) {
+				m.chooser.Select(index)
+				return m.handleOnboardingSelection()
+			}
+		}
+		return m, nil
+	}
+
+	if msg.Mouse().Button == tea.MouseLeft {
+		if z := zone.Get("context-menu:delete"); z != nil && z.InBounds(msg) {
+			return m.deleteSelectedContext()
+		}
+		if z := zone.Get("context-menu:close"); z != nil && z.InBounds(msg) {
+			m.contextMenuName = ""
+			return m, nil
+		}
+		if z := zone.Get("context:add"); z != nil && z.InBounds(msg) {
+			m.contextMenuName = ""
+			return m.beginContextCreation()
+		}
+	}
+
+	for index, position := range contextPositions(m.sites) {
+		ctx := position.Context
+		if msg.Mouse().Button == tea.MouseLeft {
+			for _, action := range []string{"start", "stop"} {
+				if z := zone.Get(contextLifecycleZoneID(action, ctx.Name)); z != nil && z.InBounds(msg) {
+					m.contextMenuName = ""
+					m.selectContextPosition(position, index)
+					return m.runContextLifecycle(ctx, action)
 				}
+			}
+		}
+		if z := zone.Get("context:" + position.Context.Name); z != nil && z.InBounds(msg) {
+			switch msg.Mouse().Button {
+			case tea.MouseLeft:
+				m.contextMenuName = ""
+				m.selectContextPosition(position, index)
+				return m.reloadSelected()
+			case tea.MouseRight:
+				m.contextMenuName = ctx.Name
+				m.selectContextPosition(position, index)
+				return m.reloadSelected()
+			}
+		}
+	}
+	if msg.Mouse().Button == tea.MouseLeft {
+		for _, service := range m.summary.Services {
+			if z := zone.Get(containerZoneID(service.Name)); z != nil && z.InBounds(msg) {
+				m.contextMenuName = ""
+				return m.openContainerLogs(service.Name)
 			}
 		}
 	}
 
-	for i, ctx := range m.selectedSiteContexts() {
-		if z := zone.Get("env:" + ctx.Name); z != nil && z.InBounds(msg) {
-			m.envIndex = i
-			return m.reloadSelected()
-		}
-	}
-	for _, service := range m.summary.Services {
-		if z := zone.Get(containerZoneID(service.Name)); z != nil && z.InBounds(msg) {
-			return m.openContainerLogs(service.Name)
-		}
-	}
-
 	return m, nil
+}
+
+func (m *dashboardModel) selectContextPosition(position contextPosition, index int) {
+	m.commandInput.Blur()
+	m.commandQuitArmed = false
+	m.resetCommandHistoryNavigation()
+	m.siteIndex = position.SiteIndex
+	m.envIndex = position.EnvIndex
+	m.contextPage = index / m.contextsPerPage()
+	m.syncSelectedSummary()
+	m.refreshCommandSuggestions()
+	m.syncLayout()
 }
 
 func (m *dashboardModel) openContainerLogs(containerName string) (tea.Model, tea.Cmd) {
@@ -688,14 +838,151 @@ func (m *dashboardModel) openContainerLogs(containerName string) (tea.Model, tea
 	return m, loadContainerLogsCmd(ctx, containerName)
 }
 
+func (m *dashboardModel) beginContextCreation() (tea.Model, tea.Cmd) {
+	m.creatingContext = true
+	m.contextMenuName = ""
+	m.lastMessage = ""
+	m.commandInput.Blur()
+	m.contextNameInput.SetValue("")
+	m.contextNameInput.Focus()
+	return m, textinput.Blink
+}
+
+func (m *dashboardModel) handleContextNameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Quit):
+		m.creatingContext = false
+		m.contextNameInput.Blur()
+		m.lastMessage = "Context creation cancelled."
+		return m, nil
+	case msg.String() == "enter":
+		name := strings.TrimSpace(m.contextNameInput.Value())
+		if name == "" {
+			m.lastMessage = "Enter a context name before continuing."
+			return m, nil
+		}
+		if strings.HasPrefix(name, "-") {
+			m.lastMessage = "Context names cannot begin with a dash."
+			return m, nil
+		}
+		if _, ok := findContextByName(m.sites, name); ok {
+			m.lastMessage = fmt.Sprintf("Context %q already exists; choose a new name.", name)
+			return m, nil
+		}
+		m.creatingContext = false
+		m.contextNameInput.Blur()
+		m.commandRunning = true
+		m.pendingContextSelection = name
+		display := "sitectl config set-context " + shellquote.Join(name)
+		return m, runSitectlInteractiveCmd(display, []string{"config", "set-context", name})
+	default:
+		var cmd tea.Cmd
+		m.contextNameInput, cmd = m.contextNameInput.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m *dashboardModel) deleteSelectedContext() (tea.Model, tea.Cmd) {
+	ctx, ok := m.selectedContext()
+	if !ok || m.commandRunning {
+		return m, nil
+	}
+	if action := strings.TrimSpace(m.contextActions[ctx.Name]); action != "" {
+		m.lastMessage = fmt.Sprintf("Wait for context %s to finish %s before deleting it.", ctx.Name, contextLifecycleProgress(action))
+		return m, nil
+	}
+	m.pendingWorkingDir = ""
+	if ctx.DockerHostType == config.ContextLocal && strings.TrimSpace(ctx.ProjectDir) != "" {
+		projectDir, pathErr := filepath.Abs(strings.TrimSpace(ctx.ProjectDir))
+		cwd, cwdErr := os.Getwd()
+		if pathErr == nil && cwdErr == nil && directoryContains(projectDir, cwd) {
+			m.pendingWorkingDir = filepath.Dir(projectDir)
+		}
+	}
+	m.commandRunning = true
+	display := "sitectl config delete-context --delete-project -- " + shellquote.Join(ctx.Name)
+	return m, runSitectlInteractiveCmd(display, []string{"config", "delete-context", "--delete-project", "--", ctx.Name})
+}
+
+func directoryContains(parent, child string) bool {
+	relative, err := filepath.Rel(filepath.Clean(parent), filepath.Clean(child))
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+func (m *dashboardModel) toggleSelectedContext() (tea.Model, tea.Cmd) {
+	ctx, ok := m.selectedContext()
+	if !ok {
+		return m, nil
+	}
+	state := m.contextSummaries[ctx.Name]
+	action, ok := contextLifecycleAction(state)
+	if !ok {
+		m.lastMessage = "Context stats must load before it can be started or stopped."
+		return m, nil
+	}
+	return m.runContextLifecycle(ctx, action)
+}
+
+func (m *dashboardModel) runContextLifecycle(ctx config.Context, action string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(m.contextActions[ctx.Name]) != "" {
+		return m, nil
+	}
+	state := m.contextSummaries[ctx.Name]
+	expected, ok := contextLifecycleAction(state)
+	if !ok || action != expected {
+		m.lastMessage = fmt.Sprintf("Context %s no longer has a %s action available.", ctx.Name, action)
+		return m, nil
+	}
+	if m.contextActions == nil {
+		m.contextActions = map[string]string{}
+	}
+	m.contextActions[ctx.Name] = action
+	m.lastMessage = fmt.Sprintf("%s context %s...", strings.ToUpper(action[:1])+action[1:], ctx.Name)
+	return m, runContextLifecycleCmd(ctx, action, state.Summary)
+}
+
+func contextLifecycleAction(state contextSummaryState) (string, bool) {
+	if !state.Loaded || state.Err != nil {
+		return "", false
+	}
+	if state.Summary.Running > 0 {
+		return "stop", true
+	}
+	return "start", true
+}
+
+func runContextLifecycleCmd(ctx config.Context, action string, summary docker.ProjectSummary) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return contextLifecycleFinishedMsg{ContextName: ctx.Name, Action: action, Err: err}
+		}
+		composeAction := action
+		if action == "start" && summary.Total == 0 {
+			composeAction = "up"
+		}
+		args := []string{"--context", ctx.Name, "compose", composeAction}
+		command := exec.Command(exe, args...) // #nosec G204 -- the executable and arguments are internally constructed from the selected saved context.
+		output, runErr := command.CombinedOutput()
+		return contextLifecycleFinishedMsg{
+			ContextName: ctx.Name,
+			Action:      action,
+			Output:      string(output),
+			Err:         runErr,
+		}
+	}
+}
+
 func (m *dashboardModel) reloadSelected() (tea.Model, tea.Cmd) {
-	m.summary = docker.ProjectSummary{}
-	m.summaryErr = nil
+	m.syncContextPageToSelection()
+	m.syncSelectedSummary()
 	m.refreshCommandSuggestions()
 	m.syncDetailContent()
 	if ctx, ok := m.selectedContext(); ok {
-		m.loading = true
-		cmds := []tea.Cmd{loadSummaryCmd(ctx)}
+		cmds := m.queueSummaryLoads([]config.Context{ctx})
 		if m.screen == screenLogs {
 			m.loadingLog = true
 			cmds = append(cmds, loadLogsCmd(ctx))
@@ -717,6 +1004,9 @@ func (m *dashboardModel) render() string {
 	if m.width < 100 || m.height < 28 {
 		return docStyle.Render(panelStyle.Width(max(40, m.width-6)).Render("Terminal too small for the sitectl dashboard.\n\nResize to at least 100x28."))
 	}
+	if m.creatingContext {
+		return docStyle.Render(m.renderContextNamePrompt())
+	}
 	if !m.hasContexts() && m.screen == screenTour {
 		return docStyle.Render(m.renderTourArea())
 	}
@@ -725,9 +1015,8 @@ func (m *dashboardModel) render() string {
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		m.renderTabs(),
 		m.renderTitle(),
-		m.renderResourceHeader(),
+		m.renderContextCards(max(m.width-6, 80)),
 		m.renderMainArea(),
 		m.renderCommandFooter(),
 		footerStyle.Render(m.help.View(m.keys)),
@@ -740,19 +1029,6 @@ func (m *dashboardModel) render() string {
 	return docStyle.Render(body)
 }
 
-func (m *dashboardModel) renderTabs() string {
-	tabs := make([]string, 0, len(m.sites))
-	for i, site := range m.sites {
-		label := fmt.Sprintf("%d:%s", i+1, site.Name)
-		tab := tabStyle.Render(label)
-		if i == m.siteIndex {
-			tab = activeTabStyle.Render(label)
-		}
-		tabs = append(tabs, zone.Mark("tab:"+site.Name, tab))
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Left, tabs...)
-}
-
 func (m *dashboardModel) renderTitle() string {
 	site := m.sites[m.siteIndex]
 	ctx, _ := m.selectedContext()
@@ -760,39 +1036,216 @@ func (m *dashboardModel) renderTitle() string {
 	if ctx.Name != "" {
 		contextName = ctx.Name
 	}
-	line := strings.Repeat("-", max(4, m.width-len(site.Name)-len(contextName)-20))
-	return titleStyle.Render(fmt.Sprintf(" Sitectl | %s | %s ", site.Name, contextName)) + subtleStyle.Render(line)
+	line := strings.Repeat("-", max(4, m.width-len(site.Name)-len(contextName)-24))
+	return titleStyle.Render(fmt.Sprintf(" Sitectl | %s | %s ", contextName, site.Name)) + subtleStyle.Render(line)
 }
 
-func (m *dashboardModel) renderResourceHeader() string {
-	ctx, _ := m.selectedContext()
-	historyKey := ctx.Name
-	widths := splitWidth(max(m.width-8, 100), 5)
-	cpuDetail := fmt.Sprintf("%.1f%% total across %d containers", m.summary.CPUPercent, m.summary.Total)
-	memDetail := fmt.Sprintf("%s / %s", humanBytes(m.summary.MemoryBytes), humanBytes(m.summary.MemoryLimitBytes))
-	netDetail := networkDetail(m.historyNet[historyKey])
-	loadValue, loadDetail, loadColor := loadDisplay(m.summary)
-	diskValue, diskDetail, diskPercent, diskColor := diskDisplay(m.summary)
-	if m.loading {
-		cpuDetail = "Refreshing docker stats..."
-		memDetail = "Refreshing docker stats..."
-		netDetail = "Refreshing host stats..."
-		loadValue = "..."
-		loadDetail = "Refreshing host stats..."
-		loadColor = "#7F8C8D"
-		diskValue = "..."
-		diskDetail = "Refreshing host stats..."
-		diskPercent = 0
-		diskColor = "#7F8C8D"
+func (m *dashboardModel) renderContextCards(width int) string {
+	positions := contextPositions(m.sites)
+	if len(positions) == 0 {
+		return ""
 	}
-	return lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		renderChartBox("CPU", m.historyCPU[historyKey], cpuDetail, "#F4A261", widths[0]),
-		renderChartBox("Memory", m.historyMemory[historyKey], memDetail, "#98C1D9", widths[1]),
-		renderStatusBox("Load", loadValue, loadDetail, loadColor, widths[2]),
-		renderGaugeBox("Disk Free", diskValue, diskDetail, diskPercent, diskColor, widths[3]),
-		renderChartBox("Network", m.historyNet[historyKey], netDetail, "#5DADE2", widths[4]),
+
+	perPage := contextCardsPerPage(width)
+	pageCount := (len(positions) + perPage - 1) / perPage
+	page := min(max(m.contextPage, 0), pageCount-1)
+	start := page * perPage
+	end := min(start+perPage, len(positions))
+
+	heading := sectionTitleStyle.MarginBottom(0).Render("Contexts")
+	pager := subtleStyle.Render(fmt.Sprintf(
+		"  %d saved · page %d of %d · right-click for info · remote stats load when active",
+		len(positions),
+		page+1,
+		pageCount,
+	))
+
+	const addCardWidth = 22
+	cardWidth := max(28, (width-addCardWidth-perPage)/perPage)
+	cards := make([]string, 0, end-start+1)
+	for index := start; index < end; index++ {
+		position := positions[index]
+		active := position.SiteIndex == m.siteIndex && position.EnvIndex == m.envIndex
+		cards = append(cards, m.renderContextCard(position, active, cardWidth))
+	}
+	cards = append(cards, m.renderAddContextCard(addCardWidth))
+
+	content := lipgloss.JoinVertical(
+		lipgloss.Left,
+		heading+pager,
+		lipgloss.JoinHorizontal(lipgloss.Top, cards...),
 	)
+	return zone.Mark("contexts:pager", content)
+}
+
+func (m *dashboardModel) renderAddContextCard(width int) string {
+	style := addContextCardStyle.Width(width).Height(6)
+	frameWidth, _ := style.GetFrameSize()
+	innerWidth := max(20, width-frameWidth)
+	center := lipgloss.NewStyle().Width(innerWidth).Align(lipgloss.Center)
+	plus := accentStyle.Render("    │\n ───┼───\n    │")
+	content := strings.Join([]string{
+		center.Render(plus),
+		center.Bold(true).Render("Add a new context"),
+		center.Foreground(lipgloss.Color("#7C98B3")).Render("click or press n"),
+	}, "\n")
+	return zone.Mark("context:add", style.Render(content))
+}
+
+func (m *dashboardModel) renderContextCard(position contextPosition, active bool, width int) string {
+	ctx := position.Context
+	state := m.contextSummaries[ctx.Name]
+	style := contextCardStyle.Width(width).Height(6)
+	if active {
+		style = activeContextCardStyle.Width(width).Height(6)
+	}
+	frameWidth, _ := style.GetFrameSize()
+	innerWidth := max(20, width-frameWidth)
+
+	title := ctx.Name
+	if ctx.Name == m.currentContext {
+		title += "  current"
+	}
+	if active {
+		title = "› " + title
+	}
+
+	kind := strings.ToUpper(helpers.FirstNonEmpty(string(ctx.DockerHostType), "unknown"))
+	location := fmt.Sprintf("%s · %s/%s", kind, position.SiteName, envLabel(ctx))
+	statusText, statusColor := contextSummaryStatus(state)
+	status := lipgloss.NewStyle().Foreground(lipgloss.Color(statusColor)).Render(statusText)
+	metaWidth := max(6, innerWidth-lipgloss.Width(status)-2)
+	meta := subtleStyle.Render(truncateMetricText(location, metaWidth))
+
+	cpuKnown := state.Loaded
+	memKnown := state.Loaded && state.Summary.MemoryLimitBytes > 0
+	diskKnown := state.Loaded && state.Summary.DiskTotal > 0
+	memoryDetail := "n/a"
+	if memKnown {
+		memoryDetail = fmt.Sprintf("%s/%s", humanBytes(state.Summary.MemoryBytes), humanBytes(state.Summary.MemoryLimitBytes))
+	}
+	diskDetail := "n/a"
+	diskPercent := 0.0
+	if diskKnown {
+		diskPercent = (float64(state.Summary.DiskAvailable) / float64(state.Summary.DiskTotal)) * 100
+		diskDetail = humanBytes(state.Summary.DiskAvailable) + " free"
+	}
+
+	lines := []string{
+		titleStyle.Render(truncateMetricText(title, innerWidth)),
+		status + "  " + meta,
+		renderContextMetric("cpu", state.Summary.CPUPercent, fmt.Sprintf("%.0f%%", state.Summary.CPUPercent), severityColor(state.Summary.CPUPercent, 70, 90), cpuKnown, innerWidth),
+		renderContextMetric("mem", memoryPercent(state.Summary), memoryDetail, severityColor(memoryPercent(state.Summary), 70, 90), memKnown, innerWidth),
+		renderContextMetric("disk", diskPercent, diskDetail, reverseSeverityColor(diskPercent, 25, 10), diskKnown, innerWidth),
+		m.renderContextCardFooter(ctx, state, innerWidth),
+	}
+
+	return zone.Mark("context:"+ctx.Name, style.Render(strings.Join(lines, "\n")))
+}
+
+func (m *dashboardModel) renderContextCardFooter(ctx config.Context, state contextSummaryState, width int) string {
+	footer := contextSummaryFooter(ctx, state)
+	pending := strings.TrimSpace(m.contextActions[ctx.Name])
+	if pending != "" {
+		label := "[" + contextLifecycleProgress(pending) + "...]"
+		textWidth := max(0, width-lipgloss.Width(label)-1)
+		return subtleStyle.Render(truncateMetricText(footer, textWidth)) + " " + contextActionPendingStyle.Render(label)
+	}
+	action, ok := contextLifecycleAction(state)
+	if !ok {
+		return subtleStyle.Render(truncateMetricText(footer, width))
+	}
+	label := "[" + action + "]"
+	textWidth := max(0, width-lipgloss.Width(label)-1)
+	button := zone.Mark(contextLifecycleZoneID(action, ctx.Name), contextActionStyle.Render(label))
+	return subtleStyle.Render(truncateMetricText(footer, textWidth)) + " " + button
+}
+
+func contextLifecycleZoneID(action, contextName string) string {
+	return "context:" + action + ":" + contextName
+}
+
+func contextLifecycleProgress(action string) string {
+	if action == "stop" {
+		return "stopping"
+	}
+	return action + "ing"
+}
+
+func contextSummaryStatus(state contextSummaryState) (string, string) {
+	switch {
+	case state.Loaded && state.Err != nil:
+		return "● stale", "#E9C46A"
+	case state.Loaded:
+		status := strings.ToLower(helpers.FirstNonEmpty(state.Summary.Status, "unknown"))
+		color := "#2A9D8F"
+		if state.Summary.Running == 0 {
+			color = "#7F8C8D"
+		} else if state.Summary.Stopped > 0 {
+			color = "#E9C46A"
+		}
+		return "● " + status, color
+	case state.Loading:
+		return "◌ loading", "#7F8C8D"
+	case state.Err != nil:
+		return "● unavailable", "#E76F51"
+	default:
+		return "○ unknown", "#7F8C8D"
+	}
+}
+
+func contextSummaryFooter(ctx config.Context, state contextSummaryState) string {
+	switch {
+	case state.Loaded && state.Err != nil:
+		return "refresh failed · showing cached stats"
+	case state.Loaded && state.Loading:
+		return "refreshing cached stats..."
+	case state.Loaded && !state.Summary.CollectedAt.IsZero():
+		age := time.Since(state.Summary.CollectedAt).Round(time.Second)
+		if age < 0 {
+			age = 0
+		}
+		return fmt.Sprintf("updated %s ago", age)
+	case state.Err != nil:
+		return "stats unavailable · ctrl+r retries"
+	case state.Loading:
+		return "loading stats..."
+	case ctx.DockerHostType == config.ContextRemote:
+		return "select this context to load stats"
+	default:
+		return "waiting for local stats"
+	}
+}
+
+func renderContextMetric(label string, percent float64, detail, color string, known bool, width int) string {
+	labelWidth := 5
+	detailWidth := min(14, max(7, width/3))
+	barWidth := max(4, width-labelWidth-detailWidth-2)
+	labelText := subtleStyle.Width(labelWidth).Render(label)
+
+	if !known {
+		bar := unknownMetricStyle.Render(fuzzyMetricBar(barWidth))
+		value := unknownMetricStyle.Width(detailWidth).Align(lipgloss.Right).Render("unknown")
+		return labelText + " " + bar + " " + value
+	}
+
+	filled := int((clamp(percent, 0, 100) / 100) * float64(barWidth))
+	bar := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(strings.Repeat("█", filled)) +
+		subtleStyle.Render(strings.Repeat("░", max(0, barWidth-filled)))
+	value := subtleStyle.Width(detailWidth).Align(lipgloss.Right).Render(truncateMetricText(detail, detailWidth))
+	return labelText + " " + bar + " " + value
+}
+
+func fuzzyMetricBar(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	pattern := []rune("░▒")
+	bar := make([]rune, width)
+	for index := range bar {
+		bar[index] = pattern[index%len(pattern)]
+	}
+	return string(bar)
 }
 
 func (m *dashboardModel) renderMainArea() string {
@@ -808,11 +1261,58 @@ func (m *dashboardModel) renderMainArea() string {
 
 func (m *dashboardModel) renderDashboardArea() string {
 	width := max(m.width-6, 80)
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		m.renderEnvironmentCards(width),
-		m.renderDetailsPanel(width),
-	)
+	if m.contextMenuName != "" {
+		return m.renderContextMenuPanel(width)
+	}
+	return m.renderDetailsPanel(width)
+}
+
+func (m *dashboardModel) renderContextMenuPanel(width int) string {
+	panelWidth := max(40, width-2)
+	innerWidth := max(34, panelWidth-6)
+	panelHeight := min(max(9, m.height-24), 18)
+	ctx, ok := m.selectedContext()
+	if !ok {
+		return panelStyle.Width(panelWidth).Height(panelHeight).Render("No context selected.")
+	}
+
+	state := m.contextSummaries[ctx.Name]
+	statusText, statusColor := contextSummaryStatus(state)
+	status := lipgloss.NewStyle().Foreground(lipgloss.Color(statusColor)).Render(statusText)
+	runtime := status
+	if state.Loaded {
+		runtime += subtleStyle.Render(fmt.Sprintf(" · %d/%d containers running", state.Summary.Running, state.Summary.Total))
+	}
+
+	target := strings.ToUpper(helpers.FirstNonEmpty(string(ctx.DockerHostType), "unknown"))
+	switch ctx.DockerHostType {
+	case config.ContextRemote:
+		endpoint := helpers.FirstNonEmpty(ctx.SSHHostname, "unknown host")
+		if strings.TrimSpace(ctx.SSHUser) != "" {
+			endpoint = ctx.SSHUser + "@" + endpoint
+		}
+		if ctx.SSHPort != 0 {
+			endpoint += fmt.Sprintf(":%d", ctx.SSHPort)
+		}
+		target += " · " + endpoint
+	case config.ContextLocal:
+		target += " · this machine"
+	}
+
+	defaultLabel := "no"
+	if ctx.Name == m.currentContext {
+		defaultLabel = "yes"
+	}
+	buttons := zone.Mark("context-menu:delete", dangerChipStyle.Render("[Delete context]")) +
+		zone.Mark("context-menu:close", contextMenuCloseStyle.Render("[Close]"))
+	lines := []string{
+		sectionTitleStyle.MarginBottom(0).Render("Context information"),
+		truncateMetricText(fmt.Sprintf("%s · %s/%s · default: %s", ctx.Name, m.selectedSiteName(), envLabel(ctx), defaultLabel), innerWidth),
+		truncateMetricText(fmt.Sprintf("Target: %s · Plugin: %s", target, helpers.FirstNonEmpty(ctx.Plugin, "core")), innerWidth),
+		truncateMetricText(fmt.Sprintf("Project: %s · Compose: %s", helpers.FirstNonEmpty(ctx.ProjectDir, "not configured"), helpers.FirstNonEmpty(ctx.EffectiveComposeProjectName(), "auto")), innerWidth),
+		"Runtime: " + runtime + "  " + buttons,
+	}
+	return panelStyle.Width(panelWidth).Height(panelHeight).Render(strings.Join(lines, "\n"))
 }
 
 func (m *dashboardModel) renderLogsArea() string {
@@ -842,80 +1342,18 @@ func (m *dashboardModel) renderLogsArea() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, body)
 }
 
-func (m *dashboardModel) renderEnvironmentCards(width int) string {
-	site := m.sites[m.siteIndex]
-	cards := make([]string, 0, len(site.Contexts)+1)
-	cards = append(cards, sectionTitleStyle.Render("Environments"))
-	if len(site.Contexts) == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left, cards...)
-	}
-	count := len(site.Contexts)
-	gapTotal := max(0, count-1)
-	selectedWidth := 34
-	compactWidth := 18
-	if count == 1 {
-		selectedWidth = width - 2
-	}
-	if count > 1 && selectedWidth+compactWidth*(count-1)+gapTotal > width {
-		compactWidth = max(14, (width-selectedWidth-gapTotal)/(count-1))
-	}
-	if count > 1 && selectedWidth+compactWidth*(count-1)+gapTotal > width {
-		selectedWidth = max(24, width-compactWidth*(count-1)-gapTotal)
-	}
-	if selectedWidth+compactWidth*(count-1)+gapTotal > width {
-		selectedWidth = max(18, (width-gapTotal)/count)
-		compactWidth = selectedWidth
-	}
-	row := make([]string, 0, len(site.Contexts))
-	for i, ctx := range site.Contexts {
-		selected := i == m.envIndex
-		cardWidth := compactWidth
-		lines := []string{strings.ToUpper(envLabel(ctx)), ctx.Name}
-		if selected {
-			cardWidth = selectedWidth
-			statusText := strings.ToUpper(helpers.FirstNonEmpty(m.summary.Status, "unknown"))
-			containersText := fmt.Sprintf(
-				"containers: %d total, %d running, %d stopped",
-				m.summary.Total,
-				m.summary.Running,
-				m.summary.Stopped,
-			)
-			if m.loading {
-				statusText = "REFRESHING"
-				containersText = "containers: loading..."
-			}
-			lines = append(lines,
-				fmt.Sprintf("status: %s", statusText),
-				containersText,
-				fmt.Sprintf("healthy: %d", m.summary.Healthy),
-			)
-		} else {
-			lines = append(lines, helpers.FirstNonEmpty(ctx.Plugin, "core"))
-		}
-		if ctx.Name == m.currentContext {
-			lines = append(lines, accentStyle.Render("current"))
-		}
-		body := strings.Join(lines, "\n")
-		style := cardStyle.Width(cardWidth)
-		if i == m.envIndex {
-			style = selectedCardStyle.Width(cardWidth)
-		}
-		row = append(row, zone.Mark("env:"+ctx.Name, style.Render(body)))
-	}
-	cards = append(cards, lipgloss.JoinHorizontal(lipgloss.Top, row...))
-	return lipgloss.JoinVertical(lipgloss.Left, cards...)
-}
-
 func (m *dashboardModel) renderDetailsPanel(width int) string {
 	panelWidth := max(40, width-2)
 	content := renderViewportWithScrollbar(m.detail, m.detailBody, panelWidth-6)
-	if m.loading {
+	ctx, _ := m.selectedContext()
+	state := m.contextSummaries[ctx.Name]
+	if m.loading && !state.Loaded {
 		content = m.spin.View() + " Loading Docker Compose status..."
 	}
 
-	panelHeight := min(max(10, m.height-30), 16)
+	panelHeight := min(max(9, m.height-24), 18)
 	return panelStyle.Width(panelWidth).Height(panelHeight).Render(
-		sectionTitleStyle.MarginBottom(0).Render("Selected Environment Status") + "\n" + content,
+		sectionTitleStyle.MarginBottom(0).Render("Active Context Containers") + "\n" + content,
 	)
 }
 
@@ -927,12 +1365,30 @@ func (m *dashboardModel) renderOnboarding() string {
 		"No contexts are configured yet.",
 		"Set up an existing Docker Compose site with sitectl, or create a new site from an installed plugin.",
 		"",
-		"Use arrow keys to choose an option and press enter to launch it in your terminal.",
+		"Scroll and click an option to launch it. Keyboard navigation remains available.",
 	}, "\n"))
 
-	menu := panelStyle.Width(width).Render(m.chooser.View())
-	footer := footerStyle.Width(width).Render("enter: launch  up/down: choose  q: quit")
+	menu := panelStyle.Width(width).Render(zone.Mark(onboardingListZoneID, m.chooser.View()))
+	footer := footerStyle.Width(width).Render("click: launch  wheel: scroll  enter: launch  q: quit")
 	body := lipgloss.JoinVertical(lipgloss.Left, intro, menu, footer)
+	if strings.TrimSpace(m.lastMessage) != "" {
+		body = lipgloss.JoinVertical(lipgloss.Left, body, subtleStyle.Render(m.lastMessage))
+	}
+	return body
+}
+
+func (m *dashboardModel) renderContextNamePrompt() string {
+	width := max(56, min(88, m.width-10))
+	body := panelStyle.Width(width).Render(strings.Join([]string{
+		titleStyle.Render("Add a new context"),
+		"",
+		"Name the saved local or remote site environment.",
+		"After you press enter, sitectl will open the existing reviewed context setup in your terminal.",
+		"",
+		m.contextNameInput.View(),
+		"",
+		subtleStyle.Render("enter: continue  esc: cancel"),
+	}, "\n"))
 	if strings.TrimSpace(m.lastMessage) != "" {
 		body = lipgloss.JoinVertical(lipgloss.Left, body, subtleStyle.Render(m.lastMessage))
 	}
@@ -957,7 +1413,7 @@ func (m *dashboardModel) renderCommandFooter() string {
 	if m.commandRunning {
 		status = accentStyle.Render(m.spin.View() + " running")
 	}
-	hint := subtleStyle.Render("type a sitectl subcommand  enter: run here  ctrl+x: terminal  ctrl+p: palette")
+	hint := subtleStyle.Render("press / for command  enter: run  ctrl+x: terminal")
 	bar := footerCommandStyle.Width(max(40, m.width-6)).Render(
 		fmt.Sprintf("Context: %s  [%s]\n%s\n%s", contextName, status, m.commandInput.View(), hint),
 	)
@@ -981,8 +1437,10 @@ func (m *dashboardModel) syncLayout() {
 
 	chooserWidth := min(72, max(48, m.width-12))
 	m.chooser.SetSize(chooserWidth, min(18, max(10, m.height/2)))
+	m.contextNameInput.SetWidth(max(24, min(56, m.width-28)))
 	m.commandInput.SetWidth(max(20, m.width-18))
 	m.commandInput.Prompt = "sitectl --context " + m.selectedContextName() + " "
+	m.syncContextPageToSelection()
 
 	m.syncDetailContent()
 }
@@ -991,9 +1449,15 @@ func (m *dashboardModel) syncDetailContent() {
 	if m.screen == screenTour {
 		return
 	}
-	_, ok := m.selectedContext()
+	ctx, ok := m.selectedContext()
 	if !ok {
 		m.detailBody = "No context selected."
+		m.detail.SetContent(m.detailBody)
+		return
+	}
+	state := m.contextSummaries[ctx.Name]
+	if !state.Loaded && state.Err == nil {
+		m.detailBody = "Stats have not been loaded for this context yet."
 		m.detail.SetContent(m.detailBody)
 		return
 	}
@@ -1028,23 +1492,6 @@ func (m *dashboardModel) syncDetailContent() {
 	m.detail.SetContent(m.detailBody)
 }
 
-func (m *dashboardModel) pushHistory(contextName string, summary docker.ProjectSummary) {
-	m.historyCPU[contextName] = appendLimited(m.historyCPU[contextName], summary.CPUPercent, 24)
-	m.historyMemory[contextName] = appendLimited(m.historyMemory[contextName], memoryPercent(summary), 24)
-	rate := 0.0
-	if !summary.CollectedAt.IsZero() {
-		currentTotal := summary.NetworkRXBytes + summary.NetworkTXBytes
-		if previous, ok := m.lastNetSample[contextName]; ok && !previous.at.IsZero() && currentTotal >= previous.totalBytes {
-			seconds := summary.CollectedAt.Sub(previous.at).Seconds()
-			if seconds > 0 {
-				rate = float64(currentTotal-previous.totalBytes) / seconds
-			}
-		}
-		m.lastNetSample[contextName] = networkSample{totalBytes: currentTotal, at: summary.CollectedAt}
-	}
-	m.historyNet[contextName] = appendLimited(m.historyNet[contextName], rate, 24)
-}
-
 func (m *dashboardModel) selectedSiteContexts() []config.Context {
 	if len(m.sites) == 0 || m.siteIndex >= len(m.sites) {
 		return nil
@@ -1060,13 +1507,196 @@ func (m *dashboardModel) selectedContext() (config.Context, bool) {
 	return contexts[m.envIndex], true
 }
 
+func (m *dashboardModel) selectedContextValue() config.Context {
+	ctx, _ := m.selectedContext()
+	return ctx
+}
+
+func contextPositions(sites []siteGroup) []contextPosition {
+	positions := make([]contextPosition, 0)
+	for siteIndex, site := range sites {
+		for envIndex, ctx := range site.Contexts {
+			positions = append(positions, contextPosition{
+				SiteIndex: siteIndex,
+				EnvIndex:  envIndex,
+				SiteName:  site.Name,
+				Context:   ctx,
+			})
+		}
+	}
+	return positions
+}
+
+func contextCardsPerPage(width int) int {
+	switch {
+	case width >= 96:
+		return 3
+	case width >= 62:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func (m *dashboardModel) contextsPerPage() int {
+	return contextCardsPerPage(max(m.width-6, 80))
+}
+
+func (m *dashboardModel) selectedContextPositionIndex() int {
+	for index, position := range contextPositions(m.sites) {
+		if position.SiteIndex == m.siteIndex && position.EnvIndex == m.envIndex {
+			return index
+		}
+	}
+	return 0
+}
+
+func (m *dashboardModel) syncContextPageToSelection() {
+	if !m.hasContexts() {
+		m.contextPage = 0
+		return
+	}
+	m.contextPage = m.selectedContextPositionIndex() / m.contextsPerPage()
+}
+
+func (m *dashboardModel) moveContextSelection(delta int) bool {
+	positions := contextPositions(m.sites)
+	if len(positions) == 0 || delta == 0 {
+		return false
+	}
+	current := m.selectedContextPositionIndex()
+	next := min(max(current+delta, 0), len(positions)-1)
+	if next == current {
+		return false
+	}
+	m.siteIndex = positions[next].SiteIndex
+	m.envIndex = positions[next].EnvIndex
+	m.contextPage = next / m.contextsPerPage()
+	return true
+}
+
+func (m *dashboardModel) changeContextPage(delta int) {
+	positions := contextPositions(m.sites)
+	if len(positions) == 0 || delta == 0 {
+		return
+	}
+	pageCount := (len(positions) + m.contextsPerPage() - 1) / m.contextsPerPage()
+	m.contextPage = min(max(m.contextPage+delta, 0), pageCount-1)
+}
+
+func findContextByName(sites []siteGroup, name string) (config.Context, bool) {
+	for _, position := range contextPositions(sites) {
+		if strings.EqualFold(position.Context.Name, strings.TrimSpace(name)) {
+			return position.Context, true
+		}
+	}
+	return config.Context{}, false
+}
+
+func summaryRefreshContexts(sites []siteGroup, selected config.Context, cursor, batchSize int) ([]config.Context, int) {
+	contexts := make([]config.Context, 0)
+	seen := map[string]struct{}{}
+	if strings.TrimSpace(selected.Name) != "" {
+		contexts = appendUniqueContext(contexts, seen, selected)
+	}
+
+	locals := make([]config.Context, 0)
+	for _, position := range contextPositions(sites) {
+		ctx := position.Context
+		if ctx.DockerHostType == config.ContextLocal && ctx.Name != selected.Name {
+			locals = append(locals, ctx)
+		}
+	}
+	if len(locals) == 0 || batchSize <= 0 {
+		return contexts, 0
+	}
+
+	cursor = min(max(cursor, 0), len(locals)-1)
+	count := min(batchSize, len(locals))
+	for offset := 0; offset < count; offset++ {
+		ctx := locals[(cursor+offset)%len(locals)]
+		contexts = appendUniqueContext(contexts, seen, ctx)
+	}
+	return contexts, (cursor + count) % len(locals)
+}
+
+func (m *dashboardModel) nextSummaryRefreshContexts() []config.Context {
+	contexts, nextCursor := summaryRefreshContexts(
+		m.sites,
+		m.selectedContextValue(),
+		m.localRefreshCursor,
+		localSummaryBatchSize,
+	)
+	m.localRefreshCursor = nextCursor
+	return contexts
+}
+
+func appendUniqueContext(contexts []config.Context, seen map[string]struct{}, ctx config.Context) []config.Context {
+	name := strings.TrimSpace(ctx.Name)
+	if name == "" {
+		return contexts
+	}
+	if _, ok := seen[name]; ok {
+		return contexts
+	}
+	seen[name] = struct{}{}
+	return append(contexts, ctx)
+}
+
+func retainContextSummaries(existing map[string]contextSummaryState, sites []siteGroup) map[string]contextSummaryState {
+	retained := make(map[string]contextSummaryState, len(existing))
+	for _, position := range contextPositions(sites) {
+		if state, ok := existing[position.Context.Name]; ok {
+			state.Loading = false
+			retained[position.Context.Name] = state
+		}
+	}
+	return retained
+}
+
+func (m *dashboardModel) queueSummaryLoads(contexts []config.Context) []tea.Cmd {
+	cmds := make([]tea.Cmd, 0, len(contexts))
+	for _, ctx := range contexts {
+		if strings.TrimSpace(ctx.Name) == "" {
+			continue
+		}
+		state := m.contextSummaries[ctx.Name]
+		if state.Loading || strings.TrimSpace(m.contextActions[ctx.Name]) != "" {
+			continue
+		}
+		state.Loading = true
+		m.contextSummaries[ctx.Name] = state
+		cmds = append(cmds, loadSummaryCmd(ctx))
+	}
+	m.syncSelectedSummary()
+	return cmds
+}
+
+func (m *dashboardModel) syncSelectedSummary() {
+	ctx, ok := m.selectedContext()
+	if !ok {
+		m.summary = docker.ProjectSummary{}
+		m.summaryErr = nil
+		m.loading = false
+		return
+	}
+	state := m.contextSummaries[ctx.Name]
+	m.summary = state.Summary
+	m.loading = state.Loading
+	if state.Loaded {
+		m.summaryErr = nil
+	} else {
+		m.summaryErr = state.Err
+	}
+}
+
 func newMenuModel(title string, items []menuItem) list.Model {
 	delegate := list.NewDefaultDelegate()
 	converted := make([]list.Item, 0, len(items))
 	for _, item := range items {
 		converted = append(converted, item)
 	}
-	m := list.New(converted, delegate, 48, 12)
+	m := list.New(converted, menuDelegate{DefaultDelegate: delegate}, 48, 12)
 	m.Title = title
 	m.SetShowTitle(false)
 	m.SetFilteringEnabled(false)
@@ -1076,22 +1706,36 @@ func newMenuModel(title string, items []menuItem) list.Model {
 	return m
 }
 
+func onboardingItemZoneID(index int) string {
+	return fmt.Sprintf("onboarding:choice:%d", index)
+}
+
 func pluginMenuItems(plugins []plugin.InstalledPlugin) []menuItem {
 	items := make([]menuItem, 0, len(plugins))
 	for _, p := range plugins {
-		if !p.CanCreate || strings.TrimSpace(p.TemplateRepo) == "" {
-			continue
+		for _, spec := range p.CreateDefinitions {
+			pluginName := strings.TrimSpace(p.Name)
+			definitionName := strings.TrimSpace(spec.Name)
+			if pluginName == "" || definitionName == "" {
+				continue
+			}
+			target := pluginName + "/" + definitionName
+			label := pluginName
+			if len(p.CreateDefinitions) > 1 || !strings.EqualFold(definitionName, "default") {
+				label = target
+			}
+			description := helpers.FirstNonEmpty(spec.Description, spec.DockerComposeRepo, p.TemplateRepo, "sitectl create "+target)
+			items = append(items, menuItem{
+				title:  fmt.Sprintf("Create a new %s stack", label),
+				desc:   description,
+				action: "create:" + target,
+			})
 		}
-		items = append(items, menuItem{
-			title:  fmt.Sprintf("Install the %s stack locally", p.Name),
-			desc:   p.TemplateRepo,
-			action: "plugin:" + p.Name,
-		})
 	}
 	if len(items) == 0 {
 		items = append(items, menuItem{
-			title:  "No site-create plugins found",
-			desc:   "Install a sitectl-* plugin with a template repo and create command.",
+			title:  "No create definitions found",
+			desc:   "Install a sitectl-* plugin that registers a create definition.",
 			action: "",
 		})
 	}
@@ -1202,15 +1846,6 @@ func defaultSelection(sites []siteGroup, current string) (int, int) {
 		}
 	}
 	return 0, 0
-}
-
-func defaultEnvIndex(contexts []config.Context, current string) int {
-	for i, ctx := range contexts {
-		if ctx.Name == current {
-			return i
-		}
-	}
-	return 0
 }
 
 func envLabel(ctx config.Context) string {
@@ -1428,18 +2063,29 @@ func (m *dashboardModel) executeChooserAction(action string) (tea.Model, tea.Cmd
 		m.syncTourContent()
 		return m, nil
 	case action == "config-create":
-		m.commandRunning = true
-		return m, runSitectlInteractiveCmd("sitectl config create", []string{"config", "create"})
-	case strings.HasPrefix(action, "plugin:"):
-		pluginName := strings.TrimPrefix(action, "plugin:")
-		if strings.TrimSpace(pluginName) == "" {
+		return m.beginContextCreation()
+	case strings.HasPrefix(action, "create:"):
+		display, args, ok := createCommandForChooserAction(action)
+		if !ok {
 			return m, nil
 		}
 		m.commandRunning = true
-		return m, runSitectlInteractiveCmd("sitectl "+pluginName+" create", []string{pluginName, "create"})
+		return m, runSitectlInteractiveCmd(display, args)
 	default:
 		return m, nil
 	}
+}
+
+func createCommandForChooserAction(action string) (string, []string, bool) {
+	if !strings.HasPrefix(action, "create:") {
+		return "", nil, false
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(action, "create:"))
+	pluginName, definitionName, ok := strings.Cut(target, "/")
+	if !ok || strings.TrimSpace(pluginName) == "" || strings.TrimSpace(definitionName) == "" || strings.HasPrefix(pluginName, "-") || strings.HasPrefix(definitionName, "-") {
+		return "", nil, false
+	}
+	return "sitectl create " + shellquote.Join(target), []string{"create", target}, true
 }
 
 func (m *dashboardModel) handleTourKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -2040,14 +2686,6 @@ func runSitectlInteractiveCmd(display string, args []string) tea.Cmd {
 	})
 }
 
-func appendLimited(values []float64, next float64, limit int) []float64 {
-	values = append(values, next)
-	if len(values) > limit {
-		values = values[len(values)-limit:]
-	}
-	return values
-}
-
 func memoryPercent(summary docker.ProjectSummary) float64 {
 	if summary.MemoryLimitBytes == 0 {
 		return 0
@@ -2077,84 +2715,6 @@ func humanBytes(value uint64) string {
 	default:
 		return fmt.Sprintf("%dB", value)
 	}
-}
-
-func renderChartBox(title string, values []float64, detail, border string, width int) string {
-	innerWidth := max(8, width-6)
-	chart := sparkline.New(innerWidth, 4)
-	chart.PushAll(values)
-	chart.DrawBraille()
-	content := sectionTitleStyle.MarginBottom(0).Render(truncateMetricText(title, innerWidth)) + "\n" + chart.View() + "\n" + truncateMetricText(detail, innerWidth)
-	style := panelStyle.Width(width).Height(10).MaxHeight(10)
-	if strings.TrimSpace(border) != "" {
-		style = style.BorderForeground(lipgloss.Color(border))
-	}
-	return style.Render(content)
-}
-
-func renderStatusBox(title, value, detail, border string, width int) string {
-	innerWidth := max(8, width-6)
-	content := sectionTitleStyle.MarginBottom(0).Render(truncateMetricText(title, innerWidth)) + "\n" +
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(border)).Render(truncateMetricText(value, innerWidth)) + "\n" +
-		"\n" + "\n" + "\n" + "\n" +
-		truncateMetricText(detail, innerWidth)
-	style := panelStyle.Width(width).Height(10).MaxHeight(10)
-	if strings.TrimSpace(border) != "" {
-		style = style.BorderForeground(lipgloss.Color(border))
-	}
-	return style.Render(content)
-}
-
-func renderGaugeBox(title, value, detail string, percent float64, border string, width int) string {
-	innerWidth := max(8, width-6)
-	barWidth := max(8, innerWidth-2)
-	filled := int((clamp(percent, 0, 100) / 100) * float64(barWidth))
-	bar := lipgloss.NewStyle().Foreground(lipgloss.Color(border)).Render(strings.Repeat("█", filled)) +
-		subtleStyle.Render(strings.Repeat("░", max(0, barWidth-filled)))
-	content := sectionTitleStyle.MarginBottom(0).Render(truncateMetricText(title, innerWidth)) + "\n" +
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(border)).Render(truncateMetricText(value, innerWidth)) + "\n" +
-		"\n" + "\n" +
-		bar + "\n" + truncateMetricText(detail, innerWidth)
-	style := panelStyle.Width(width).Height(10).MaxHeight(10)
-	if strings.TrimSpace(border) != "" {
-		style = style.BorderForeground(lipgloss.Color(border))
-	}
-	return style.Render(content)
-}
-
-func networkDetail(values []float64) string {
-	if len(values) == 0 {
-		return "Sampling host bandwidth..."
-	}
-	latest := values[len(values)-1]
-	if latest <= 0 {
-		return "Sampling host bandwidth..."
-	}
-	return fmt.Sprintf("%s/s total host traffic", humanRate(latest))
-}
-
-func loadDisplay(summary docker.ProjectSummary) (string, string, string) {
-	if summary.HostLoad1 <= 0 {
-		return "n/a", "Host load unavailable", "#7F8C8D"
-	}
-	cpuCount := max(summary.HostCPUCount, 1)
-	ratio := summary.HostLoad1 / float64(cpuCount)
-	return fmt.Sprintf("%.2f", summary.HostLoad1), fmt.Sprintf("1m avg across %d cores", cpuCount), severityColor(ratio, 0.7, 1.0)
-}
-
-func diskDisplay(summary docker.ProjectSummary) (string, string, float64, string) {
-	if summary.DiskTotal == 0 {
-		return "n/a", "Filesystem availability unavailable", 0, "#7F8C8D"
-	}
-	percent := (float64(summary.DiskAvailable) / float64(summary.DiskTotal)) * 100
-	return humanBytes(summary.DiskAvailable), fmt.Sprintf("%s free of %s", humanBytes(summary.DiskAvailable), humanBytes(summary.DiskTotal)), percent, reverseSeverityColor(percent, 25, 10)
-}
-
-func humanRate(value float64) string {
-	if value <= 0 {
-		return "0B"
-	}
-	return humanBytes(uint64(value))
 }
 
 func severityColor(value, yellow, red float64) string {

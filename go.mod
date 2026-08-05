@@ -8,7 +8,6 @@ require (
 	charm.land/fang/v2 v2.0.1
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.5
-	github.com/NimbleMarkets/ntcharts/v2 v2.2.0
 	github.com/docker/go-connections v0.8.0
 	github.com/joho/godotenv v1.5.1
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51

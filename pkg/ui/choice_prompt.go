@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"charm.land/bubbles/v2/help"
@@ -10,7 +11,10 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	zone "github.com/lrstanley/bubblezone/v2"
 )
+
+const choiceListZoneID = "prompt:choices"
 
 type Choice struct {
 	Value            string
@@ -36,6 +40,16 @@ type choicePromptItem struct {
 func (i choicePromptItem) Title() string       { return i.title }
 func (i choicePromptItem) Description() string { return i.desc }
 func (i choicePromptItem) FilterValue() string { return i.title + " " + i.desc }
+
+type choicePromptDelegate struct {
+	list.DefaultDelegate
+}
+
+func (d choicePromptDelegate) Render(w io.Writer, model list.Model, index int, item list.Item) {
+	var rendered strings.Builder
+	d.DefaultDelegate.Render(&rendered, model, index, item)
+	_, _ = fmt.Fprint(w, zone.Mark(choiceItemZoneID(index), rendered.String()))
+}
 
 type choicePromptKeys struct {
 	Confirm key.Binding
@@ -64,8 +78,11 @@ type choicePromptModel struct {
 }
 
 func PromptChoice(opts ChoicePromptOptions) (string, bool, error) {
+	if !CanPromptInteractively() {
+		return "", false, nil
+	}
 	model := newChoicePromptModel(opts)
-	resultModel, err := tea.NewProgram(model).Run()
+	resultModel, err := runPromptProgram(model)
 	if err != nil {
 		return "", true, err
 	}
@@ -81,6 +98,9 @@ func PromptChoice(opts ChoicePromptOptions) (string, bool, error) {
 }
 
 func newChoicePromptModel(opts ChoicePromptOptions) *choicePromptModel {
+	if zone.DefaultManager == nil {
+		zone.NewGlobal()
+	}
 	items := make([]list.Item, 0, len(opts.Choices))
 	for _, choice := range opts.Choices {
 		desc := strings.TrimSpace(choice.Help)
@@ -96,7 +116,8 @@ func newChoicePromptModel(opts ChoicePromptOptions) *choicePromptModel {
 	}
 
 	delegate := list.NewDefaultDelegate()
-	l := list.New(items, delegate, 0, 0)
+	stylePromptDelegate(&delegate)
+	l := list.New(items, choicePromptDelegate{DefaultDelegate: delegate}, 0, 0)
 	l.Title = opts.Name
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
@@ -108,6 +129,7 @@ func newChoicePromptModel(opts ChoicePromptOptions) *choicePromptModel {
 	input.Prompt = "custom> "
 	input.Placeholder = "Enter a custom value"
 	input.SetValue(defaultCustomInput(opts.Choices, opts.DefaultValue))
+	stylePromptInput(&input)
 
 	helpModel := help.New()
 	helpModel.ShowAll = false
@@ -143,6 +165,37 @@ func (m *choicePromptModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.syncLayout()
+		return m, nil
+
+	case tea.MouseClickMsg:
+		if msg.Mouse().Button != tea.MouseLeft {
+			return m, nil
+		}
+		for index := range m.list.Items() {
+			if itemZone := zone.Get(choiceItemZoneID(index)); itemZone != nil && itemZone.InBounds(msg) {
+				m.list.Select(index)
+				m.syncInputFocus()
+				if item, ok := m.selectedItem(); ok && !item.custom {
+					m.value = item.value
+					return m, tea.Quit
+				}
+				return m, nil
+			}
+		}
+		return m, nil
+
+	case tea.MouseWheelMsg:
+		listZone := zone.Get(choiceListZoneID)
+		if listZone == nil || !listZone.InBounds(msg) {
+			return m, nil
+		}
+		switch msg.Mouse().Button {
+		case tea.MouseWheelUp:
+			m.list.CursorUp()
+		case tea.MouseWheelDown:
+			m.list.CursorDown()
+		}
+		m.syncInputFocus()
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -208,29 +261,38 @@ func (m *choicePromptModel) View() tea.View {
 		headerParts = append(headerParts, "")
 	}
 
-	bodyParts := []string{m.list.View()}
+	bodyParts := []string{zone.Mark(choiceListZoneID, m.list.View())}
 	if m.selectedCustom() {
-		bodyParts = append(bodyParts, "", customBoxStyle.Width(max(20, m.width-6)).Render(m.input.View()))
+		bodyParts = append(bodyParts, "", customBoxStyle.Width(promptLayoutWidth(m.width)).Render(m.input.View()))
 	}
-	bodyParts = append(bodyParts, "", footerHelpStyle.Render(m.help.View(m.keys)))
+	bodyParts = append(bodyParts, "", footerHelpStyle.Render("click: choose  wheel: scroll  "+m.help.View(m.keys)))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, append(headerParts, bodyParts...)...)
-	return tea.NewView(promptDocStyle.Render(content))
+	view := promptView(content, m.width)
+	view.Content = zone.Scan(view.Content)
+	return view
+}
+
+func choiceItemZoneID(index int) string {
+	return fmt.Sprintf("prompt:choice:%d", index)
 }
 
 func (m *choicePromptModel) syncLayout() {
-	w := clampInt(m.width-4, 40, 100)
+	w := promptLayoutWidth(m.width)
 	m.help.SetWidth(w)
 
-	headerHeight := len(m.sections)
+	headerHeight := 0
+	for _, section := range m.sections {
+		headerHeight += lipgloss.Height(section)
+	}
 	if headerHeight > 0 {
 		headerHeight++
 	}
 	inputHeight := 0
 	if m.selectedCustom() {
-		inputHeight = 3
+		inputHeight = 6
 	}
-	listHeight := clampInt(m.height-headerHeight-inputHeight-6, 6, 18)
+	listHeight := clampInt(m.height-headerHeight-inputHeight-10, 4, 18)
 	m.list.SetSize(w, listHeight)
 	m.input.SetWidth(w - 8)
 }
@@ -313,7 +375,6 @@ func clampInt(v, low, high int) int {
 }
 
 var (
-	promptDocStyle = lipgloss.NewStyle().Padding(1, 2)
 	customBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#486581")).

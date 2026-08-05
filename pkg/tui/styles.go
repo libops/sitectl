@@ -34,20 +34,28 @@ var (
 			MarginRight(1).
 			MarginBottom(1)
 
-	cardStyle = panelStyle.Width(40)
+	contextCardStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#486581")).
+				Padding(0, 1).
+				MarginRight(1)
 
-	selectedCardStyle = cardStyle.
+	activeContextCardStyle = contextCardStyle.
 				BorderForeground(lipgloss.Color("#F4A261"))
 
-	tabStyle = lipgloss.NewStyle().
-			Padding(0, 1).
-			MarginRight(1).
-			Foreground(lipgloss.Color("#7C98B3"))
+	addContextCardStyle = contextCardStyle.
+				BorderForeground(lipgloss.Color("#5F7890"))
 
-	activeTabStyle = tabStyle.
-			Bold(true).
-			Foreground(lipgloss.Color("#0D1B2A")).
-			Background(lipgloss.Color("#98C1D9"))
+	contextActionStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#0D1B2A")).
+				Background(lipgloss.Color("#98C1D9"))
+
+	contextActionPendingStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("#E9C46A"))
+
+	unknownMetricStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#6B7280"))
 
 	chipStyle = lipgloss.NewStyle().
 			Padding(0, 1).
@@ -56,12 +64,23 @@ var (
 			BorderForeground(lipgloss.Color("#34506B")).
 			Foreground(lipgloss.Color("#C9D6DF"))
 
+	dangerChipStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#0D1B2A")).
+			Background(lipgloss.Color("#E76F51")).
+			Padding(0, 1).
+			MarginRight(1)
+
+	contextMenuCloseStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#0D1B2A")).
+				Background(lipgloss.Color("#98C1D9")).
+				Padding(0, 1)
+
 	footerCommandStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("#34506B")).
-				Padding(1, 2).
-				MarginTop(1).
-				MarginBottom(1)
+				Padding(0, 2)
 
 	footerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#9FB3C8"))
@@ -80,20 +99,4 @@ func helpStyles() help.Styles {
 	styles.FullSeparator = styles.ShortSeparator
 	styles.Ellipsis = styles.ShortSeparator
 	return styles
-}
-
-func splitWidth(total, columns int) []int {
-	if columns <= 0 {
-		return nil
-	}
-	widths := make([]int, columns)
-	base := total / columns
-	remainder := total % columns
-	for i := range widths {
-		widths[i] = base
-		if i < remainder {
-			widths[i]++
-		}
-	}
-	return widths
 }

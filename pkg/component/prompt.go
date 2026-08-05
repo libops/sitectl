@@ -2,13 +2,11 @@ package component
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/ui"
-	"golang.org/x/term"
 )
 
 type InputFunc func(question ...string) (string, error)
@@ -35,25 +33,25 @@ type Choice struct {
 const defaultRenderWidth = 80
 
 var (
-	sectionTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
-	introTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69"))
+	sectionTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#98C1D9"))
+	introTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E0FBFC"))
 	introBoxStyle     = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("238")).
-				Background(lipgloss.Color("236")).
+				BorderForeground(lipgloss.Color("#486581")).
+				Background(lipgloss.Color("#13283D")).
 				Padding(1, 2)
-	questionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	onLabelStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
-	offLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
-	promptStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
-	mutedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
-	okStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
-	failStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
-	infoStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
+	questionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#D9E2EC"))
+	onLabelStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#2A9D8F"))
+	offLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E76F51"))
+	promptStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F4A261"))
+	mutedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C98B3"))
+	okStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#2A9D8F"))
+	failStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E76F51"))
+	infoStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#98C1D9"))
 	commandStyle  = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("238")).
-			Background(lipgloss.Color("235")).
+			BorderForeground(lipgloss.Color("#486581")).
+			Background(lipgloss.Color("#13283D")).
 			Padding(1, 2)
 )
 
@@ -144,7 +142,7 @@ func PromptChoice(name string, choices []Choice, defaultValue string, input Inpu
 }
 
 func promptChoiceInteractive(name string, choices []Choice, defaultValue string, sections []string) (string, bool, error) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !ui.CanPromptInteractively() {
 		return "", false, nil
 	}
 	uiChoices := make([]ui.Choice, 0, len(choices))
@@ -365,10 +363,8 @@ func stateChoiceValue(state State) string {
 
 func promptRenderWidth() int {
 	width := defaultRenderWidth
-	if term.IsTerminal(int(os.Stdout.Fd())) {
-		if terminalWidth, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && terminalWidth > 0 {
-			width = terminalWidth
-		}
+	if terminalWidth, ok := ui.PromptTerminalWidth(); ok {
+		width = terminalWidth
 	}
 	if width < 40 {
 		return 40
