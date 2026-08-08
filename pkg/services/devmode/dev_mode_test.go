@@ -117,6 +117,7 @@ func TestComponentAssistantWritesCliSandboxService(t *testing.T) {
 		"assistant":            "true",
 		"harness":              "codex",
 		"model":                "gpt-5-codex",
+		"egress-profile":       "interactive",
 		"compose-access":       "true",
 		"skip-egress-firewall": "false",
 	})
@@ -130,6 +131,7 @@ func TestComponentAssistantWritesCliSandboxService(t *testing.T) {
 		"pull_policy: always",
 		"- assistant",
 		"SKIP_EGRESS_FIREWALL: \"false\"",
+		"CLI_SANDBOX_EGRESS_PROFILE: interactive",
 		"DOCKER_HOST: unix:///var/run/docker.sock",
 		"- NET_ADMIN",
 		"- NET_RAW",
@@ -151,6 +153,108 @@ func TestComponentAssistantWritesCliSandboxService(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected override to contain %q, got:\n%s", want, rendered)
 		}
+	}
+}
+
+func TestComponentAssistantWritesManagedEgressProfile(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services:\n  drupal:\n    image: drupal\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(compose) error = %v", err)
+	}
+	ctx := &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir}
+	component, err := Component(Options{AppService: "drupal"})
+	if err != nil {
+		t.Fatalf("Component() error = %v", err)
+	}
+
+	manager := corecomponent.NewManager(ctx)
+	spec := component.SpecForWithOptions(corecomponent.StateOn, map[string]string{
+		"assistant":      "true",
+		"harness":        "codex",
+		"model":          "http://10.42.17.9/v1",
+		"egress-profile": "managed",
+	})
+	if err := manager.EnableComponentWithOptions(context.Background(), spec, corecomponent.ApplyOptions{Yolo: true}); err != nil {
+		t.Fatalf("EnableComponentWithOptions() error = %v", err)
+	}
+	rendered := readOverrideForTest(t, projectDir)
+	for _, want := range []string{
+		"CLI_SANDBOX_EGRESS_PROFILE: managed",
+		"TASK_AGENT_MODEL_BASE_URL: http://10.42.17.9/v1",
+		"OPENAI_BASE_URL: http://10.42.17.9/v1",
+		"SKIP_EGRESS_FIREWALL: \"false\"",
+		"- NET_ADMIN",
+		"- NET_RAW",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected override to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	for _, unwanted := range []string{"DOCKER_HOST", "/var/run/docker.sock"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Fatalf("expected override not to contain %q, got:\n%s", unwanted, rendered)
+		}
+	}
+}
+
+func TestComponentAssistantRejectsUnsafeManagedOptions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		options map[string]string
+		want    string
+	}{
+		{
+			name: "compose access",
+			options: map[string]string{
+				"model":          "http://10.42.17.9/v1",
+				"compose-access": "true",
+			},
+			want: "cannot be combined with compose access",
+		},
+		{
+			name: "disabled firewall",
+			options: map[string]string{
+				"model":                "http://10.42.17.9/v1",
+				"skip-egress-firewall": "true",
+			},
+			want: "cannot skip the egress firewall",
+		},
+		{
+			name:    "missing gateway",
+			options: map[string]string{},
+			want:    "requires the private model gateway URL",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			projectDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(projectDir, "docker-compose.yml"), []byte("services:\n  drupal:\n    image: drupal\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile(compose) error = %v", err)
+			}
+			ctx := &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir}
+			component, err := Component(Options{AppService: "drupal"})
+			if err != nil {
+				t.Fatalf("Component() error = %v", err)
+			}
+			options := map[string]string{
+				"assistant":      "true",
+				"egress-profile": "managed",
+			}
+			for key, value := range test.options {
+				options[key] = value
+			}
+			spec := component.SpecForWithOptions(corecomponent.StateOn, options)
+			err = corecomponent.NewManager(ctx).EnableComponentWithOptions(context.Background(), spec, corecomponent.ApplyOptions{Yolo: true})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("EnableComponentWithOptions() error = %v, want containing %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -181,6 +285,7 @@ func TestComponentAssistantCanSkipEgressFirewallAndUseEndpointModel(t *testing.T
 	for _, want := range []string{
 		"image: ${SITECTL_ASSISTANT_IMAGE:-ghcr.io/libops/cli-sandbox:gemini}",
 		"SKIP_EGRESS_FIREWALL: \"true\"",
+		"CLI_SANDBOX_EGRESS_PROFILE: interactive",
 		"OPENAI_BASE_URL: https://models.example/v1",
 		"OPENAI_API_BASE: https://models.example/v1",
 		"TASK_AGENT_MODEL_BASE_URL: https://models.example/v1",

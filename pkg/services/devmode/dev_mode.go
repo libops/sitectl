@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	Name                = "dev-mode"
-	defaultOverrideFile = "docker-compose.override.yml"
-	defaultAssistant    = "cli-sandbox"
-	defaultHarness      = "codex"
+	Name                 = "dev-mode"
+	defaultOverrideFile  = "docker-compose.override.yml"
+	defaultAssistant     = "cli-sandbox"
+	defaultHarness       = "codex"
+	defaultEgressProfile = "interactive"
 )
 
 type Options struct {
@@ -36,6 +37,7 @@ type AssistantOptions struct {
 	Enabled            bool
 	Harness            string
 	Model              string
+	EgressProfile      string
 	ComposeAccess      bool
 	SkipEgressFirewall bool
 }
@@ -127,6 +129,12 @@ func normalizeOptions(opts Options) Options {
 func writeOverride(ctx *config.Context, opts Options, assistant AssistantOptions) error {
 	if ctx == nil {
 		return fmt.Errorf("context is nil")
+	}
+	if assistant.Enabled {
+		assistant.EgressProfile = normalizeEgressProfile(assistant.EgressProfile)
+		if err := validateAssistantOptions(assistant); err != nil {
+			return err
+		}
 	}
 	service := map[string]any{
 		"environment": sortedStringMap(opts.Environment),
@@ -228,6 +236,18 @@ func devModeFollowUps() []corecomponent.FollowUpSpec {
 			AppliesTo:    corecomponent.StateOn,
 		},
 		{
+			Name:         "egress-profile",
+			Label:        "Assistant egress profile",
+			FlagName:     "egress-profile",
+			FlagUsage:    "Network policy: interactive for trusted developer sessions or managed for a private Task Agent gateway",
+			DefaultValue: defaultEgressProfile,
+			Choices: []corecomponent.Choice{
+				{Value: "interactive", Label: "Interactive"},
+				{Value: "managed", Label: "Managed Task Agent"},
+			},
+			AppliesTo: corecomponent.StateOn,
+		},
+		{
 			Name:         "skip-egress-firewall",
 			Label:        "Skip egress firewall",
 			FlagName:     "skip-egress-firewall",
@@ -244,8 +264,29 @@ func assistantOptionsFromFollowUps(values map[string]string) AssistantOptions {
 		Enabled:            corecomponent.ParseFollowUpBool(values["assistant"]),
 		Harness:            normalizeHarness(values["harness"]),
 		Model:              normalizeModel(values["model"]),
+		EgressProfile:      values["egress-profile"],
 		ComposeAccess:      corecomponent.ParseFollowUpBool(values["compose-access"]),
 		SkipEgressFirewall: corecomponent.ParseFollowUpBool(values["skip-egress-firewall"]),
+	}
+}
+
+func validateAssistantOptions(assistant AssistantOptions) error {
+	switch normalizeEgressProfile(assistant.EgressProfile) {
+	case "interactive":
+		return nil
+	case "managed":
+		if assistant.ComposeAccess {
+			return fmt.Errorf("managed assistant egress cannot be combined with compose access")
+		}
+		if assistant.SkipEgressFirewall {
+			return fmt.Errorf("managed assistant egress cannot skip the egress firewall")
+		}
+		if !isURLModel(assistant.Model) {
+			return fmt.Errorf("managed assistant egress requires the private model gateway URL through --model")
+		}
+		return nil
+	default:
+		return fmt.Errorf("assistant egress profile must be interactive or managed")
 	}
 }
 
@@ -275,9 +316,10 @@ func assistantService(ctx *config.Context, opts Options, assistant AssistantOpti
 
 func assistantEnvironment(ctx *config.Context, harness string, assistant AssistantOptions) map[string]string {
 	env := map[string]string{
-		"SKIP_EGRESS_FIREWALL": corecomponent.FormatFollowUpBool(assistant.SkipEgressFirewall),
-		"COLUMNS":              "${COLUMNS:-120}",
-		"LINES":                "${LINES:-40}",
+		"CLI_SANDBOX_EGRESS_PROFILE": normalizeEgressProfile(assistant.EgressProfile),
+		"SKIP_EGRESS_FIREWALL":       corecomponent.FormatFollowUpBool(assistant.SkipEgressFirewall),
+		"COLUMNS":                    "${COLUMNS:-120}",
+		"LINES":                      "${LINES:-40}",
 	}
 	setIfNotEmpty := func(key, value string) {
 		if strings.TrimSpace(value) != "" {
@@ -305,6 +347,14 @@ func assistantEnvironment(ctx *config.Context, harness string, assistant Assista
 	}
 	_ = ctx
 	return env
+}
+
+func normalizeEgressProfile(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return defaultEgressProfile
+	}
+	return value
 }
 
 func assistantVolumes(harness string, pluginVolumes []string, composeAccess bool) []string {
