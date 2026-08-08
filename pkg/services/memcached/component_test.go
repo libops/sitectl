@@ -17,6 +17,9 @@ func TestEmbeddedComposeYAMLParses(t *testing.T) {
 	if _, ok := defs.Definition("services", "memcached"); !ok {
 		t.Fatal("expected embedded compose to define memcached service")
 	}
+	if _, ok := defs.Definition("networks", "default"); ok {
+		t.Fatal("memcached must not claim the shared default network")
+	}
 }
 
 func TestNewBuildsMemcachedServiceComponent(t *testing.T) {
