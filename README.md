@@ -31,6 +31,12 @@ sitectl compose up --remove-orphans -d
 
 See [Managed applications](https://sitectl.libops.io/apps) for the Compose, local image build, HTTPS, and development override contract.
 
+For source development, `make work` creates an ignored Go workspace containing
+core and every supported sibling application-plugin checkout that is present.
+`make build` and `make test` only download declared modules; they never rewrite
+`go.mod` or `go.sum`. Use `make deps-update` only when intentionally changing
+dependency versions, and use `make mod-check` in CI to reject tidy drift.
+
 ## Template provenance and downstream ownership
 
 When a plugin creates a project from a template, sitectl resolves the cloned

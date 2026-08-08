@@ -38,6 +38,38 @@ func extractVerifyRPCParams(args []string) (string, plugin.VerifyRunParams, []st
 	return format, params, passthrough, err
 }
 
+func extractVerifyStrict(args []string) (bool, []string, error) {
+	passthrough := make([]string, 0, len(args))
+	strict := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			passthrough = append(passthrough, args[i:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "--strict") {
+			passthrough = append(passthrough, arg)
+			continue
+		}
+
+		raw := strings.TrimPrefix(arg, "--")
+		name, value, hasValue := strings.Cut(raw, "=")
+		if name != "strict" {
+			passthrough = append(passthrough, arg)
+			continue
+		}
+		if !hasValue {
+			value = "true"
+		}
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return false, nil, fmt.Errorf("parse --strict: %w", err)
+		}
+		strict = parsed
+	}
+	return strict, passthrough, nil
+}
+
 type healthcheckHostParams struct {
 	Format   string
 	Persist  bool

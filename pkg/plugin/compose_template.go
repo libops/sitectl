@@ -753,7 +753,7 @@ func (s *SDK) RunActiveComposeProjectCommandList(cmd *cobra.Command, commands []
 // DefaultComposeRolloutCommands returns the generic Compose rollout sequence.
 func DefaultComposeRolloutCommands() []string {
 	return []string{
-		"docker compose pull --ignore-buildable --quiet || docker compose pull --ignore-buildable || true",
+		"docker compose pull --ignore-buildable --quiet || docker compose pull --ignore-buildable",
 		"docker compose build --pull",
 		"docker compose up --remove-orphans --wait --pull missing --quiet-pull -d",
 	}

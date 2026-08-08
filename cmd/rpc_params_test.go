@@ -151,6 +151,31 @@ func TestExtractVerifyRPCParamsPromotesReportFormat(t *testing.T) {
 	}
 }
 
+func TestExtractVerifyStrictConsumesOnlyTheCoreFlag(t *testing.T) {
+	strict, passthrough, err := extractVerifyStrict([]string{
+		"--format", "json",
+		"--strict",
+		"--bot-mitigation", "on",
+	})
+	if err != nil {
+		t.Fatalf("extractVerifyStrict() error = %v", err)
+	}
+	if !strict {
+		t.Fatal("strict = false, want true")
+	}
+	want := []string{"--format", "json", "--bot-mitigation", "on"}
+	if !reflect.DeepEqual(passthrough, want) {
+		t.Fatalf("passthrough = %#v, want %#v", passthrough, want)
+	}
+}
+
+func TestExtractVerifyStrictRejectsInvalidBoolean(t *testing.T) {
+	_, _, err := extractVerifyStrict([]string{"--strict=maybe"})
+	if err == nil || !strings.Contains(err.Error(), "parse --strict") {
+		t.Fatalf("error = %v, want parse --strict error", err)
+	}
+}
+
 func TestExtractHealthcheckRPCParamsRejectsInvalidPersist(t *testing.T) {
 	_, _, _, err := extractHealthcheckRPCParams([]string{"--persist=maybe"})
 	if err == nil {

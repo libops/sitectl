@@ -90,7 +90,7 @@ func backupCreateCommand() *cobra.Command {
 			return err
 		},
 	}
-	cmd.Flags().StringVarP(&output, "output", "o", "", "Project-relative backup directory; defaults to backups/<UTC timestamp>.")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Project-relative backup directory; defaults to backups/YYYY-MM-DDTHHMMSSZ.")
 	return cmd
 }
 

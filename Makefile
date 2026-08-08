@@ -1,4 +1,4 @@
-.PHONY: build deps lint test docker integration-test plugins install-plugins publish-aptly-repo install bump-captcha-protect
+.PHONY: build deps deps-update lint mod-check test work docker integration-test plugins install-plugins publish-aptly-repo install bump-captcha-protect
 
 BINARY_NAME=sitectl
 DOCS_PORT ?= 3000
@@ -7,8 +7,16 @@ SUPPORTED_PLUGIN_NAMES := archivesspace drupal isle ojs omeka-classic omeka-s wp
 WORKSPACE_PLUGIN_DIRS := $(foreach name,$(SUPPORTED_PLUGIN_NAMES),$(wildcard ../sitectl-$(name)))
 
 deps:
-	go get .
+	go mod download
+
+# Dependency upgrades are an explicit maintenance operation. Build and test
+# targets must never rewrite go.mod or go.sum as a side effect.
+deps-update:
+	go get -u ./...
 	go mod tidy
+
+work:
+	bash ./scripts/use-go-work.sh
 
 build: deps plugins
 	go build -o $(BINARY_NAME) .
@@ -40,7 +48,10 @@ lint:
 		echo "json5 not found, skipping renovate validation"; \
 	fi
 
-test: build
+mod-check:
+	go mod tidy -diff
+
+test: deps
 	go test -v -race ./...
 
 publish-aptly-repo:
