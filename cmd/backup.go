@@ -719,14 +719,14 @@ func storageIdentityDigest(value string) string {
 func actualComposeVolumeName(compose composeSecretConfig, logical string) (string, error) {
 	volume, ok := compose.Volumes[logical]
 	if !ok {
-		return "", fmt.Errorf("Compose volume %q is not declared", logical)
+		return "", fmt.Errorf("compose volume %q is not declared", logical)
 	}
 	actual := strings.TrimSpace(volume.Name)
 	if actual == "" {
 		actual = strings.TrimSpace(compose.Name) + "_" + logical
 	}
 	if !backupVolumeNamePattern.MatchString(actual) {
-		return "", fmt.Errorf("Compose volume %q resolves to unsafe Docker volume name %q", logical, actual)
+		return "", fmt.Errorf("compose volume %q resolves to unsafe Docker volume name %q", logical, actual)
 	}
 	return actual, nil
 }

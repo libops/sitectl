@@ -412,7 +412,7 @@ func (r *siteBackupRuntime) runningServices(runCtx context.Context) ([]string, e
 			continue
 		}
 		if !backupVolumeNamePattern.MatchString(service) {
-			return nil, fmt.Errorf("Docker Compose returned unsafe service name %q", service)
+			return nil, fmt.Errorf("docker compose returned unsafe service name %q", service)
 		}
 		if !seen[service] {
 			seen[service] = true
