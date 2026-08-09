@@ -211,10 +211,10 @@ func syncGitRefCheckout(runCtx context.Context, stdout io.Writer, ref string, ru
 
 func validateExactGitFetchSource(runCtx context.Context, run gitCommandRunner, ref string) error {
 	if strings.ContainsRune(ref, ':') {
-		return fmt.Errorf("Git ref %q must not contain a refspec separator", ref)
+		return fmt.Errorf("git ref %q must not contain a refspec separator", ref)
 	}
 	if strings.HasPrefix(ref, "+") || strings.HasPrefix(ref, "^") {
-		return fmt.Errorf("Git ref %q must not contain a refspec operator", ref)
+		return fmt.Errorf("git ref %q must not contain a refspec operator", ref)
 	}
 	// Prefixing the candidate makes both one-level names and full refs safe
 	// positional input to check-ref-format. It also rejects control characters,
