@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -90,21 +91,7 @@ func listLocalFiles(root string) ([]string, error) {
 }
 
 func mkdirAllRemote(client *sftp.Client, dir string) error {
-	if dir == "." || dir == "" || dir == "/" {
-		return nil
-	}
-
-	parts := strings.Split(filepath.Clean(dir), string(filepath.Separator))
-	current := ""
-	if strings.HasPrefix(dir, string(filepath.Separator)) {
-		current = string(filepath.Separator)
-	}
-
-	for _, part := range parts {
-		if part == "" || part == "." {
-			continue
-		}
-		current = filepath.Join(current, part)
+	for _, current := range remoteDirectoryPrefixes(dir) {
 		info, err := client.Stat(current)
 		if err == nil {
 			if info.IsDir() {
@@ -122,6 +109,41 @@ func mkdirAllRemote(client *sftp.Client, dir string) error {
 	}
 
 	return nil
+}
+
+func remoteDirectoryPrefixes(dir string) []string {
+	dir = path.Clean(strings.ReplaceAll(strings.TrimSpace(dir), `\`, "/"))
+	if dir == "." || dir == "/" {
+		return nil
+	}
+	absolute := path.IsAbs(dir)
+	parts := strings.Split(strings.TrimPrefix(dir, "/"), "/")
+	prefixes := make([]string, 0, len(parts))
+	current := ""
+	if absolute {
+		current = "/"
+	}
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		current = path.Join(current, part)
+		prefixes = append(prefixes, current)
+	}
+	return prefixes
+}
+
+func remoteRelativePath(root, target string) (string, error) {
+	root = path.Clean(strings.ReplaceAll(strings.TrimSpace(root), `\`, "/"))
+	target = path.Clean(strings.ReplaceAll(strings.TrimSpace(target), `\`, "/"))
+	if root == target {
+		return ".", nil
+	}
+	prefix := strings.TrimSuffix(root, "/") + "/"
+	if !strings.HasPrefix(target, prefix) {
+		return "", fmt.Errorf("remote path %q is not beneath %q", target, root)
+	}
+	return strings.TrimPrefix(target, prefix), nil
 }
 
 func isSFTPNotExist(err error) bool {

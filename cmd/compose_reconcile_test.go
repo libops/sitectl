@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -341,7 +342,137 @@ func TestResetComposeReconcileInitStateRemovesDeclaredFilesAndVolumes(t *testing
 	}
 }
 
+func TestResetComposeReconcileInitStatePreservesUnsafeSecretPaths(t *testing.T) {
+	restore := stubComposeReconcile(t)
+	defer restore()
+
+	for _, test := range []struct {
+		name      string
+		secretRef func(projectDir string) (string, string)
+	}{
+		{
+			name: "absolute",
+			secretRef: func(string) (string, string) {
+				outside := filepath.Join(t.TempDir(), "absolute-secret")
+				return outside, outside
+			},
+		},
+		{
+			name: "parent",
+			secretRef: func(projectDir string) (string, string) {
+				return "../parent-secret", filepath.Join(filepath.Dir(projectDir), "parent-secret")
+			},
+		},
+		{
+			name: "symlink parent",
+			secretRef: func(projectDir string) (string, string) {
+				outsideDir := t.TempDir()
+				if err := os.Symlink(outsideDir, filepath.Join(projectDir, "linked-secrets")); err != nil {
+					t.Skipf("create symlink: %v", err)
+				}
+				return "linked-secrets/customer-key", filepath.Join(outsideDir, "customer-key")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+			marker := filepath.Join(projectDir, "marker")
+			if err := os.WriteFile(marker, []byte("keep until validation succeeds"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			configuredPath, secretPath := test.secretRef(projectDir)
+			if err := os.WriteFile(secretPath, []byte("customer secret"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			composeReconcileReadConfig = func(*config.Context) (composeConfigDocument, error) {
+				return composeConfigDocument{Secrets: map[string]composeConfigSecret{"customer": {File: configuredPath}}}, nil
+			}
+			_, err := resetComposeReconcileInitState(&config.Context{ProjectDir: projectDir}, plugin.CreateSpec{
+				InitArtifacts: []plugin.InitArtifact{{Path: "marker"}},
+			})
+			if err == nil {
+				t.Fatal("expected unsafe secret path to be rejected")
+			}
+			for _, preserved := range []string{marker, secretPath} {
+				if _, statErr := os.Stat(preserved); statErr != nil {
+					t.Fatalf("unsafe reset removed %s: %v", preserved, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestResetComposeReconcileInitStateRefusesUndeclaredAndExternalVolumes(t *testing.T) {
+	restore := stubComposeReconcile(t)
+	defer restore()
+
+	for _, test := range []struct {
+		name    string
+		volume  composeConfigVolume
+		present bool
+	}{
+		{name: "undeclared"},
+		{name: "external", present: true, volume: composeConfigVolume{Name: "shared-customer-data", External: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			volumes := map[string]composeConfigVolume{}
+			if test.present {
+				volumes["customer-data"] = test.volume
+			}
+			composeReconcileReadConfig = func(*config.Context) (composeConfigDocument, error) {
+				return composeConfigDocument{Name: "site", Volumes: volumes}, nil
+			}
+			removed := false
+			composeReconcileVolumeRemove = func(string) error {
+				removed = true
+				return nil
+			}
+			_, err := resetComposeReconcileInitState(&config.Context{ProjectDir: t.TempDir()}, plugin.CreateSpec{
+				InitVolumes: []plugin.InitVolume{{Name: "customer-data"}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "refusing") {
+				t.Fatalf("resetComposeReconcileInitState() error = %v, want refusal", err)
+			}
+			if removed {
+				t.Fatal("unsafe volume was removed")
+			}
+		})
+	}
+}
+
+func TestConfirmComposeReconcileResetRequiresTypedToken(t *testing.T) {
+	oldInput := composeReconcileInput
+	t.Cleanup(func() { composeReconcileInput = oldInput })
+	var prompt string
+	composeReconcileInput = func(question ...string) (string, error) {
+		prompt = strings.Join(question, "\n")
+		return "yes", nil
+	}
+	ctx := &config.Context{Name: "museum", ProjectDir: "/srv/museum"}
+	if err := confirmComposeReconcileReset(ctx, false); err == nil {
+		t.Fatal("expected loose confirmation to be rejected")
+	}
+	if !strings.Contains(prompt, `reset museum`) || !strings.Contains(prompt, "permanently") {
+		t.Fatalf("destructive prompt is unclear:\n%s", prompt)
+	}
+	composeReconcileInput = func(...string) (string, error) { return "reset museum", nil }
+	if err := confirmComposeReconcileReset(ctx, false); err != nil {
+		t.Fatalf("confirmComposeReconcileReset() error = %v", err)
+	}
+	composeReconcileInput = func(...string) (string, error) {
+		t.Fatal("--yolo must not prompt")
+		return "", nil
+	}
+	if err := confirmComposeReconcileReset(ctx, true); err != nil {
+		t.Fatalf("confirmComposeReconcileReset(--yolo) error = %v", err)
+	}
+}
+
 func TestEnsureComposeReconcileInitArtifactDirsCreatesParents(t *testing.T) {
+	oldUserID := composeReconcileUserID
+	t.Cleanup(func() { composeReconcileUserID = oldUserID })
+	composeReconcileUserID = func() string { return "1234" }
+
 	tmpDir := t.TempDir()
 	ctx := &config.Context{ProjectDir: tmpDir}
 	spec := plugin.CreateSpec{
@@ -362,6 +493,89 @@ func TestEnsureComposeReconcileInitArtifactDirsCreatesParents(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmpDir, "ROOT_FILE")); !os.IsNotExist(err) {
 		t.Fatalf("expected root artifact file not to be created, err=%v", err)
+	}
+	uid, err := os.ReadFile(filepath.Join(tmpDir, "certs", "UID"))
+	if err != nil {
+		t.Fatalf("ReadFile(certs/UID) error = %v", err)
+	}
+	if string(uid) != "1234\n" {
+		t.Fatalf("certs/UID = %q, want 1234 newline", uid)
+	}
+}
+
+func TestEnsureComposeReconcileInitArtifactDirsRejectsEscapingHostUIDPath(t *testing.T) {
+	oldUserID := composeReconcileUserID
+	t.Cleanup(func() { composeReconcileUserID = oldUserID })
+	composeReconcileUserID = func() string { return "1234" }
+
+	err := ensureComposeReconcileInitArtifactDirs(&config.Context{ProjectDir: t.TempDir()}, plugin.CreateSpec{
+		InitArtifacts: []plugin.InitArtifact{{Path: "../UID", ValueFrom: plugin.InitArtifactValueFromHostUID}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "escapes the project") {
+		t.Fatalf("ensureComposeReconcileInitArtifactDirs() error = %v, want project escape rejection", err)
+	}
+}
+
+func TestEnsureComposeReconcileInitArtifactDirsRejectsParentSymlinkBeforeCreatingDirectories(t *testing.T) {
+	oldUserID := composeReconcileUserID
+	t.Cleanup(func() { composeReconcileUserID = oldUserID })
+	composeReconcileUserID = func() string { return "1234" }
+
+	projectDir := t.TempDir()
+	outsideDir := t.TempDir()
+	if err := os.Symlink(outsideDir, filepath.Join(projectDir, "certs")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	err := ensureComposeReconcileInitArtifactDirs(&config.Context{ProjectDir: projectDir}, plugin.CreateSpec{
+		InitArtifacts: []plugin.InitArtifact{{Path: "certs/nested/UID", ValueFrom: plugin.InitArtifactValueFromHostUID}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "escapes the project through a symlink") {
+		t.Fatalf("ensureComposeReconcileInitArtifactDirs() error = %v, want symlink escape rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "nested")); !os.IsNotExist(err) {
+		t.Fatalf("symlink escape created an outside directory, err=%v", err)
+	}
+}
+
+func TestRunComposeReconcileCommandsValidatesAllMetadataBeforeWritingInitArtifacts(t *testing.T) {
+	projectDir := t.TempDir()
+	uidPath := filepath.Join(projectDir, "certs", "UID")
+	err := runComposeReconcileCommands(&cobra.Command{}, &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir}, composeReconcileDecision{
+		RunInit: true,
+		Spec: plugin.CreateSpec{
+			InitArtifacts:     []plugin.InitArtifact{{Path: "certs/UID", ValueFrom: plugin.InitArtifactValueFromHostUID}},
+			DockerComposeInit: []string{"true", `php -r 'print("inline");'`},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "inline interpreter programs are not supported") {
+		t.Fatalf("runComposeReconcileCommands() error = %v, want inline-program validation error", err)
+	}
+	if _, err := os.Stat(uidPath); !os.IsNotExist(err) {
+		t.Fatalf("init artifact was written before metadata validation, err=%v", err)
+	}
+}
+
+func TestLegacyHostUIDArtifactCommandIsSkippedOnlyForDeclaredArtifact(t *testing.T) {
+	t.Parallel()
+
+	ctx := &config.Context{ProjectDir: "/srv/site"}
+	spec := plugin.CreateSpec{InitArtifacts: []plugin.InitArtifact{{Path: "certs/UID", ValueFrom: plugin.InitArtifactValueFromHostUID}}}
+	if !isLegacyHostUIDArtifactCommand(ctx, spec, "id -u > ./certs/UID") {
+		t.Fatal("expected declared legacy host uid writer to be recognized")
+	}
+	if isLegacyHostUIDArtifactCommand(ctx, spec, "id -u > ./secrets/DB_ROOT_PASSWORD") {
+		t.Fatal("must not skip a redirection to an undeclared path")
+	}
+}
+
+func TestCurrentComposeReconcileUserIDUsesDockerCompatibleWindowsFallback(t *testing.T) {
+	original := composeReconcileLocalIdentity
+	t.Cleanup(func() { composeReconcileLocalIdentity = original })
+	composeReconcileLocalIdentity = func() (string, string, bool, error) {
+		return "", "", false, nil
+	}
+	if got := currentComposeReconcileUserID(); got != "0" {
+		t.Fatalf("currentComposeReconcileUserID() = %q, want Docker-compatible Windows fallback 0", got)
 	}
 }
 
@@ -473,6 +687,8 @@ func stubComposeReconcile(t *testing.T) func() {
 	oldRemoveFile := composeReconcileRemoveFile
 	oldReadConfig := composeReconcileReadConfig
 	oldUserID := composeReconcileUserID
+	oldInput := composeReconcileInput
+	oldAcquireLock := composeReconcileAcquireLock
 	composeReconcileSpec = func(string) (plugin.CreateSpec, bool, error) {
 		return plugin.CreateSpec{Name: "default", Default: true, DockerComposeInit: []string{"init"}, DockerComposeBuild: []string{"build"}, DockerComposeUp: []string{"up"}}, true, nil
 	}
@@ -492,6 +708,10 @@ func stubComposeReconcile(t *testing.T) func() {
 		return composeConfigDocument{}, nil
 	}
 	composeReconcileUserID = func() string { return "1000" }
+	composeReconcileInput = func(...string) (string, error) { return "", nil }
+	composeReconcileAcquireLock = func(context.Context, *config.Context) (*config.ProjectMutationLock, error) {
+		return &config.ProjectMutationLock{}, nil
+	}
 	return func() {
 		composeReconcileSpec = oldSpec
 		composeReconcileNeed = oldNeed
@@ -506,6 +726,8 @@ func stubComposeReconcile(t *testing.T) func() {
 		composeReconcileRemoveFile = oldRemoveFile
 		composeReconcileReadConfig = oldReadConfig
 		composeReconcileUserID = oldUserID
+		composeReconcileInput = oldInput
+		composeReconcileAcquireLock = oldAcquireLock
 	}
 }
 

@@ -29,6 +29,7 @@ const (
 	templateLockPath              = ".libops/template.lock.yaml"
 	componentDefaultsRevisionPath = ".libops/component-defaults.revision"
 	maxTemplateContractBytes      = 1 << 20
+	maxTemplateLockBytes          = 1 << 20
 	maxComponentRevisionBytes     = 512
 	hostVersionEnvironment        = "SITECTL_HOST_VERSION"
 	hostRevisionEnvironment       = "SITECTL_HOST_REVISION"
@@ -55,6 +56,7 @@ type templateLock struct {
 
 type templateLockSource struct {
 	Repository string                `yaml:"repository"`
+	Ref        string                `yaml:"ref,omitempty"`
 	Commit     string                `yaml:"commit"`
 	Contract   *templateLockContract `yaml:"contract,omitempty"`
 }
@@ -91,6 +93,7 @@ type templateContractComponentDefaults struct {
 
 type templateCheckoutMetadata struct {
 	Commit                    string
+	Ref                       string
 	Contract                  []byte
 	ComponentDefaultsRevision string
 }
@@ -242,6 +245,22 @@ func validateTemplateRepository(repository string) (string, error) {
 	return repository, nil
 }
 
+func validateTemplateRef(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 255 || !utf8.ValidString(value) || strings.IndexFunc(value, func(r rune) bool {
+		return r <= 0x20 || r == 0x7f
+	}) >= 0 {
+		return "", fmt.Errorf("template ref contains invalid characters")
+	}
+	if strings.HasPrefix(value, "-") || strings.Contains(value, `\`) || strings.Contains(value, "..") || strings.Contains(value, "@{") {
+		return "", fmt.Errorf("template ref must be a single safe Git revision")
+	}
+	return value, nil
+}
+
 func resolveTemplateCommitWithRunner(projectDir string, runner gitRunner) (string, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -379,6 +398,10 @@ func buildTemplateLock(repository string, metadata templateCheckoutMetadata, sit
 	if !templateCommitPattern.MatchString(metadata.Commit) {
 		return nil, fmt.Errorf("template commit must be a full Git object id")
 	}
+	metadata.Ref, err = validateTemplateRef(metadata.Ref)
+	if err != nil {
+		return nil, err
+	}
 	if len(metadata.Contract) > maxTemplateContractBytes {
 		return nil, fmt.Errorf("template contract exceeds %d bytes", maxTemplateContractBytes)
 	}
@@ -406,6 +429,7 @@ func buildTemplateLock(repository string, metadata templateCheckoutMetadata, sit
 		Schema:     templateLockSchema,
 		Template: templateLockSource{
 			Repository: repository,
+			Ref:        metadata.Ref,
 			Commit:     strings.ToLower(metadata.Commit),
 		},
 	}

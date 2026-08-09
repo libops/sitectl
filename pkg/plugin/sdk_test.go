@@ -843,10 +843,10 @@ func TestRefreshCreateContextDiscoversComposeFileAfterClone(t *testing.T) {
 	}
 }
 
-func TestDockerComposeExecCommandQuotesArgs(t *testing.T) {
-	got := DockerComposeExecCommand("wp", "wp", "--path=/var/www/wp", "post", "get", "hello's world")
-	want := "'docker' 'compose' 'exec' '-T' 'wp' 'wp' '--path=/var/www/wp' 'post' 'get' 'hello'\\''s world'"
-	if got != want {
-		t.Fatalf("DockerComposeExecCommand() = %q, want %q", got, want)
+func TestDockerComposeExecArgvPreservesArgs(t *testing.T) {
+	got := DockerComposeExecArgv("wp", "wp", "--path=/var/www/wp", "post", "get", "hello's world", "$PWD\nsecond")
+	want := []string{"docker", "compose", "exec", "-T", "wp", "wp", "--path=/var/www/wp", "post", "get", "hello's world", "$PWD\nsecond"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DockerComposeExecArgv() = %#v, want %#v", got, want)
 	}
 }

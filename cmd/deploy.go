@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/plugin"
@@ -25,8 +28,12 @@ var deployCmd = &cobra.Command{
 	Short: "Deploy the active context: pull updates and restart services",
 	Long: `Deploy the active context by orchestrating a full update cycle.
 
-The deploy sequence runs:
-  1. git pull --ff-only for the current upstream branch (unless --skip-git is set)
+The deploy sequence validates the complete rollout before changing the checkout.
+Production services must run image-backed application code: a successful Git
+checkout necessarily changes files immediately for services that bind-mount the
+project source. After validation, sitectl runs:
+  1. A fast-forward-only Git sync, or a verified exact-ref checkout, unless
+     --skip-git is set
   2. Pull images and build application images while the current site is still
      running (explicit pulls are skipped when --no-pull is set)
   3. Plugin pre-down hooks (if the context plugin registers a deploy runner)
@@ -35,11 +42,16 @@ The deploy sequence runs:
      otherwise docker compose up -d --remove-orphans
   6. Plugin post-up hooks (if the context plugin registers a deploy runner)
 
-The --branch flag fetches and checks out a named remote branch before a
-fast-forward merge. The --ref flag fetches an exact remote ref (including a
-pull-request ref or advertised commit) and checks it out detached without
-rewriting a local branch. If both are omitted, sitectl updates the current
-branch when it has a git upstream.
+If a failure occurs after shutdown begins, sitectl makes one bounded direct
+Docker Compose start and readiness check from the current checkout while the
+project mutation lock is still held. Recovery does not roll back Git or
+application data.
+
+The --branch flag fetches a named remote branch, proves an existing local target
+is its ancestor, and then checks out the fetched commit. The --ref flag fetches
+an exact remote ref (including a pull-request ref or advertised commit) and
+checks it out detached without rewriting a local branch. If both are omitted,
+sitectl updates the current branch when it has a git upstream.
 
 Examples:
   sitectl deploy                         # Deploy the current upstream branch
@@ -79,17 +91,56 @@ type deployCycleOptions struct {
 }
 
 var (
-	deployRunGitUpdate      = runGitUpdate
-	deployRunGitRefUpdate   = runGitRefUpdate
-	deployRunContextCompose = runContextCompose
-	deployRunHook           = invokeDeployHook
-	deployResolveRollout    = pluginComposeRollout
+	deployRunGitUpdate       = runGitUpdate
+	deployRunGitRefUpdate    = runGitRefUpdate
+	deployRunContextCompose  = runContextCompose
+	deployRunRecoveryCompose = runContextComposeDirect
+	deployRunHook            = invokeDeployHook
+	deployResolveRollout     = pluginComposeRollout
+	deployValidateContext    = validateDeployContextPrerequisites
+	deployAcquireProjectLock = func(runCtx context.Context, ctx *config.Context) (*config.ProjectMutationLock, error) {
+		return ctx.AcquireProjectMutationLock(runCtx)
+	}
 )
 
-func runDeployCycle(cmd *cobra.Command, contextName string, ctx config.Context, pluginName string, hasDeployHooks bool, opts deployCycleOptions) error {
-	// Update the checkout while the healthy site is still online. A fetch,
-	// checkout, or pull failure therefore cannot turn an update failure into an
-	// outage.
+const (
+	deployRecoveryTimeout     = 10 * time.Minute
+	deployRecoveryWaitTimeout = 9 * time.Minute
+)
+
+func runDeployCycle(cmd *cobra.Command, contextName string, ctx config.Context, pluginName string, hasDeployHooks bool, opts deployCycleOptions) (returnErr error) {
+	lock, err := deployAcquireProjectLock(cmd.Context(), &ctx)
+	if err != nil {
+		return fmt.Errorf("acquire project mutation lock: %w", err)
+	}
+	originalContext := cmd.Context()
+	cmd.SetContext(lock.Context())
+	defer func() {
+		cmd.SetContext(originalContext)
+		returnErr = errors.Join(returnErr, lock.Release())
+	}()
+	if err := deployValidateContext(&ctx); err != nil {
+		return fmt.Errorf("validate deploy context: %w", err)
+	}
+
+	// Resolve and validate every rollout entry before Git can change code that a
+	// running service might have bind-mounted from the checkout.
+	rolloutCommands, hasRollout, err := deployResolveRollout(pluginName)
+	if err != nil {
+		return fmt.Errorf("resolve compose rollout failed: %w", err)
+	}
+	if hasRollout {
+		if err := validateDeployComposeRollout(&ctx, rolloutCommands); err != nil {
+			return err
+		}
+	}
+	preparationCommands, rolloutCommands := splitLeadingComposePreparationCommands(rolloutCommands)
+	if hasRollout {
+		if err := validateDeployRolloutFinalStart(&ctx, rolloutCommands); err != nil {
+			return err
+		}
+	}
+
 	if !opts.SkipGit {
 		slog.Debug("running git update", "context", contextName, "branch", strings.TrimSpace(opts.Branch), "ref", strings.TrimSpace(opts.Ref))
 		var err error
@@ -101,16 +152,15 @@ func runDeployCycle(cmd *cobra.Command, contextName string, ctx config.Context, 
 		if err != nil {
 			return fmt.Errorf("git update failed: %w", err)
 		}
+		// Git can replace a previously validated checked-in lifecycle script.
+		// Revalidate the complete rollout against the fetched checkout before
+		// preparation or an outage can begin.
+		if hasRollout {
+			if err := validateDeployComposeRollout(&ctx, rolloutCommands); err != nil {
+				return fmt.Errorf("validate fetched compose rollout: %w", err)
+			}
+		}
 	}
-
-	// Resolve the rollout before stopping a healthy site. Plugin discovery and
-	// metadata errors are deployment validation failures, not reasons to create
-	// an outage.
-	rolloutCommands, hasRollout, err := deployResolveRollout(pluginName)
-	if err != nil {
-		return fmt.Errorf("resolve compose rollout failed: %w", err)
-	}
-	preparationCommands, rolloutCommands := splitLeadingComposePreparationCommands(rolloutCommands)
 
 	// Pull and build while the healthy site is still online. Registry,
 	// connectivity, missing-image, and build failures must not turn an update
@@ -139,26 +189,63 @@ func runDeployCycle(cmd *cobra.Command, contextName string, ctx config.Context, 
 
 	slog.Debug("running compose down", "context", contextName)
 	if err := deployRunContextCompose(cmd, ctx, []string{"down", "--remove-orphans"}); err != nil {
-		return fmt.Errorf("compose down failed: %w", err)
+		return recoverDeployAfterOutage(cmd, contextName, ctx, fmt.Errorf("compose down failed: %w", err))
 	}
 
 	if hasRollout {
 		slog.Debug("running plugin compose rollout", "context", contextName, "plugin", pluginName)
 		if err := deployRunComposeRollout(cmd, &ctx, rolloutCommands, opts.NoPull); err != nil {
-			return fmt.Errorf("compose rollout failed: %w", err)
+			return recoverDeployAfterOutage(cmd, contextName, ctx, fmt.Errorf("compose rollout failed: %w", err))
 		}
 	} else {
 		slog.Debug("running compose up", "context", contextName)
 		if err := deployRunContextCompose(cmd, ctx, []string{"up", "-d", "--remove-orphans"}); err != nil {
-			return fmt.Errorf("compose up failed: %w", err)
+			return recoverDeployAfterOutage(cmd, contextName, ctx, fmt.Errorf("compose up failed: %w", err))
 		}
 	}
 
 	if hasDeployHooks {
 		slog.Debug("running post-up hooks", "context", contextName, "plugin", pluginName)
 		if err := deployRunHook(cmd, contextName, pluginName, "post-up"); err != nil {
-			return fmt.Errorf("post-up hook failed: %w", err)
+			return recoverDeployAfterOutage(cmd, contextName, ctx, fmt.Errorf("post-up hook failed: %w", err))
 		}
+	}
+	return nil
+}
+
+// recoverDeployAfterOutage makes one direct, bounded start and readiness
+// attempt before the caller releases the project mutation lock. WithoutCancel
+// preserves the lock marker after an interrupted deploy.
+func recoverDeployAfterOutage(cmd *cobra.Command, contextName string, ctx config.Context, deployErr error) error {
+	recoveryContext, cancel := context.WithTimeout(context.WithoutCancel(cmd.Context()), deployRecoveryTimeout)
+	defer cancel()
+	recoveryCommand := *cmd
+	recoveryCommand.SetContext(recoveryContext)
+
+	slog.Warn("deploy failed after shutdown began; attempting bounded direct Compose start and readiness check", "context", contextName, "timeout", deployRecoveryTimeout)
+	waitTimeoutSeconds := fmt.Sprintf("%d", deployRecoveryWaitTimeout/time.Second)
+	if recoveryErr := deployRunRecoveryCompose(&recoveryCommand, ctx, []string{"up", "-d", "--remove-orphans", "--wait", "--wait-timeout", waitTimeoutSeconds}); recoveryErr != nil {
+		return errors.Join(
+			deployErr,
+			fmt.Errorf("bounded direct Compose recovery start or readiness check failed; no automatic Git or application-data rollback was attempted: %w", recoveryErr),
+		)
+	}
+	if _, err := fmt.Fprintln(cmd.ErrOrStderr(), "sitectl: deploy failed after shutdown began; a bounded direct Docker Compose start and readiness check completed from the current checkout. No automatic Git or application-data rollback was attempted."); err != nil {
+		return errors.Join(deployErr, fmt.Errorf("report deploy recovery result: %w", err))
+	}
+	return deployErr
+}
+
+func validateDeployContextPrerequisites(ctx *config.Context) error {
+	if ctx == nil || strings.TrimSpace(ctx.ProjectDir) == "" {
+		return fmt.Errorf("project directory is required")
+	}
+	hasProject, err := ctx.HasComposeProject()
+	if err != nil {
+		return fmt.Errorf("inspect Compose project: %w", err)
+	}
+	if !hasProject {
+		return fmt.Errorf("no Compose project file found in %s", ctx.ProjectDir)
 	}
 	return nil
 }
@@ -209,6 +296,17 @@ func invokeDeployHook(cmd *cobra.Command, contextName, pluginName, hook string) 
 // runContextCompose runs a docker compose subcommand via the context's RunCommandContext,
 // mirroring the compose.go injection of -f and --env-file flags.
 func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) error {
+	return runContextComposeMode(cmd, ctx, args, true)
+}
+
+// runContextComposeDirect executes exactly one Compose operation without
+// invoking plugin reconciliation. Deploy recovery uses this path because a
+// failed rollout must not recursively enter another lifecycle workflow.
+func runContextComposeDirect(cmd *cobra.Command, ctx config.Context, args []string) error {
+	return runContextComposeMode(cmd, ctx, args, false)
+}
+
+func runContextComposeMode(cmd *cobra.Command, ctx config.Context, args []string, allowReconcile bool) error {
 	if ctx.DockerHostType == config.ContextLocal {
 		hasProject, err := ctx.HasComposeProject()
 		if err != nil {
@@ -227,7 +325,7 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 		if !slices.Contains(args, "-d") && !slices.Contains(args, "--detach") {
 			args = append(args, "-d", "--remove-orphans")
 		}
-		if shouldAutoReconcileComposeUp(args) {
+		if allowReconcile && shouldAutoReconcileComposeUp(args) {
 			handled, err := maybeRunComposeReconcile(cmd, &ctx)
 			if err != nil {
 				return err
@@ -264,17 +362,9 @@ func runContextCompose(cmd *cobra.Command, ctx config.Context, args []string) er
 
 // runGitUpdate fast-forwards the checkout from its configured upstream branch.
 func runGitUpdate(cmd *cobra.Command, ctx config.Context, branch string) error {
-	command := ctx.GitSyncShellCommand(branch)
-	syncCmd := exec.Command("bash", "-lc", command) // #nosec G204 -- command text is assembled from context values using shell quoting.
-	syncCmd.Dir = ctx.ProjectDir
-	_, err := ctx.RunCommandContext(cmd.Context(), syncCmd)
-	return err
+	return ctx.SyncGitCheckout(cmd.Context(), cmd.OutOrStdout(), branch)
 }
 
 func runGitRefUpdate(cmd *cobra.Command, ctx config.Context, ref string) error {
-	command := ctx.GitSyncRefShellCommand(ref)
-	syncCmd := exec.Command("bash", "-lc", command) // #nosec G204 -- command text is assembled from context values using shell quoting.
-	syncCmd.Dir = ctx.ProjectDir
-	_, err := ctx.RunCommandContext(cmd.Context(), syncCmd)
-	return err
+	return ctx.SyncGitRefCheckout(cmd.Context(), cmd.OutOrStdout(), ref)
 }

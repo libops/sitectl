@@ -44,6 +44,11 @@ type OptionalHTTPServiceCheck struct {
 	URL     string
 }
 
+type containerExecAlternative struct {
+	Command           []string
+	FallbackOnFailure bool
+}
+
 type composeDependencyConfigDocument struct {
 	Services map[string]composeDependencyConfigService `json:"services"`
 }
@@ -196,10 +201,11 @@ func (c *DockerChecker) CheckMySQL(ctx context.Context, service string) sitevali
 }
 
 func (c *DockerChecker) checkMySQLCompatible(ctx context.Context, name, service string) sitevalidate.Result {
-	return c.checkExec(ctx, name, service, []string{
-		"sh",
-		"-lc",
-		`if command -v mariadb-admin >/dev/null 2>&1; then mariadb-admin ping -h 127.0.0.1 --silent; elif command -v mysqladmin >/dev/null 2>&1; then mysqladmin ping -h 127.0.0.1 --silent; else test -S /run/mysqld/mysqld.sock || test -S /var/run/mysqld/mysqld.sock; fi`,
+	return c.checkExecAlternatives(ctx, name, service, []containerExecAlternative{
+		{Command: []string{"mariadb-admin", "ping", "-h", "127.0.0.1", "--silent"}},
+		{Command: []string{"mysqladmin", "ping", "-h", "127.0.0.1", "--silent"}},
+		{Command: []string{"test", "-S", "/run/mysqld/mysqld.sock"}, FallbackOnFailure: true},
+		{Command: []string{"test", "-S", "/var/run/mysqld/mysqld.sock"}},
 	})
 }
 
@@ -209,22 +215,11 @@ func (c *DockerChecker) CheckSolrCore(ctx context.Context, service, core string)
 	service = firstNonEmpty(service, "solr")
 	core = firstNonEmpty(core, "default")
 	name := "solr:" + service
-	if c == nil || c.Client == nil || c.Context == nil {
-		return failed(name, "docker checker is not initialized")
-	}
-	containerName, err := c.Client.GetContainerNameContext(ctx, c.Context, service)
-	if err != nil {
-		return failed(name, err.Error())
-	}
-	if strings.TrimSpace(containerName) == "" {
-		return failed(name, "service "+service+" is not running")
-	}
-
 	endpoint := fmt.Sprintf("http://127.0.0.1:8983/solr/admin/cores?action=STATUS&core=%s&wt=json", url.QueryEscape(core))
-	command := fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 10 %q; elif command -v wget >/dev/null 2>&1; then wget -q --timeout=10 -O- %q; else echo "curl or wget is required"; exit 127; fi`, endpoint, endpoint)
-	execCtx, cancel := context.WithTimeout(ctx, defaultHTTPTimeout)
-	defer cancel()
-	output, err := sitectldocker.ExecCapture(execCtx, c.Client, containerName, "", []string{"sh", "-lc", command})
+	output, err := c.execServiceAlternatives(ctx, service, []containerExecAlternative{
+		{Command: []string{"curl", "-fsS", "--max-time", "10", endpoint}},
+		{Command: []string{"wget", "-q", "--timeout=10", "-O-", endpoint}},
+	})
 	if err != nil {
 		detail := strings.TrimSpace(output)
 		if detail != "" {
@@ -253,12 +248,16 @@ func (c *DockerChecker) CheckHTTPFromContainerWithHostHeader(ctx context.Context
 	}
 	hostHeader = strings.TrimSpace(hostHeader)
 	if hostHeader == "" {
-		command := fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 10 %q >/dev/null; else wget -q --timeout=10 --spider %q; fi`, targetURL, targetURL)
-		return c.checkExec(ctx, name, service, []string{"sh", "-lc", command})
+		return c.checkExecAlternatives(ctx, name, service, []containerExecAlternative{
+			{Command: []string{"curl", "-fsS", "--max-time", "10", "-o", "/dev/null", targetURL}},
+			{Command: []string{"wget", "-q", "--timeout=10", "--spider", targetURL}},
+		})
 	}
 	header := "Host: " + hostHeader
-	command := fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 10 -H %q %q >/dev/null; else wget -q --timeout=10 --header %q --spider %q; fi`, header, targetURL, header, targetURL)
-	return c.checkExec(ctx, name, service, []string{"sh", "-lc", command})
+	return c.checkExecAlternatives(ctx, name, service, []containerExecAlternative{
+		{Command: []string{"curl", "-fsS", "--max-time", "10", "-H", header, "-o", "/dev/null", targetURL}},
+		{Command: []string{"wget", "-q", "--timeout=10", "--header", header, "--spider", targetURL}},
+	})
 }
 
 // CheckHTTPRoute verifies an application route at its resolved public URL.
@@ -865,20 +864,8 @@ func (c *DockerChecker) checkComposeService(ctx context.Context, service string,
 	return sitevalidate.Result{Name: "service:" + service, Status: sitevalidate.StatusOK, Detail: strings.Join(details, "; ")}
 }
 
-func (c *DockerChecker) checkExec(ctx context.Context, name, service string, command []string) sitevalidate.Result {
-	if c == nil || c.Client == nil || c.Context == nil {
-		return failed(name, "docker checker is not initialized")
-	}
-	containerName, err := c.Client.GetContainerNameContext(ctx, c.Context, service)
-	if err != nil {
-		return failed(name, err.Error())
-	}
-	if strings.TrimSpace(containerName) == "" {
-		return failed(name, "service "+service+" is not running")
-	}
-	execCtx, cancel := context.WithTimeout(ctx, defaultHTTPTimeout)
-	defer cancel()
-	output, err := sitectldocker.ExecCapture(execCtx, c.Client, containerName, "", command)
+func (c *DockerChecker) checkExecAlternatives(ctx context.Context, name, service string, alternatives []containerExecAlternative) sitevalidate.Result {
+	output, err := c.execServiceAlternatives(ctx, service, alternatives)
 	if err != nil {
 		detail := strings.TrimSpace(output)
 		if detail != "" {
@@ -887,6 +874,38 @@ func (c *DockerChecker) checkExec(ctx context.Context, name, service string, com
 		return failed(name, detail+err.Error())
 	}
 	return sitevalidate.Result{Name: name, Status: sitevalidate.StatusOK, Detail: trimOutput(output)}
+}
+
+func (c *DockerChecker) execServiceAlternatives(ctx context.Context, service string, alternatives []containerExecAlternative) (string, error) {
+	if c == nil || c.Client == nil || c.Context == nil {
+		return "", fmt.Errorf("docker checker is not initialized")
+	}
+	if len(alternatives) == 0 {
+		return "", fmt.Errorf("container exec alternatives cannot be empty")
+	}
+	containerName, err := c.Client.GetContainerNameContext(ctx, c.Context, service)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(containerName) == "" {
+		return "", fmt.Errorf("service %s is not running", service)
+	}
+	execCtx, cancel := context.WithTimeout(ctx, defaultHTTPTimeout)
+	defer cancel()
+	var output string
+	for index, alternative := range alternatives {
+		if len(alternative.Command) == 0 {
+			return "", fmt.Errorf("container exec alternative %d is empty", index+1)
+		}
+		output, err = sitectldocker.ExecCapture(execCtx, c.Client, containerName, "", alternative.Command)
+		if err == nil {
+			return output, nil
+		}
+		if index+1 == len(alternatives) || (!alternative.FallbackOnFailure && !sitectldocker.IsExecutableNotFound(err)) {
+			return output, err
+		}
+	}
+	return output, err
 }
 
 func containersByService(containers []dockercontainer.Summary) map[string][]dockercontainer.Summary {

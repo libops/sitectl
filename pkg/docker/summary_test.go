@@ -133,3 +133,33 @@ func TestParseHostMetricsOutput(t *testing.T) {
 		t.Fatalf("expected network tx 654321, got %d", netTX)
 	}
 }
+
+func TestHostMetricParsersDoNotRequireShellPipelines(t *testing.T) {
+	if got := parseProcLoadAverage("1.75 1.00 0.50 1/100 123\n"); got != "1.75" {
+		t.Fatalf("parseProcLoadAverage() = %q, want 1.75", got)
+	}
+	if got := parseUptimeLoadAverage("10:30 up 4 days, load averages: 2.50 2.00 1.50"); got != "2.50" {
+		t.Fatalf("parseUptimeLoadAverage() = %q, want 2.50", got)
+	}
+	if got := parseProcCPUCount("processor : 0\nmodel name : first\nprocessor : 1\n"); got != 2 {
+		t.Fatalf("parseProcCPUCount() = %d, want 2", got)
+	}
+	total, available := parsePOSIXDiskUsage("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda 1000 250 750 25% /\n")
+	if total != "1000" || available != "750" {
+		t.Fatalf("parsePOSIXDiskUsage() = (%q, %q), want (1000, 750)", total, available)
+	}
+}
+
+func TestParseProcNetworkTotalsExcludesVirtualInterfaces(t *testing.T) {
+	output := `Inter-| Receive | Transmit
+ face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed
+    lo: 100 1 0 0 0 0 0 0 200 2 0 0 0 0 0 0
+  eth0: 300 3 0 0 0 0 0 0 400 4 0 0 0 0 0 0
+docker0: 500 5 0 0 0 0 0 0 600 6 0 0 0 0 0 0
+  wlan0: 700 7 0 0 0 0 0 0 800 8 0 0 0 0 0 0`
+
+	rx, tx := parseProcNetworkTotals(output)
+	if rx != 1000 || tx != 1200 {
+		t.Fatalf("parseProcNetworkTotals() = (%d, %d), want (1000, 1200)", rx, tx)
+	}
+}

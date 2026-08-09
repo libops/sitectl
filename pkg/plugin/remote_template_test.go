@@ -17,8 +17,10 @@ import (
 type localRemoteTemplateConnection struct {
 	commands         [][]string
 	run              func([]string) (string, error)
+	runContext       func(context.Context, []string) (string, error)
 	beforeGitRemoval func(string)
 	mkdir            func(string) error
+	rename           func(string, string) error
 	renameErr        error
 	closed           bool
 }
@@ -28,11 +30,14 @@ func (c *localRemoteTemplateConnection) Close() error {
 	return nil
 }
 
-func (c *localRemoteTemplateConnection) Run(_ context.Context, _, _ io.Writer, args ...string) (string, error) {
+func (c *localRemoteTemplateConnection) Run(runCtx context.Context, _, _ io.Writer, args ...string) (string, error) {
 	command := append([]string(nil), args...)
 	c.commands = append(c.commands, command)
 	if c.beforeGitRemoval != nil && len(command) == 4 && command[0] == "rm" && command[1] == "-rf" && command[2] == "--" && filepath.Base(command[3]) == ".git" {
 		c.beforeGitRemoval(command[3])
+	}
+	if c.runContext != nil {
+		return c.runContext(runCtx, command)
 	}
 	if c.run == nil {
 		return "", nil
@@ -44,20 +49,16 @@ func (c *localRemoteTemplateConnection) Lstat(name string) (os.FileInfo, error) 
 	return os.Lstat(name)
 }
 
-func (c *localRemoteTemplateConnection) ReadDir(name string) ([]os.FileInfo, error) {
-	entries, err := os.ReadDir(name)
-	if err != nil {
-		return nil, err
-	}
-	infos := make([]os.FileInfo, 0, len(entries))
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			return nil, err
-		}
-		infos = append(infos, info)
-	}
-	return infos, nil
+func (c *localRemoteTemplateConnection) ReadLink(name string) (string, error) {
+	return os.Readlink(name)
+}
+
+func (c *localRemoteTemplateConnection) ReadDirLimit(_ context.Context, name string, maximum int) ([]os.FileInfo, bool, error) {
+	return readLocalComposeCreateDirectory(name, maximum)
+}
+
+func (c *localRemoteTemplateConnection) DirectoryHasEntries(_ context.Context, name string) (bool, error) {
+	return localComposeCreateDirectoryHasEntries(name)
 }
 
 func (c *localRemoteTemplateConnection) Open(name string) (remoteTemplateFile, error) {
@@ -88,6 +89,9 @@ func (c *localRemoteTemplateConnection) Remove(name string) error {
 }
 
 func (c *localRemoteTemplateConnection) Rename(oldName, newName string) error {
+	if c.rename != nil {
+		return c.rename(oldName, newName)
+	}
 	if c.renameErr != nil {
 		return c.renameErr
 	}
@@ -103,6 +107,103 @@ func useLocalRemoteTemplateConnection(t *testing.T, connection remoteTemplateCon
 	t.Cleanup(func() {
 		openRemoteTemplateConnection = original
 	})
+}
+
+func TestRemoteDirectoryNameCollectorEnforcesLimitAcrossWrites(t *testing.T) {
+	collector := newRemoteDirectoryNameCollector(2)
+	if _, err := collector.Write([]byte("two\x00on")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collector.Write([]byte("e\x00three\x00")); err != nil {
+		t.Fatal(err)
+	}
+	names, exceeded, err := collector.result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exceeded || !reflect.DeepEqual(names, []string{"two", "one"}) {
+		t.Fatalf("bounded remote directory names = %#v, exceeded=%t", names, exceeded)
+	}
+}
+
+func TestCleanupOwnedRemoteTemplateCheckoutIgnoresOrdinaryCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	_, stagingPath := createRemoteTemplateCleanupStaging(t)
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cleanupCalled := false
+	connection := &localRemoteTemplateConnection{
+		runContext: func(cleanupCtx context.Context, args []string) (string, error) {
+			cleanupCalled = true
+			if err := cleanupCtx.Err(); err != nil {
+				t.Fatalf("ordinary caller cancellation reached recovery context: %v", err)
+			}
+			if len(args) != 4 || args[0] != "rm" || args[1] != "-rf" || args[2] != "--" || args[3] != stagingPath {
+				t.Fatalf("unexpected cleanup command: %v", args)
+			}
+			return "", os.RemoveAll(stagingPath)
+		},
+	}
+	err := cleanupOwnedRemoteTemplateCheckout(runCtx, connection, stagingPath, context.Canceled)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, errComposeCreateRecoveryRequired) {
+		t.Fatalf("ordinary cancellation cleanup error = %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("ordinary caller cancellation skipped staging recovery")
+	}
+	if _, err := os.Lstat(stagingPath); !os.IsNotExist(err) {
+		t.Fatalf("ordinary cancellation left staging path behind: %v", err)
+	}
+}
+
+func TestCleanupOwnedRemoteTemplateCheckoutPreservesRecordedLockLossBeforeCleanup(t *testing.T) {
+	t.Parallel()
+
+	_, stagingPath := createRemoteTemplateCleanupStaging(t)
+	runCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(config.ErrProjectMutationLockLost)
+	cause := errors.New("clone failed")
+	connection := &localRemoteTemplateConnection{
+		runContext: func(context.Context, []string) (string, error) {
+			t.Fatal("destructive cleanup ran after lock loss was recorded")
+			return "", nil
+		},
+	}
+	err := cleanupOwnedRemoteTemplateCheckout(runCtx, connection, stagingPath, cause)
+	if !errors.Is(err, cause) || !errors.Is(err, config.ErrProjectMutationLockLost) || !errors.Is(err, errComposeCreateRecoveryRequired) {
+		t.Fatalf("recorded lock-loss cleanup error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stagingPath, "partial")); err != nil {
+		t.Fatalf("recorded lock loss did not preserve staging: %v", err)
+	}
+}
+
+func TestCleanupOwnedRemoteTemplateCheckoutPreservesLockLossDuringCleanup(t *testing.T) {
+	t.Parallel()
+
+	_, stagingPath := createRemoteTemplateCleanupStaging(t)
+	runCtx, cancel := context.WithCancelCause(context.Background())
+	cause := errors.New("clone failed")
+	connection := &localRemoteTemplateConnection{
+		runContext: func(cleanupCtx context.Context, args []string) (string, error) {
+			if err := cleanupCtx.Err(); err != nil {
+				t.Fatalf("cleanup context was cancelled before lock loss: %v", err)
+			}
+			if len(args) != 4 || args[3] != stagingPath {
+				t.Fatalf("unexpected cleanup command: %v", args)
+			}
+			cancel(config.ErrProjectMutationLockLost)
+			return "", context.Canceled
+		},
+	}
+	err := cleanupOwnedRemoteTemplateCheckout(runCtx, connection, stagingPath, cause)
+	if !errors.Is(err, cause) || !errors.Is(err, config.ErrProjectMutationLockLost) || !errors.Is(err, errComposeCreateRecoveryRequired) {
+		t.Fatalf("during-cleanup lock-loss error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stagingPath, "partial")); err != nil {
+		t.Fatalf("lock loss during cleanup did not preserve staging: %v", err)
+	}
 }
 
 func TestInspectRemoteTemplateCheckoutReadsValidatedMetadata(t *testing.T) {
@@ -143,6 +244,46 @@ spec:
 	}
 	if metadata.Commit != testTemplateCommit || !reflect.DeepEqual(metadata.Contract, contract) || metadata.ComponentDefaultsRevision != "components-v4" {
 		t.Fatalf("metadata = %+v", metadata)
+	}
+}
+
+func TestRemoteComposeCreateObservationRejectsNestedTemplateMutation(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".libops", "config"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := buildTemplateLock("https://example.org/template.git", templateCheckoutMetadata{
+		Commit: testTemplateCommit,
+		Ref:    "main",
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, filepath.FromSlash(templateLockPath)), lock, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nestedPath := filepath.Join(projectDir, ".libops", "config", "settings.yaml")
+	if err := os.WriteFile(nestedPath, []byte("value: one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	connection := &localRemoteTemplateConnection{}
+	useLocalRemoteTemplateConnection(t, connection)
+	ctx := &config.Context{DockerHostType: config.ContextRemote, ProjectDir: projectDir, SSHHostname: "example.invalid"}
+	req := ComposeCreateRequest{
+		CheckoutSource: CheckoutSourceTemplate,
+		TemplateRepo:   "https://example.org/template.git",
+		TemplateBranch: "main",
+	}
+	observation, err := (&SDK{}).PrepareComposeCreateTargetContext(context.Background(), req, ctx)
+	if err != nil {
+		t.Fatalf("PrepareComposeCreateTargetContext() error = %v", err)
+	}
+	if err := os.WriteFile(nestedPath, []byte("value: two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = (&SDK{}).RevalidateComposeCreateTargetContext(context.Background(), req, ctx, observation)
+	if err == nil || !strings.Contains(err.Error(), "changed while create waited") {
+		t.Fatalf("remote nested template mutation revalidation error = %v, want compare-and-swap refusal", err)
 	}
 }
 
@@ -367,17 +508,19 @@ func TestRemoteTemplateCheckoutDoesNotCleanRejectedCloneFromExistingRoot(t *test
 }
 
 func TestRemoteTemplateCloneFailureCleansNewProjectDirectory(t *testing.T) {
+	useNoopComposeCreateProjectMutationLock(t)
 	projectDir := filepath.Join(t.TempDir(), "site")
 	cloneErr := errors.New("clone failed")
 	connection := &localRemoteTemplateConnection{
 		run: func(args []string) (string, error) {
 			switch {
 			case len(args) > 1 && args[1] == "clone":
-				if err := os.WriteFile(filepath.Join(projectDir, "partial"), []byte("partial\n"), 0o600); err != nil {
+				stagingPath := args[len(args)-1]
+				if err := os.WriteFile(filepath.Join(stagingPath, "partial"), []byte("partial\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				return "", cloneErr
-			case len(args) == 4 && args[0] == "rm" && args[3] == projectDir:
+			case len(args) == 4 && args[0] == "rm" && args[1] == "-rf" && args[2] == "--":
 				return "", os.RemoveAll(args[3])
 			default:
 				t.Fatalf("unexpected remote command args: %v", args)
@@ -389,8 +532,9 @@ func TestRemoteTemplateCloneFailureCleansNewProjectDirectory(t *testing.T) {
 	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
 	ctx := &config.Context{DockerHostType: config.ContextRemote, ProjectDir: projectDir, SSHHostname: "example.invalid"}
 
-	created, err := sdk.ensureRemoteComposeTemplateCheckout(context.Background(), io.Discard, ComposeCreateRequest{
-		TemplateRepo: "git@github.com:libops/omeka-s.git",
+	created, err := sdk.EnsureComposeTemplateCheckoutContext(context.Background(), io.Discard, ComposeCreateRequest{
+		CheckoutSource: CheckoutSourceTemplate,
+		TemplateRepo:   "git@github.com:libops/omeka-s.git",
 	}, ctx)
 	if err == nil || !strings.Contains(err.Error(), cloneErr.Error()) {
 		t.Fatalf("ensureRemoteComposeTemplateCheckout() error = %v", err)
@@ -398,8 +542,12 @@ func TestRemoteTemplateCloneFailureCleansNewProjectDirectory(t *testing.T) {
 	if created {
 		t.Fatal("ensureRemoteComposeTemplateCheckout() created = true, want false")
 	}
-	if _, err := os.Lstat(projectDir); !os.IsNotExist(err) {
-		t.Fatalf("partial checkout remains after clone failure: %v", err)
+	entries, readErr := os.ReadDir(projectDir)
+	if readErr != nil {
+		t.Fatalf("claimed remote project root was removed after clone failure: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("partial checkout remains after clone failure: %v", entries)
 	}
 }
 
@@ -576,12 +724,13 @@ func TestEnsureRemoteComposeTemplateCheckoutUsesSFTPAndArgvGit(t *testing.T) {
 	if err := yaml.Unmarshal(lockData, &lock); err != nil {
 		t.Fatal(err)
 	}
-	if lock.Template.Repository != repository || lock.Template.Commit != testTemplateCommit {
+	if lock.Template.Repository != repository || lock.Template.Ref != "main" || lock.Template.Commit != testTemplateCommit {
 		t.Fatalf("template lock source = %+v", lock.Template)
 	}
 }
 
 func TestRemoteTemplateCheckoutIsCleanedWhenGitInitFails(t *testing.T) {
+	useNoopComposeCreateProjectMutationLock(t)
 	projectDir := filepath.Join(t.TempDir(), "site")
 	repository := "git@github.com:libops/omeka-s.git"
 	initErr := errors.New("git init failed")
@@ -589,24 +738,26 @@ func TestRemoteTemplateCheckoutIsCleanedWhenGitInitFails(t *testing.T) {
 		run: func(args []string) (string, error) {
 			switch {
 			case len(args) > 1 && args[1] == "clone":
-				createRemoteGitDirectory(t, projectDir)
-				if err := os.WriteFile(filepath.Join(projectDir, ".git", "template-history"), []byte("template\n"), 0o600); err != nil {
+				stagingPath := args[len(args)-1]
+				createRemoteGitDirectory(t, stagingPath)
+				if err := os.WriteFile(filepath.Join(stagingPath, ".git", "template-history"), []byte("template\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				return "", nil
 			case len(args) > 3 && args[3] == "rev-parse":
 				return testTemplateCommit, nil
-			case len(args) == 4 && args[0] == "rm" && args[3] == filepath.Join(projectDir, ".git"):
+			case len(args) == 4 && args[0] == "rm" && filepath.Base(args[3]) == ".git":
 				return "", os.RemoveAll(args[3])
 			case len(args) > 3 && args[3] == "init":
-				if err := os.Mkdir(filepath.Join(projectDir, ".git"), 0o750); err != nil {
+				stagingPath := args[2]
+				if err := os.Mkdir(filepath.Join(stagingPath, ".git"), 0o750); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(projectDir, ".git", "partial"), []byte("partial\n"), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(stagingPath, ".git", "partial"), []byte("partial\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				return "", initErr
-			case len(args) == 4 && args[0] == "rm" && args[3] == projectDir:
+			case len(args) == 4 && args[0] == "rm" && args[1] == "-rf" && args[2] == "--":
 				return "", os.RemoveAll(args[3])
 			default:
 				t.Fatalf("unexpected remote command args: %v", args)
@@ -618,19 +769,25 @@ func TestRemoteTemplateCheckoutIsCleanedWhenGitInitFails(t *testing.T) {
 	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
 	ctx := &config.Context{DockerHostType: config.ContextRemote, ProjectDir: projectDir, SSHHostname: "example.invalid"}
 
-	_, err := sdk.ensureRemoteComposeTemplateCheckout(context.Background(), io.Discard, ComposeCreateRequest{
+	_, err := sdk.EnsureComposeTemplateCheckoutContext(context.Background(), io.Discard, ComposeCreateRequest{
+		CheckoutSource: CheckoutSourceTemplate,
 		TemplateRepo:   repository,
 		TemplateBranch: "main",
 	}, ctx)
 	if err == nil || !strings.Contains(err.Error(), initErr.Error()) {
 		t.Fatalf("ensureRemoteComposeTemplateCheckout() error = %v", err)
 	}
-	if _, err := os.Lstat(projectDir); !os.IsNotExist(err) {
-		t.Fatalf("failed checkout remains after cleanup: %v", err)
+	entries, readErr := os.ReadDir(projectDir)
+	if readErr != nil {
+		t.Fatalf("claimed remote project root was removed after init failure: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed checkout remains after cleanup: %v", entries)
 	}
 }
 
 func TestRemoteTemplateCheckoutIsCleanedWhenLockPublishFails(t *testing.T) {
+	useNoopComposeCreateProjectMutationLock(t)
 	projectDir := filepath.Join(t.TempDir(), "site")
 	repository := "git@github.com:libops/omeka-s.git"
 	publishErr := errors.New("rename failed")
@@ -639,15 +796,15 @@ func TestRemoteTemplateCheckoutIsCleanedWhenLockPublishFails(t *testing.T) {
 		run: func(args []string) (string, error) {
 			switch {
 			case len(args) > 1 && args[1] == "clone":
-				createRemoteGitDirectory(t, projectDir)
+				createRemoteGitDirectory(t, args[len(args)-1])
 				return "", nil
 			case len(args) > 3 && args[3] == "rev-parse":
 				return testTemplateCommit, nil
-			case len(args) == 4 && args[0] == "rm" && args[3] == filepath.Join(projectDir, ".git"):
+			case len(args) == 4 && args[0] == "rm" && filepath.Base(args[3]) == ".git":
 				return "", os.RemoveAll(args[3])
 			case len(args) > 3 && args[3] == "init":
-				return "", os.Mkdir(filepath.Join(projectDir, ".git"), 0o750)
-			case len(args) == 4 && args[0] == "rm" && args[3] == projectDir:
+				return "", os.Mkdir(filepath.Join(args[2], ".git"), 0o750)
+			case len(args) == 4 && args[0] == "rm" && args[1] == "-rf" && args[2] == "--":
 				return "", os.RemoveAll(args[3])
 			default:
 				t.Fatalf("unexpected remote command args: %v", args)
@@ -659,15 +816,20 @@ func TestRemoteTemplateCheckoutIsCleanedWhenLockPublishFails(t *testing.T) {
 	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
 	ctx := &config.Context{DockerHostType: config.ContextRemote, ProjectDir: projectDir, SSHHostname: "example.invalid"}
 
-	_, err := sdk.ensureRemoteComposeTemplateCheckout(context.Background(), io.Discard, ComposeCreateRequest{
+	_, err := sdk.EnsureComposeTemplateCheckoutContext(context.Background(), io.Discard, ComposeCreateRequest{
+		CheckoutSource: CheckoutSourceTemplate,
 		TemplateRepo:   repository,
 		TemplateBranch: "main",
 	}, ctx)
 	if err == nil || !strings.Contains(err.Error(), publishErr.Error()) {
 		t.Fatalf("ensureRemoteComposeTemplateCheckout() error = %v", err)
 	}
-	if _, err := os.Lstat(projectDir); !os.IsNotExist(err) {
-		t.Fatalf("failed checkout remains after cleanup: %v", err)
+	entries, readErr := os.ReadDir(projectDir)
+	if readErr != nil {
+		t.Fatalf("claimed remote project root was removed after lock publish failure: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed checkout remains after cleanup: %v", entries)
 	}
 }
 
@@ -676,4 +838,20 @@ func createRemoteGitDirectory(t *testing.T, projectDir string) {
 	if err := os.MkdirAll(filepath.Join(projectDir, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func createRemoteTemplateCleanupStaging(t *testing.T) (string, string) {
+	t.Helper()
+	projectDir := t.TempDir()
+	stagingPath, err := newComposeCreateStagingPath(projectDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(stagingPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stagingPath, "partial"), []byte("partial\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return projectDir, stagingPath
 }

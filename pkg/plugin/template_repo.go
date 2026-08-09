@@ -63,7 +63,7 @@ func cloneTemplateRepoWithRunner(runCtx context.Context, opts GitTemplateOptions
 	if runCtx == nil {
 		runCtx = context.Background()
 	}
-	if err := runCtx.Err(); err != nil {
+	if err := composeCreateContextError(runCtx); err != nil {
 		return err
 	}
 	templateRepo, err := validateTemplateRepository(opts.TemplateRepo)
@@ -101,11 +101,12 @@ func cloneTemplateRepoWithRunner(runCtx context.Context, opts GitTemplateOptions
 	if err != nil {
 		return err
 	}
+	metadata.Ref = opts.TemplateBranch
 	lock, err := buildTemplateLock(opts.TemplateRepo, metadata, sitectl, plugins)
 	if err != nil {
 		return err
 	}
-	if err := runCtx.Err(); err != nil {
+	if err := composeCreateContextError(runCtx); err != nil {
 		return err
 	}
 
@@ -115,7 +116,7 @@ func cloneTemplateRepoWithRunner(runCtx context.Context, opts GitTemplateOptions
 	if err := initializeTemplateRepoWithRunner(opts, stdout, stderr, runner); err != nil {
 		return err
 	}
-	if err := runCtx.Err(); err != nil {
+	if err := composeCreateContextError(runCtx); err != nil {
 		return err
 	}
 	if err := writeTemplateLockAtomic(opts.ProjectDir, lock); err != nil {

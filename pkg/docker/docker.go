@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/libops/sitectl/pkg/config"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 )
 
 // DockerAPI abstracts the Docker client functionality needed by our package.
@@ -260,6 +262,9 @@ type ExecOptions struct {
 
 // Exec executes a command in a container using the DockerClient
 func (d *DockerClient) Exec(ctx context.Context, opts ExecOptions) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Set defaults
 	if opts.Stdout == nil {
 		opts.Stdout = os.Stdout
@@ -269,6 +274,15 @@ func (d *DockerClient) Exec(ctx context.Context, opts ExecOptions) (int, error) 
 	}
 	if opts.Stdin == nil {
 		opts.Stdin = os.Stdin
+	}
+	var input *execInputController
+	if opts.AttachStdin {
+		var err error
+		input, err = newExecInputController(opts.Stdin)
+		if err != nil {
+			return -1, err
+		}
+		defer input.Close()
 	}
 
 	// Get the underlying client (type assert to *client.Client)
@@ -303,63 +317,17 @@ func (d *DockerClient) Exec(ctx context.Context, opts ExecOptions) (int, error) 
 	}
 	defer resp.Close()
 
-	if ctx != nil {
-		streamDone := make(chan struct{})
-		defer close(streamDone)
-		go func() {
-			select {
-			case <-ctx.Done():
-				resp.Close()
-			case <-streamDone:
-			}
-		}()
+	restoreTerminal, err := prepareExecTerminal(ctx, cli, execID.ID, opts)
+	if err != nil {
+		return -1, err
+	}
+	defer restoreTerminal()
+
+	if err := copyDockerExecStreams(ctx, resp.Conn, resp.Reader, resp.Close, opts, input); err != nil {
+		return -1, err
 	}
 
-	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
-	if opts.AttachStdin {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := io.Copy(resp.Conn, opts.Stdin); err != nil && !isIgnorableExecStreamError(err) {
-				errCh <- err
-				return
-			}
-			if closer, ok := resp.Conn.(interface{ CloseWrite() error }); ok {
-				_ = closer.CloseWrite()
-			}
-		}()
-	}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if opts.Tty {
-			// For TTY, copy directly
-			_, err := io.Copy(opts.Stdout, resp.Reader)
-			errCh <- err
-		} else {
-			// For non-TTY, demux stdout/stderr
-			_, err := stdcopy.StdCopy(opts.Stdout, opts.Stderr, resp.Reader)
-			errCh <- err
-		}
-	}()
-
-	go func() {
-		wg.Wait()
-		close(errCh)
-	}()
-
-	for copyErr := range errCh {
-		if ctx != nil && ctx.Err() != nil {
-			return -1, ctx.Err()
-		}
-		if copyErr != nil && !isIgnorableExecStreamError(copyErr) {
-			return -1, fmt.Errorf("failed to copy exec stream: %w", copyErr)
-		}
-	}
-
-	if ctx != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return -1, ctx.Err()
 	}
 
@@ -370,6 +338,149 @@ func (d *DockerClient) Exec(ctx context.Context, opts ExecOptions) (int, error) 
 	}
 
 	return inspectResp.ExitCode, nil
+}
+
+type execTTYResizer interface {
+	ContainerExecResize(context.Context, string, dockercontainer.ResizeOptions) error
+}
+
+func prepareExecTerminal(ctx context.Context, resizer execTTYResizer, execID string, opts ExecOptions) (func(), error) {
+	file, ok := opts.Stdin.(*os.File)
+	if !opts.Tty || !opts.AttachStdin || !ok || !term.IsTerminal(int(file.Fd())) {
+		return func() {}, nil
+	}
+
+	var restoreOnce sync.Once
+	restore := func() {}
+	oldState, err := term.MakeRaw(int(file.Fd()))
+	if err != nil {
+		slog.Warn("put exec terminal in raw mode", "err", err)
+	} else {
+		restore = func() {
+			restoreOnce.Do(func() {
+				if err := term.Restore(int(file.Fd()), oldState); err != nil {
+					slog.Error("restore exec terminal", "err", err)
+				}
+			})
+		}
+	}
+
+	resize := func() error {
+		width, height, err := term.GetSize(int(file.Fd()))
+		if err != nil {
+			return err
+		}
+		return resizer.ContainerExecResize(ctx, execID, dockercontainer.ResizeOptions{Height: uint(height), Width: uint(width)})
+	}
+	if err := resize(); err != nil {
+		slog.Warn("set initial exec terminal size", "err", err)
+	}
+
+	stopResizeWatcher := watchExecTerminalResizes(ctx, resize)
+
+	return func() {
+		stopResizeWatcher()
+		restore()
+	}, nil
+}
+
+func copyDockerExecStreams(ctx context.Context, conn net.Conn, output io.Reader, closeStream func(), opts ExecOptions, input *execInputController) error {
+	inputDone := make(chan error, 1)
+	if opts.AttachStdin {
+		go func() {
+			_, err := io.Copy(conn, input.Reader)
+			if err == nil || isIgnorableExecStreamError(err) {
+				if closer, ok := conn.(interface{ CloseWrite() error }); ok {
+					_ = closer.CloseWrite()
+				}
+			}
+			inputDone <- err
+		}()
+	} else {
+		inputDone = nil
+	}
+
+	outputDone := make(chan error, 1)
+	go func() {
+		if opts.Tty {
+			_, err := io.Copy(opts.Stdout, output)
+			outputDone <- err
+			return
+		}
+		_, err := stdcopy.StdCopy(opts.Stdout, opts.Stderr, output)
+		outputDone <- err
+	}()
+
+	for {
+		select {
+		case err := <-outputDone:
+			// Remote output EOF owns the attach lifecycle. Closing the Docker
+			// stream and interrupting a pollable stdin prevents an interactive
+			// exec from waiting forever for terminal EOF after the process exits.
+			closeStream()
+			if input != nil && inputDone != nil {
+				input.Cancel()
+				<-inputDone
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err != nil && !isIgnorableExecStreamError(err) {
+				return fmt.Errorf("failed to copy exec output: %w", err)
+			}
+			return nil
+		case err := <-inputDone:
+			inputDone = nil
+			if err != nil && !isIgnorableExecStreamError(err) {
+				closeStream()
+				return fmt.Errorf("failed to copy exec input: %w", err)
+			}
+		case <-ctx.Done():
+			closeStream()
+			if input != nil && inputDone != nil {
+				input.Cancel()
+				<-inputDone
+			}
+			return ctx.Err()
+		}
+	}
+}
+
+var errExecInputCanceled = errors.New("exec input canceled")
+
+type execInputController struct {
+	Reader io.Reader
+	cancel func()
+	close  func()
+}
+
+func (c *execInputController) Cancel() {
+	if c != nil && c.cancel != nil {
+		c.cancel()
+	}
+}
+
+func (c *execInputController) Close() {
+	if c != nil && c.close != nil {
+		c.close()
+	}
+}
+
+func newExecInputController(input io.Reader) (*execInputController, error) {
+	if file, ok := input.(*os.File); ok {
+		return newFileExecInputController(file)
+	}
+	if closer, ok := input.(io.ReadCloser); ok {
+		var closeOnce sync.Once
+		closeInput := func() { closeOnce.Do(func() { _ = closer.Close() }) }
+		return &execInputController{Reader: input, cancel: closeInput, close: closeInput}, nil
+	}
+	switch input.(type) {
+	case *bytes.Buffer, *bytes.Reader, *strings.Reader:
+		return &execInputController{Reader: input, cancel: func() {}, close: func() {}}, nil
+	default:
+		return nil, fmt.Errorf("attached exec stdin %T cannot be canceled safely", input)
+	}
 }
 
 func isIgnorableExecStreamError(err error) bool {

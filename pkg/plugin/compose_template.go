@@ -10,9 +10,11 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
+	corelifecycle "github.com/libops/sitectl/internal/lifecycle"
 	corecomponent "github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/helpers"
@@ -50,6 +52,31 @@ type StandardComposeCommandOptions struct {
 }
 
 var runComposeProjectRemoteShellCommandContext = runRemoteShellCommandContext
+var runComposeProjectLocalArgvContext = runLocalComposeProjectArgvContext
+var runComposeProjectRemoteArgvContext = runRemoteComposeProjectArgvContext
+var composeProjectDockerVisibleLocalPath = config.DockerVisibleLocalPath
+var resolveComposeProjectHostIdentity = composeProjectHostIdentity
+var resolveLocalComposeProjectHostNumericIdentity = config.LocalComposeHostNumericIdentity
+var acquireComposeProjectMutationLock = func(runCtx context.Context, ctx *config.Context) (*config.ProjectMutationLock, error) {
+	return ctx.AcquireProjectMutationLock(runCtx)
+}
+var syncComposeProjectCheckout = func(runCtx context.Context, ctx *config.Context, stdout io.Writer) error {
+	return ctx.SyncGitCheckout(runCtx, stdout, "")
+}
+
+// ComposeProjectHost describes values that differ between local and remote
+// Compose hosts. Use it to build typed argv for tools that need host ownership
+// or a project-directory bind mount without shell interpolation.
+type ComposeProjectHost struct {
+	// ProjectDir is the project path visible to the Docker host for bind mounts.
+	// For local sshfs workspaces it can differ from the CLI's working path.
+	ProjectDir string
+	// UID and GID are numeric POSIX ownership values when HasNumericIdentity is true.
+	UID string
+	GID string
+	// HasNumericIdentity is false for native Windows Compose hosts.
+	HasNumericIdentity bool
+}
 
 // StandardComposeTemplateOptions configures the SDK's standard Compose
 // template create runner and lifecycle commands from one application spec.
@@ -76,6 +103,7 @@ type composeTemplateCreateRunner struct {
 	opts         ComposeTemplateCreateOptions
 	drupalRootfs string
 	bindErr      error
+	operations   composeTemplateCreateOperations
 }
 
 // RegisterComposeTemplateCreateRunner registers the SDK's standard Docker
@@ -193,44 +221,80 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 		return err
 	}
 	applyRemoteIngressCreateDefaults(ctx, req.Decisions)
-	cloned, err := r.sdk.EnsureComposeTemplateCheckoutContext(cmd.Context(), cmd.OutOrStdout(), req, ctx)
+	return withComposeTemplateCreateMutationLock(cmd, ctx, req, func(lockedCmd *cobra.Command) error {
+		return r.runLocked(lockedCmd, ctx, req)
+	})
+}
+
+func (r *composeTemplateCreateRunner) runLocked(cmd *cobra.Command, ctx *config.Context, req ComposeCreateRequest) error {
+	operations := r.operations
+	if operations == nil {
+		operations = defaultComposeTemplateCreateOperations{runner: r}
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
+		return err
+	}
+	cloned, err := operations.checkout(cmd, ctx, req)
 	if err != nil {
+		return errors.Join(err, composeCreateContextError(cmd.Context()))
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
 		return err
 	}
-	if err := refreshCreateContextComposeIdentity(ctx, req); err != nil {
+	if err := operations.refreshContext(cmd, ctx, req); err != nil {
+		return errors.Join(err, composeCreateContextError(cmd.Context()))
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
 		return err
 	}
-	if err := r.sdk.reconcileCreateServiceComponents(cmd.Context(), ctx, req.Decisions); err != nil {
+	if err := operations.reconcileComponents(cmd, ctx, req.Decisions); err != nil {
+		return errors.Join(err, composeCreateContextError(cmd.Context()))
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
 		return err
 	}
 	if !req.ImageOverrides.Empty() {
 		if ctx.DockerHostType == config.ContextRemote {
 			fmt.Fprintln(cmd.ErrOrStderr(), "Warning: modifying remote project files directly; commit and review these changes through version control before promoting them.")
 		}
-		if err := ApplyComposeImageOverridesContext(ctx, req.ImageOverrides); err != nil {
-			return err
+		if err := operations.applyImageOverrides(cmd, ctx, req.ImageOverrides); err != nil {
+			return errors.Join(err, composeCreateContextError(cmd.Context()))
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", ComposeImageOverrideFile)
+		if err := composeCreateContextError(cmd.Context()); err != nil {
+			return err
+		}
 	}
-	needsInit, err := composeTemplateNeedsInit(ctx, r.spec)
+	needsInit, err := operations.needsInit(cmd, ctx, r.spec)
 	if err != nil {
+		return errors.Join(err, composeCreateContextError(cmd.Context()))
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
 		return err
 	}
 	if cloned || needsInit {
-		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeInit); err != nil {
+		if err := operations.runCommands(cmd, ctx, r.spec.DockerComposeInit); err != nil {
+			return errors.Join(err, composeCreateContextError(cmd.Context()))
+		}
+		if err := composeCreateContextError(cmd.Context()); err != nil {
 			return err
 		}
 	}
 	if !req.SetupOnly {
-		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeBuild); err != nil {
+		if err := operations.runCommands(cmd, ctx, r.spec.DockerComposeBuild); err != nil {
+			return errors.Join(err, composeCreateContextError(cmd.Context()))
+		}
+		if err := composeCreateContextError(cmd.Context()); err != nil {
 			return err
 		}
-		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeUp); err != nil {
+		if err := operations.runCommands(cmd, ctx, r.spec.DockerComposeUp); err != nil {
+			return errors.Join(err, composeCreateContextError(cmd.Context()))
+		}
+		if err := composeCreateContextError(cmd.Context()); err != nil {
 			return err
 		}
 	}
-	PrintComposeTemplateCreateSummary(cmd.OutOrStdout(), ctx, r.opts.ReadyMessage, req.SetupOnly)
-	return nil
+	return operations.printSummary(cmd, ctx, r.opts.ReadyMessage, req.SetupOnly)
 }
 
 func applyRemoteIngressCreateDefaults(ctx *config.Context, decisions map[string]corecomponent.ReviewDecision) {
@@ -293,7 +357,11 @@ func (s *SDK) EnsureComposeTemplateCheckout(out io.Writer, req ComposeCreateRequ
 }
 
 // EnsureComposeTemplateCheckoutContext ensures the requested Docker Compose
-// template exists for the target context with cancellation support.
+// template exists for the target context with cancellation support. New
+// templates are cloned and fully validated in a generated staging directory,
+// then published only while the claimed target is still empty. The caller must
+// pass its project mutation lock context and retain that lock when later create
+// mutations must be serialized with checkout publication.
 func (s *SDK) EnsureComposeTemplateCheckoutContext(runCtx context.Context, out io.Writer, req ComposeCreateRequest, ctx *config.Context) (bool, error) {
 	if s == nil {
 		return false, fmt.Errorf("plugin sdk is not initialized")
@@ -310,10 +378,10 @@ func (s *SDK) EnsureComposeTemplateCheckoutContext(runCtx context.Context, out i
 	if ctx == nil || strings.TrimSpace(ctx.ProjectDir) == "" {
 		return false, fmt.Errorf("project directory cannot be empty")
 	}
-	if ctx.DockerHostType == config.ContextRemote {
-		return s.ensureRemoteComposeTemplateCheckout(runCtx, out, req, ctx)
+	if err := ensureComposeCreateProjectDirectory(runCtx, ctx, req); err != nil {
+		return false, err
 	}
-	return s.ensureLocalComposeTemplateCheckout(runCtx, out, req, ctx.ProjectDir)
+	return s.EnsureClaimedComposeTemplateCheckoutContext(runCtx, out, req, ctx)
 }
 
 func (s *SDK) ensureLocalComposeTemplateCheckout(runCtx context.Context, out io.Writer, req ComposeCreateRequest, projectDir string) (bool, error) {
@@ -344,7 +412,7 @@ func (s *SDK) ensureLocalComposeTemplateCheckout(runCtx context.Context, out io.
 		if !ownedProjectDir {
 			return false, err
 		}
-		if cleanupErr := os.RemoveAll(projectDir); cleanupErr != nil {
+		if cleanupErr := cleanupLocalComposeCreateStaging(filepath.Dir(projectDir), projectDir); cleanupErr != nil {
 			return false, errors.Join(err, fmt.Errorf("clean up failed template checkout %q: %w", projectDir, cleanupErr))
 		}
 		return false, err
@@ -366,11 +434,11 @@ func localProjectDirectoryState(runCtx context.Context, projectDir string) (bool
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return true, false, fmt.Errorf("project directory %q must be a real directory, not a symlink or other file", projectDir)
 	}
-	entries, err := os.ReadDir(projectDir)
+	notEmpty, err := localComposeCreateDirectoryHasEntries(projectDir)
 	if err != nil {
 		return false, false, fmt.Errorf("read project directory %q: %w", projectDir, err)
 	}
-	return true, len(entries) > 0, nil
+	return true, notEmpty, nil
 }
 
 func refreshCreateContextComposeIdentity(ctx *config.Context, req ComposeCreateRequest) error {
@@ -438,7 +506,7 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 		ownedProjectDir = true
 		if err := connection.Chmod(ctx.ProjectDir, 0o750); err != nil {
 			claimErr := fmt.Errorf("set remote project directory permissions: %w", err)
-			return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, claimErr)
+			return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, claimErr)
 		}
 	}
 	cloneArgs := []string{"git", "clone"}
@@ -452,41 +520,42 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 		if !ownedProjectDir {
 			return false, cloneErr
 		}
-		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, cloneErr)
+		return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, cloneErr)
 	}
 	metadata, err := inspectRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir)
 	if err != nil {
 		if !ownedProjectDir {
 			return false, err
 		}
-		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, err)
+		return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, err)
 	}
+	metadata.Ref = req.TemplateBranch
 	sitectl, plugins := s.templateLockPackages()
 	lock, err := buildTemplateLock(templateRepo, metadata, sitectl, plugins)
 	if err != nil {
 		if !ownedProjectDir {
 			return false, err
 		}
-		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, err)
+		return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, err)
 	}
 	if err := finalizeRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, req.TemplateBranch, lock); err != nil {
 		finalizeErr := fmt.Errorf("finalize remote template checkout: %w", err)
 		if !ownedProjectDir {
 			return false, finalizeErr
 		}
-		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, finalizeErr)
+		return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, finalizeErr)
 	}
 	return true, nil
 }
 
-// RunComposeProjectCommandList runs a list of shell commands in a compose
-// project's directory, skipping empty command strings.
+// RunComposeProjectCommandList runs a list of constrained lifecycle commands
+// in a compose project's directory, skipping empty command strings.
 func (s *SDK) RunComposeProjectCommandList(cmd *cobra.Command, ctx *config.Context, commands []string) error {
-	for _, command := range commands {
-		command = strings.TrimSpace(command)
-		if command == "" {
-			continue
-		}
+	commandsToRun, err := validateComposeProjectCommandList(cmd.Context(), ctx, ctx.ProjectDir, commands)
+	if err != nil {
+		return err
+	}
+	for _, command := range commandsToRun {
 		fmt.Fprintf(cmd.OutOrStdout(), "Running %s\n", command)
 		if err := s.RunComposeProjectCommandContext(cmd.Context(), ctx, ctx.ProjectDir, cmd.OutOrStdout(), cmd.ErrOrStderr(), command); err != nil {
 			return err
@@ -495,14 +564,69 @@ func (s *SDK) RunComposeProjectCommandList(cmd *cobra.Command, ctx *config.Conte
 	return nil
 }
 
-// RunComposeProjectCommand runs a shell command in a compose project directory,
-// honoring local and remote sitectl contexts.
+func validateComposeProjectCommandList(runCtx context.Context, ctx *config.Context, projectDir string, commands []string) ([]string, error) {
+	commandsToRun := make([]string, 0, len(commands))
+	for _, command := range commands {
+		command = strings.TrimSpace(command)
+		if command == "" {
+			continue
+		}
+		if err := validateComposeProjectCommandContext(runCtx, ctx, projectDir, command); err != nil {
+			return nil, fmt.Errorf("validate lifecycle command %q: %w", command, err)
+		}
+		commandsToRun = append(commandsToRun, command)
+	}
+	return commandsToRun, nil
+}
+
+func validateComposeProjectCommandContext(runCtx context.Context, ctx *config.Context, projectDir, command string) error {
+	if ctx == nil {
+		return fmt.Errorf("context is nil")
+	}
+	if artifactPath, handled, err := composeProjectHostUIDArtifactPath(projectDir, command); err != nil {
+		return err
+	} else if handled {
+		if err := ctx.ValidateProjectFileWrite(projectDir, artifactPath); err != nil {
+			return fmt.Errorf("validate host uid artifact: %w", err)
+		}
+		_, _, err := composeProjectHostIdentity(runCtx, ctx)
+		return err
+	}
+	expanded, err := expandComposeProjectHostIdentity(runCtx, ctx, command)
+	if err != nil {
+		return err
+	}
+	list, err := corelifecycle.Parse(expanded)
+	if err != nil {
+		return err
+	}
+	for _, segment := range list.Commands {
+		argv, _, err := corelifecycle.ArgvInProject(ctx, projectDir, segment)
+		if err != nil {
+			return fmt.Errorf("parse lifecycle command %q: %w", segment, err)
+		}
+		script, resolved, err := corelifecycle.ProjectScriptPath(projectDir, argv)
+		if err != nil {
+			return err
+		}
+		if script == "" {
+			continue
+		}
+		if err := ctx.ValidateProjectRegularFile(projectDir, resolved); err != nil {
+			return fmt.Errorf("checked-in lifecycle script %q is invalid: %w", script, err)
+		}
+	}
+	return nil
+}
+
+// RunComposeProjectCommand runs a constrained lifecycle command in a compose
+// project directory, honoring local and remote sitectl contexts.
 func (s *SDK) RunComposeProjectCommand(ctx *config.Context, projectDir string, stdout, stderr io.Writer, command string) error {
 	return s.RunComposeProjectCommandContext(context.Background(), ctx, projectDir, stdout, stderr, command)
 }
 
-// RunComposeProjectCommandContext runs a shell command in a compose project
-// directory with cancellation support.
+// RunComposeProjectCommandContext runs a constrained lifecycle command in a
+// compose project directory with cancellation support.
 func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *config.Context, projectDir string, stdout, stderr io.Writer, command string) error {
 	if ctx == nil {
 		return fmt.Errorf("context is nil")
@@ -513,24 +637,116 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}
-	composeUp := isComposeProjectUpCommand(command)
-	command = ctx.DockerComposeShellCommand(command)
-	config.LogDockerComposeCommand(ctx, command)
-	if ctx.DockerHostType == config.ContextRemote {
-		remoteCommand := command
-		if strings.TrimSpace(projectDir) != "" {
-			remoteCommand = fmt.Sprintf("cd %s && %s", shellQuote(projectDir), command)
-		}
-		_, err := runComposeProjectRemoteShellCommandContext(runCtx, ctx, stdout, stderr, remoteCommand)
+	if err := validateComposeProjectCommandContext(runCtx, ctx, projectDir, command); err != nil {
+		return fmt.Errorf("validate lifecycle command %q: %w", command, err)
+	}
+	handled, err := runComposeProjectHostUIDArtifact(runCtx, ctx, projectDir, command)
+	if err != nil || handled {
 		return err
 	}
-	localCmd := exec.CommandContext(runCtx, "bash", "-lc", command) // #nosec G204 -- command text is assembled from template-owned command lists and shell-quoted inputs.
-	localCmd.Dir = projectDir
-	localCmd.Stdout = stdout
-	localCmd.Stderr = stderr
-	localCmd.Env = os.Environ()
+	command, err = expandComposeProjectHostIdentity(runCtx, ctx, command)
+	if err != nil {
+		return err
+	}
+	list, err := corelifecycle.Parse(command)
+	if err != nil {
+		return err
+	}
+	type commandPlan struct {
+		argv      []string
+		composeUp bool
+	}
+	plans := make([]commandPlan, len(list.Commands))
+	for index, segment := range list.Commands {
+		argv, composeUp, err := corelifecycle.ArgvInProject(ctx, projectDir, segment)
+		if err != nil {
+			return fmt.Errorf("parse lifecycle command %q: %w", segment, err)
+		}
+		plans[index] = commandPlan{argv: argv, composeUp: composeUp}
+	}
+
+	lastSucceeded := true
+	var lastErr error
+	for index := range list.Commands {
+		if index > 0 {
+			switch list.Operators[index-1] {
+			case "&&":
+				if !lastSucceeded {
+					continue
+				}
+			case "||":
+				if lastSucceeded {
+					continue
+				}
+			}
+		}
+		argv := plans[index].argv
+		composeUp := plans[index].composeUp
+		loggedCommand := shellJoin(argv)
+		if len(argv) >= 2 && argv[0] == "docker" && argv[1] == "compose" {
+			loggedCommand = "docker compose"
+			if len(argv) > 2 {
+				loggedCommand += " " + shellJoin(argv[2:])
+			}
+		}
+		config.LogDockerComposeCommand(ctx, loggedCommand)
+		if ctx.DockerHostType == config.ContextRemote {
+			remoteCommand := shellJoin(argv)
+			if strings.TrimSpace(projectDir) != "" {
+				remoteCommand = fmt.Sprintf("cd %s && %s", shellQuote(projectDir), remoteCommand)
+			}
+			_, lastErr = runComposeProjectRemoteShellCommandContext(runCtx, ctx, stdout, stderr, remoteCommand)
+		} else {
+			localCmd := exec.CommandContext(runCtx, argv[0], argv[1:]...) // #nosec G204 -- constrained lifecycle metadata is parsed into distinct argv entries.
+			localCmd.Dir = projectDir
+			localCmd.Stdout = stdout
+			localCmd.Stderr = stderr
+			localCmd.Env = os.Environ()
+			if composeUp {
+				envValues, messages, err := ctx.PrepareComposeUpPortOverride()
+				if err != nil {
+					return err
+				}
+				for _, message := range messages {
+					if stderr != nil {
+						fmt.Fprintln(stderr, message)
+					}
+				}
+				localCmd.Env = config.AppendEnvOverrides(localCmd.Env, envValues)
+			}
+			lastErr = localCmd.Run()
+		}
+		lastSucceeded = lastErr == nil
+	}
+	if !lastSucceeded {
+		return fmt.Errorf("run lifecycle command %q: %w", command, lastErr)
+	}
+	return nil
+}
+
+// RunComposeProjectArgvContext executes one dynamic argv command without
+// serializing and reparsing its arguments as lifecycle metadata. It preserves
+// literal dollar signs, line breaks, spaces, and metacharacters in arguments.
+func (s *SDK) RunComposeProjectArgvContext(runCtx context.Context, ctx *config.Context, projectDir string, stdin io.Reader, stdout, stderr io.Writer, argv []string) error {
+	if ctx == nil {
+		return fmt.Errorf("context is nil")
+	}
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+	if err := runCtx.Err(); err != nil {
+		return err
+	}
+	if err := validateComposeProjectArgv(argv); err != nil {
+		return err
+	}
+
+	effectiveContext := *ctx
+	effectiveContext.ProjectDir = projectDir
+	preparedArgv, composeUp := effectiveContext.DockerComposeArgv(argv)
+	env := os.Environ()
 	if composeUp {
-		envValues, messages, err := ctx.PrepareComposeUpPortOverride()
+		envValues, messages, err := effectiveContext.PrepareComposeUpPortOverride()
 		if err != nil {
 			return err
 		}
@@ -539,33 +755,155 @@ func (s *SDK) RunComposeProjectCommandContext(runCtx context.Context, ctx *confi
 				fmt.Fprintln(stderr, message)
 			}
 		}
-		localCmd.Env = config.AppendEnvOverrides(localCmd.Env, envValues)
+		env = config.AppendEnvOverrides(env, envValues)
 	}
-	return localCmd.Run()
+	operation := dynamicArgvOperation(preparedArgv)
+	config.LogDockerComposeCommand(&effectiveContext, operation)
+
+	var err error
+	if effectiveContext.DockerHostType == config.ContextRemote {
+		err = runComposeProjectRemoteArgvContext(runCtx, &effectiveContext, projectDir, stdin, stdout, stderr, preparedArgv)
+	} else {
+		err = runComposeProjectLocalArgvContext(runCtx, projectDir, stdin, stdout, stderr, env, preparedArgv)
+	}
+	if err != nil {
+		return fmt.Errorf("run compose project operation %q: %w", operation, err)
+	}
+	return nil
 }
 
-func isComposeProjectUpCommand(command string) bool {
-	fields := strings.Fields(strings.TrimSpace(command))
-	if len(fields) == 0 {
-		return false
+func validateComposeProjectArgv(argv []string) error {
+	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
+		return fmt.Errorf("compose project argv cannot be empty")
 	}
-	if fields[0] == "make" {
-		for _, field := range fields[1:] {
-			if field == "up" {
-				return true
+	for _, argument := range argv {
+		if strings.ContainsRune(argument, '\x00') {
+			return fmt.Errorf("compose project argv cannot contain NUL")
+		}
+	}
+	return nil
+}
+
+func dynamicArgvOperation(argv []string) string {
+	if len(argv) >= 2 && argv[0] == "docker" && argv[1] == "compose" {
+		for _, argument := range argv[2:] {
+			switch argument {
+			case "build", "config", "cp", "create", "down", "events", "exec", "images", "kill", "logs", "ls", "pause", "port", "ps", "pull", "push", "restart", "rm", "run", "start", "stop", "top", "unpause", "up", "version", "wait", "watch":
+				return "docker compose " + argument
 			}
 		}
-		return false
+		return "docker compose"
 	}
-	for i := 0; i+2 < len(fields); i++ {
-		if fields[i] == "docker" && fields[i+1] == "compose" && fields[i+2] == "up" {
-			return true
+	if len(argv) == 0 {
+		return ""
+	}
+	return filepath.Base(argv[0])
+}
+
+// RunComposeProjectArgv executes one dynamic argv command in a Compose project.
+func (s *SDK) RunComposeProjectArgv(ctx *config.Context, projectDir string, stdin io.Reader, stdout, stderr io.Writer, argv []string) error {
+	return s.RunComposeProjectArgvContext(context.Background(), ctx, projectDir, stdin, stdout, stderr, argv)
+}
+
+func runLocalComposeProjectArgvContext(runCtx context.Context, projectDir string, stdin io.Reader, stdout, stderr io.Writer, env, argv []string) error {
+	command := exec.CommandContext(runCtx, argv[0], argv[1:]...) // #nosec G204 -- argv is already split and is passed directly without shell evaluation.
+	command.Dir = projectDir
+	command.Stdin = stdin
+	command.Stdout = stdout
+	command.Stderr = stderr
+	command.Env = env
+	return command.Run()
+}
+
+func runRemoteComposeProjectArgvContext(runCtx context.Context, ctx *config.Context, projectDir string, stdin io.Reader, stdout, stderr io.Writer, argv []string) error {
+	remoteCommand := shellJoin(argv)
+	if strings.TrimSpace(projectDir) != "" {
+		remoteCommand = fmt.Sprintf("cd %s && %s", shellQuote(projectDir), remoteCommand)
+	}
+	_, err := runRemoteShellCommandInputContext(runCtx, ctx, stdin, stdout, stderr, remoteCommand)
+	return err
+}
+
+func runComposeProjectHostUIDArtifact(runCtx context.Context, ctx *config.Context, projectDir, command string) (bool, error) {
+	artifactPath, handled, err := composeProjectHostUIDArtifactPath(projectDir, command)
+	if err != nil || !handled {
+		return handled, err
+	}
+	uid, _, err := composeProjectHostIdentity(runCtx, ctx)
+	if err != nil {
+		return true, err
+	}
+	if err := ctx.WriteProjectFile(projectDir, artifactPath, []byte(uid+"\n")); err != nil {
+		return true, fmt.Errorf("write host uid artifact %s: %w", filepath.Base(artifactPath), err)
+	}
+	return true, nil
+}
+
+func composeProjectHostUIDArtifactPath(projectDir, command string) (string, bool, error) {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) != 4 || fields[0] != "id" || fields[1] != "-u" || fields[2] != ">" {
+		return "", false, nil
+	}
+	artifact := filepath.Clean(fields[3])
+	if artifact == "." || artifact == ".." || filepath.IsAbs(artifact) || strings.HasPrefix(artifact, ".."+string(filepath.Separator)) {
+		return "", true, fmt.Errorf("host uid artifact path must stay inside the compose project: %q", fields[3])
+	}
+	if strings.TrimSpace(projectDir) == "" {
+		return "", true, fmt.Errorf("compose project directory cannot be empty for host uid artifact %q", fields[3])
+	}
+	return filepath.Join(projectDir, artifact), true, nil
+}
+
+func expandComposeProjectHostIdentity(runCtx context.Context, ctx *config.Context, command string) (string, error) {
+	if !strings.Contains(command, "$(id -u)") && !strings.Contains(command, "$(id -g)") {
+		return command, nil
+	}
+	uid, gid, err := resolveComposeProjectHostIdentity(runCtx, ctx)
+	if err != nil {
+		return "", err
+	}
+	return corelifecycle.ExpandHostIdentity(command, uid, gid)
+}
+
+func composeProjectHostIdentity(runCtx context.Context, ctx *config.Context) (string, string, error) {
+	if ctx.DockerHostType == config.ContextRemote {
+		uid, err := ctx.RunQuietCommandContext(runCtx, exec.Command("id", "-u"))
+		if err != nil {
+			return "", "", fmt.Errorf("resolve remote host uid: %w", err)
 		}
+		gid, err := ctx.RunQuietCommandContext(runCtx, exec.Command("id", "-g"))
+		if err != nil {
+			return "", "", fmt.Errorf("resolve remote host gid: %w", err)
+		}
+		return validateComposeProjectHostID(uid, gid)
 	}
-	return false
+	uid, gid, available, err := resolveLocalComposeProjectHostNumericIdentity()
+	if err != nil {
+		return "", "", err
+	}
+	if !available {
+		return "0", "0", nil
+	}
+	return validateComposeProjectHostID(uid, gid)
+}
+
+func validateComposeProjectHostID(uid, gid string) (string, string, error) {
+	uid = strings.TrimSpace(uid)
+	gid = strings.TrimSpace(gid)
+	if _, err := strconv.ParseUint(uid, 10, 32); err != nil {
+		return "", "", fmt.Errorf("invalid host uid %q", uid)
+	}
+	if _, err := strconv.ParseUint(gid, 10, 32); err != nil {
+		return "", "", fmt.Errorf("invalid host gid %q", gid)
+	}
+	return uid, gid, nil
 }
 
 func runRemoteShellCommandContext(runCtx context.Context, ctx *config.Context, stdout, stderr io.Writer, command string) (string, error) {
+	return runRemoteShellCommandInputContext(runCtx, ctx, nil, stdout, stderr, command)
+}
+
+func runRemoteShellCommandInputContext(runCtx context.Context, ctx *config.Context, stdin io.Reader, stdout, stderr io.Writer, command string) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("context is nil")
 	}
@@ -616,10 +954,11 @@ func runRemoteShellCommandContext(runCtx context.Context, ctx *config.Context, s
 	} else {
 		session.Stderr = &errBuf
 	}
+	if stdin != nil {
+		session.Stdin = stdin
+	}
 
-	remoteCmd := exec.Command("bash", "-lc", command) // #nosec G204 -- command text is assembled from template-owned command lists and shell-quoted inputs.
-	remoteCommand := shellJoin(remoteCmd.Args)
-	if err := session.Run(remoteCommand); err != nil {
+	if err := session.Run(command); err != nil {
 		if runCtx.Err() != nil {
 			return strings.TrimRight(outBuf.String()+errBuf.String(), "\n"), runCtx.Err()
 		}
@@ -707,7 +1046,7 @@ func AddStandardComposeCommands(s *SDK, opts StandardComposeCommandOptions) {
 		Use:   "status",
 		Short: fmt.Sprintf("Show Docker Compose service status for the active %s stack", displayName),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return s.RunActiveComposeProjectCommand(cmd, "docker compose ps")
+			return s.RunActiveComposeProjectArgv(cmd, []string{"docker", "compose", "ps"})
 		},
 	})
 	s.AddCommand(&cobra.Command{
@@ -715,11 +1054,9 @@ func AddStandardComposeCommands(s *SDK, opts StandardComposeCommandOptions) {
 		Short: fmt.Sprintf("Show recent Docker Compose logs for the active %s stack", displayName),
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			command := fmt.Sprintf("docker compose logs --tail=%d", tail)
-			if len(args) > 0 {
-				command += " " + shellJoin(args)
-			}
-			return s.RunActiveComposeProjectCommand(cmd, command)
+			argv := []string{"docker", "compose", "logs", fmt.Sprintf("--tail=%d", tail)}
+			argv = append(argv, args...)
+			return s.RunActiveComposeProjectArgv(cmd, argv)
 		},
 	})
 	s.AddCommand(&cobra.Command{
@@ -737,9 +1074,9 @@ func (s *SDK) AddStandardComposeCommands(opts StandardComposeCommandOptions) {
 	AddStandardComposeCommands(s, opts)
 }
 
-// RunActiveComposeProjectCommandList runs shell commands in the active
-// context's compose project directory.
-func (s *SDK) RunActiveComposeProjectCommandList(cmd *cobra.Command, commands []string) error {
+// RunActiveComposeProjectCommandList runs constrained lifecycle commands in
+// the active context's compose project directory.
+func (s *SDK) RunActiveComposeProjectCommandList(cmd *cobra.Command, commands []string) (returnErr error) {
 	ctx, err := s.ContextFromCommand(cmd)
 	if err != nil {
 		return err
@@ -747,6 +1084,16 @@ func (s *SDK) RunActiveComposeProjectCommandList(cmd *cobra.Command, commands []
 	if strings.TrimSpace(ctx.ProjectDir) == "" {
 		return fmt.Errorf("active context does not define a project directory")
 	}
+	lock, err := acquireComposeProjectMutationLock(cmd.Context(), ctx)
+	if err != nil {
+		return fmt.Errorf("acquire project mutation lock: %w", err)
+	}
+	originalContext := cmd.Context()
+	cmd.SetContext(lock.Context())
+	defer func() {
+		cmd.SetContext(originalContext)
+		returnErr = errors.Join(returnErr, lock.Release())
+	}()
 	return s.RunComposeProjectCommandList(cmd, ctx, commands)
 }
 
@@ -761,7 +1108,7 @@ func DefaultComposeRolloutCommands() []string {
 
 // RunActiveComposeProjectRollout syncs the active project from the checkout's
 // upstream branch before running rollout commands.
-func (s *SDK) RunActiveComposeProjectRollout(cmd *cobra.Command, commands []string) error {
+func (s *SDK) RunActiveComposeProjectRollout(cmd *cobra.Command, commands []string) (returnErr error) {
 	ctx, err := s.ContextFromCommand(cmd)
 	if err != nil {
 		return err
@@ -769,15 +1116,28 @@ func (s *SDK) RunActiveComposeProjectRollout(cmd *cobra.Command, commands []stri
 	if strings.TrimSpace(ctx.ProjectDir) == "" {
 		return fmt.Errorf("active context does not define a project directory")
 	}
-	if syncCommand := ctx.GitSyncShellCommand(""); strings.TrimSpace(syncCommand) != "" {
-		commands = append([]string{syncCommand}, commands...)
+	lock, err := acquireComposeProjectMutationLock(cmd.Context(), ctx)
+	if err != nil {
+		return fmt.Errorf("acquire project mutation lock: %w", err)
+	}
+	originalContext := cmd.Context()
+	cmd.SetContext(lock.Context())
+	defer func() {
+		cmd.SetContext(originalContext)
+		returnErr = errors.Join(returnErr, lock.Release())
+	}()
+	if _, err := validateComposeProjectCommandList(cmd.Context(), ctx, ctx.ProjectDir, commands); err != nil {
+		return err
+	}
+	if err := syncComposeProjectCheckout(cmd.Context(), ctx, cmd.OutOrStdout()); err != nil {
+		return fmt.Errorf("sync Git checkout before Compose rollout: %w", err)
 	}
 	return s.RunComposeProjectCommandList(cmd, ctx, commands)
 }
 
-// RunActiveComposeProjectCommand runs a shell command in the active context's
-// compose project directory.
-func (s *SDK) RunActiveComposeProjectCommand(cmd *cobra.Command, command string) error {
+// RunActiveComposeProjectArgv executes one dynamic argv command in the active
+// Compose project without reparsing user-controlled arguments.
+func (s *SDK) RunActiveComposeProjectArgv(cmd *cobra.Command, argv []string) (returnErr error) {
 	ctx, err := s.ContextFromCommand(cmd)
 	if err != nil {
 		return err
@@ -785,7 +1145,125 @@ func (s *SDK) RunActiveComposeProjectCommand(cmd *cobra.Command, command string)
 	if strings.TrimSpace(ctx.ProjectDir) == "" {
 		return fmt.Errorf("active context does not define a project directory")
 	}
-	return s.RunComposeProjectCommandContext(cmd.Context(), ctx, ctx.ProjectDir, cmd.OutOrStdout(), cmd.ErrOrStderr(), command)
+	lock, err := acquireComposeProjectMutationLock(cmd.Context(), ctx)
+	if err != nil {
+		return fmt.Errorf("acquire project mutation lock: %w", err)
+	}
+	originalContext := cmd.Context()
+	cmd.SetContext(lock.Context())
+	defer func() {
+		cmd.SetContext(originalContext)
+		returnErr = errors.Join(returnErr, lock.Release())
+	}()
+	return s.RunComposeProjectArgvContext(cmd.Context(), ctx, ctx.ProjectDir, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), argv)
+}
+
+// RunActiveComposeProjectArgvList validates and executes an ordered dynamic
+// argv sequence while holding one project mutation lock across every command.
+// Use it when later commands depend on files or container state created by an
+// earlier command and interleaving another operator workflow would be unsafe.
+func (s *SDK) RunActiveComposeProjectArgvList(cmd *cobra.Command, commands [][]string) (returnErr error) {
+	ctx, err := s.ContextFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(ctx.ProjectDir) == "" {
+		return fmt.Errorf("active context does not define a project directory")
+	}
+	for index, argv := range commands {
+		if err := validateComposeProjectArgv(argv); err != nil {
+			return fmt.Errorf("validate compose project argv %d: %w", index+1, err)
+		}
+	}
+	if len(commands) == 0 {
+		return nil
+	}
+	lock, err := acquireComposeProjectMutationLock(cmd.Context(), ctx)
+	if err != nil {
+		return fmt.Errorf("acquire project mutation lock: %w", err)
+	}
+	originalContext := cmd.Context()
+	cmd.SetContext(lock.Context())
+	defer func() {
+		cmd.SetContext(originalContext)
+		returnErr = errors.Join(returnErr, lock.Release())
+	}()
+	for _, argv := range commands {
+		if err := s.RunComposeProjectArgvContext(cmd.Context(), ctx, ctx.ProjectDir, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), argv); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RunActiveComposeProjectHostArgv resolves the active local or remote host's
+// UID, GID, and Docker-visible project directory before building and executing
+// dynamic argv. This replaces shell placeholders such as $(id -u) and $PWD.
+func (s *SDK) RunActiveComposeProjectHostArgv(cmd *cobra.Command, build func(ComposeProjectHost) []string) (returnErr error) {
+	if build == nil {
+		return fmt.Errorf("compose project argv builder cannot be nil")
+	}
+	ctx, err := s.ContextFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(ctx.ProjectDir) == "" {
+		return fmt.Errorf("active context does not define a project directory")
+	}
+	lock, err := acquireComposeProjectMutationLock(cmd.Context(), ctx)
+	if err != nil {
+		return fmt.Errorf("acquire project mutation lock: %w", err)
+	}
+	originalContext := cmd.Context()
+	cmd.SetContext(lock.Context())
+	defer func() {
+		cmd.SetContext(originalContext)
+		returnErr = errors.Join(returnErr, lock.Release())
+	}()
+	host, err := resolveComposeProjectHost(cmd.Context(), ctx)
+	if err != nil {
+		return err
+	}
+	argv := build(host)
+	return s.RunComposeProjectArgvContext(cmd.Context(), ctx, ctx.ProjectDir, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), argv)
+}
+
+func resolveComposeProjectHost(runCtx context.Context, ctx *config.Context) (ComposeProjectHost, error) {
+	if ctx == nil {
+		return ComposeProjectHost{}, fmt.Errorf("context is nil")
+	}
+	host := ComposeProjectHost{ProjectDir: composeProjectHostDirectory(ctx)}
+	if ctx.DockerHostType == config.ContextLocal {
+		uid, gid, available, err := resolveLocalComposeProjectHostNumericIdentity()
+		if err != nil {
+			return ComposeProjectHost{}, err
+		}
+		host.UID = uid
+		host.GID = gid
+		host.HasNumericIdentity = available
+		return host, nil
+	}
+	uid, gid, err := resolveComposeProjectHostIdentity(runCtx, ctx)
+	if err != nil {
+		return ComposeProjectHost{}, err
+	}
+	host.UID = uid
+	host.GID = gid
+	host.HasNumericIdentity = true
+	return host, nil
+}
+
+func composeProjectHostDirectory(ctx *config.Context) string {
+	if ctx == nil || ctx.DockerHostType != config.ContextLocal {
+		if ctx == nil {
+			return ""
+		}
+		return ctx.ProjectDir
+	}
+	if projectDir := composeProjectDockerVisibleLocalPath(ctx.ProjectDir); strings.TrimSpace(projectDir) != "" {
+		return projectDir
+	}
+	return ctx.ProjectDir
 }
 
 // ContextFromCommand loads the sitectl context selected by a Cobra command.
@@ -813,33 +1291,22 @@ func (s *SDK) ContextFromCommand(cmd *cobra.Command) (*config.Context, error) {
 	return s.GetContext()
 }
 
-// DockerComposeExecCommand builds a shell-safe "docker compose exec -T" command
-// for a service and argv-style command.
-func DockerComposeExecCommand(service string, args ...string) string {
+// DockerComposeExecArgv builds typed argv for a non-TTY Compose exec command.
+func DockerComposeExecArgv(service string, args ...string) []string {
 	invocation := make([]string, 0, len(args)+5)
 	invocation = append(invocation, "docker", "compose", "exec", "-T", service)
 	invocation = append(invocation, args...)
-	return ShellJoin(invocation)
+	return invocation
 }
 
-// ShellJoin shell-quotes and joins argv-style command arguments.
-func ShellJoin(args []string) string {
+func shellJoin(args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
-		quoted = append(quoted, ShellQuote(arg))
+		quoted = append(quoted, shellQuote(arg))
 	}
 	return strings.Join(quoted, " ")
 }
 
-// ShellQuote quotes a value for POSIX shell command construction.
-func ShellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
-}
-
-func shellJoin(args []string) string {
-	return ShellJoin(args)
-}
-
 func shellQuote(value string) string {
-	return ShellQuote(value)
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

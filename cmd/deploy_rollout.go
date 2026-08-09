@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/kballard/go-shellquote"
@@ -45,24 +43,50 @@ func runDeployComposeRollout(cmd *cobra.Command, ctx *config.Context, commands [
 			continue
 		}
 
-		composeUp := isDockerComposeSubcommand(commandText, "up")
-		commandText = ctx.DockerComposeShellCommand(commandText)
-		fmt.Fprintf(cmd.OutOrStdout(), "Running %s\n", commandText)
-		command := exec.Command("bash", "-lc", commandText) // #nosec G204 -- commands come from trusted plugin create metadata.
-		command.Dir = ctx.ProjectDir
-		if composeUp {
-			envValues, messages, err := ctx.PrepareComposeUpPortOverride()
-			if err != nil {
-				return err
-			}
-			for _, message := range messages {
-				fmt.Fprintln(cmd.ErrOrStderr(), message)
-			}
-			command.Env = config.AppendEnvOverrides(os.Environ(), envValues)
+		if err := runLifecycleCommandList(cmd, ctx, commandText, nil, true); err != nil {
+			return err
 		}
-		if _, err := ctx.RunCommandContext(cmd.Context(), command); err != nil {
-			return fmt.Errorf("run %s: %w", commandText, err)
+	}
+	return nil
+}
+
+func validateDeployComposeRollout(ctx *config.Context, commands []string) error {
+	for _, commandText := range commands {
+		commandText = strings.TrimSpace(commandText)
+		if commandText == "" {
+			continue
 		}
+		_, plans, err := planLifecycleCommandList(ctx, commandText)
+		if err != nil {
+			return fmt.Errorf("validate compose rollout command %q: %w", commandText, err)
+		}
+		if err := validateLifecycleProjectScripts(ctx, commandText, plans); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateDeployRolloutFinalStart rejects plugin rollout metadata that could
+// finish without a Compose project start. Preparation-only and
+// conditional final commands must fail before Git or runtime state changes.
+func validateDeployRolloutFinalStart(ctx *config.Context, commands []string) error {
+	finalCommand := ""
+	for _, commandText := range commands {
+		if strings.TrimSpace(commandText) != "" {
+			finalCommand = strings.TrimSpace(commandText)
+		}
+	}
+	if finalCommand == "" {
+		return fmt.Errorf("plugin compose rollout must include an unconditional final start after preparation")
+	}
+
+	list, plans, err := planLifecycleCommandList(ctx, finalCommand)
+	if err != nil {
+		return fmt.Errorf("validate final compose rollout command %q: %w", finalCommand, err)
+	}
+	if len(list.commands) != 1 || len(plans) != 1 || !plans[0].composeUp {
+		return fmt.Errorf("plugin compose rollout must end with one unconditional start command; final command %q does not", finalCommand)
 	}
 	return nil
 }

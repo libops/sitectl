@@ -4,6 +4,8 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -43,5 +45,35 @@ func TestNormalizeFileNotExistErrorMarksRemotePhrasing(t *testing.T) {
 	err := normalizeFileNotExistError(errors.New(`sftp: "no such file"`))
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("normalizeFileNotExistError() = %v, want fs.ErrNotExist", err)
+	}
+}
+
+func TestRemoteDirectoryPrefixesUsePOSIXPaths(t *testing.T) {
+	t.Parallel()
+
+	want := []string{"/srv", "/srv/customers", "/srv/customers/museum"}
+	got := remoteDirectoryPrefixes(`/srv\customers//./museum`)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("remoteDirectoryPrefixes() = %v, want %v", got, want)
+	}
+	for _, prefix := range got {
+		if strings.Contains(prefix, `\`) {
+			t.Fatalf("remote directory prefix contains a client-platform separator: %q", prefix)
+		}
+	}
+}
+
+func TestRemoteRelativePathUsesPOSIXContainment(t *testing.T) {
+	t.Parallel()
+
+	got, err := remoteRelativePath(`/srv\customers\museum`, `/srv/customers/museum/config/settings.yml`)
+	if err != nil {
+		t.Fatalf("remoteRelativePath() error = %v", err)
+	}
+	if want := "config/settings.yml"; got != want {
+		t.Fatalf("remoteRelativePath() = %q, want %q", got, want)
+	}
+	if _, err := remoteRelativePath("/srv/customers/museum", "/srv/customers/other/settings.yml"); err == nil {
+		t.Fatal("remoteRelativePath() accepted a path outside the remote root")
 	}
 }

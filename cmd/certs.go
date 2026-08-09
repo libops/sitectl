@@ -63,25 +63,50 @@ func certsTrustCommand() *cobra.Command {
 			if err = temp.Close(); err != nil {
 				return err
 			}
-			var trust *exec.Cmd
-			switch runtime.GOOS {
-			case "darwin":
-				trust = exec.CommandContext(cmd.Context(), "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", filepath.Join(os.Getenv("HOME"), "Library/Keychains/login.keychain-db"), path) // #nosec G204 -- paths are distinct argv entries.
-			case "linux":
-				trust = exec.CommandContext(cmd.Context(), "sudo", "sh", "-euc", `install -m 0644 "$1" /usr/local/share/ca-certificates/libops-local.crt && update-ca-certificates`, "sitectl-certs", path) // #nosec G204 -- temporary path is passed as positional $1 to a fixed script.
-			case "windows":
-				trust = exec.CommandContext(cmd.Context(), "certutil", "-addstore", "-user", "Root", path) // #nosec G204 -- temporary path is a distinct argv entry.
-			default:
-				return fmt.Errorf("automatic trust is not supported on %s; import %s manually", runtime.GOOS, path)
+			home := ""
+			if runtime.GOOS == "darwin" {
+				home, err = os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("resolve user home for login keychain: %w", err)
+				}
 			}
-			trust.Stdout = cmd.OutOrStdout()
-			trust.Stderr = cmd.ErrOrStderr()
-			trust.Stdin = cmd.InOrStdin()
-			if err := trust.Run(); err != nil {
-				return fmt.Errorf("trust local CA: %w", err)
+			commands, err := certificateTrustCommandArgs(runtime.GOOS, home, path)
+			if err != nil {
+				return err
+			}
+			for index, args := range commands {
+				trust := exec.CommandContext(cmd.Context(), args[0], args[1:]...) // #nosec G204 -- platform-specific executable is fixed and paths remain distinct argv entries.
+				trust.Stdout = cmd.OutOrStdout()
+				trust.Stderr = cmd.ErrOrStderr()
+				trust.Stdin = cmd.InOrStdin()
+				if err := trust.Run(); err != nil {
+					return fmt.Errorf("trust local CA (step %d of %d): %w", index+1, len(commands), err)
+				}
 			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), "Local certificate authority trusted. Restart browsers that cache certificate stores.")
 			return err
 		},
+	}
+}
+
+func certificateTrustCommandArgs(goos, home, certificatePath string) ([][]string, error) {
+	switch goos {
+	case "darwin":
+		if home == "" {
+			return nil, fmt.Errorf("user home cannot be empty on darwin")
+		}
+		return [][]string{{
+			"security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k",
+			filepath.Join(home, "Library/Keychains/login.keychain-db"), certificatePath,
+		}}, nil
+	case "linux":
+		return [][]string{
+			{"sudo", "install", "-m", "0644", certificatePath, "/usr/local/share/ca-certificates/libops-local.crt"},
+			{"sudo", "update-ca-certificates"},
+		}, nil
+	case "windows":
+		return [][]string{{"certutil", "-addstore", "-user", "Root", certificatePath}}, nil
+	default:
+		return nil, fmt.Errorf("automatic trust is not supported on %s; import certs/rootCA.pem manually", goos)
 	}
 }

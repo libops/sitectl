@@ -71,6 +71,14 @@ func TestRemoteUploadTempPathStaysBesideDestination(t *testing.T) {
 	}
 }
 
+func TestRemoteParentDirectoryUsesPOSIXSeparator(t *testing.T) {
+	t.Parallel()
+
+	if got, want := remoteParentDirectory(`/srv\customers\museum\secrets\key`), "/srv/customers/museum/secrets"; got != want {
+		t.Fatalf("remoteParentDirectory() = %q, want %q", got, want)
+	}
+}
+
 type interruptedUploadReader struct {
 	wrote bool
 	err   error

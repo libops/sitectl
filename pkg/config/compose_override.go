@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -26,14 +27,14 @@ func (c Context) TrackedComposeOverridePath() string {
 	if name == "" || strings.TrimSpace(c.ProjectDir) == "" {
 		return ""
 	}
-	return filepath.Join(c.ProjectDir, name)
+	return c.ResolveProjectPath(name)
 }
 
 func (c Context) RuntimeComposeOverridePath() string {
 	if strings.TrimSpace(c.ProjectDir) == "" {
 		return ""
 	}
-	return filepath.Join(c.ProjectDir, RuntimeComposeOverrideName)
+	return c.ResolveProjectPath(RuntimeComposeOverrideName)
 }
 
 func (c Context) EnsureTrackedComposeOverrideSymlink() error {
@@ -106,7 +107,7 @@ func (c Context) ensureTrackedComposeOverrideSymlinkRemote(trackedPath, runtimeP
 		if err != nil {
 			return err
 		}
-		if filepath.Clean(filepath.Join(c.ProjectDir, target)) == filepath.Clean(trackedPath) {
+		if path.Clean(path.Join(strings.ReplaceAll(c.ProjectDir, `\`, "/"), strings.ReplaceAll(target, `\`, "/"))) == path.Clean(trackedPath) {
 			return nil
 		}
 		if err := accessor.sftp.Remove(runtimePath); err != nil {
@@ -116,7 +117,7 @@ func (c Context) ensureTrackedComposeOverrideSymlinkRemote(trackedPath, runtimeP
 		return err
 	}
 
-	return accessor.sftp.Symlink(filepath.Base(trackedPath), runtimePath)
+	return accessor.sftp.Symlink(path.Base(trackedPath), runtimePath)
 }
 
 func (c Context) ValidateTrackedComposeOverrideSymlink() error {
@@ -185,7 +186,7 @@ func (c Context) validateTrackedComposeOverrideSymlinkRemote(trackedPath, runtim
 	info, err := accessor.sftp.Lstat(runtimePath)
 	if err != nil {
 		if isSFTPNotExist(err) {
-			return fmt.Errorf("%s is missing; expected symlink to %s", runtimePath, filepath.Base(trackedPath))
+			return fmt.Errorf("%s is missing; expected symlink to %s", runtimePath, path.Base(trackedPath))
 		}
 		return err
 	}
@@ -196,8 +197,8 @@ func (c Context) validateTrackedComposeOverrideSymlinkRemote(trackedPath, runtim
 	if err != nil {
 		return err
 	}
-	if filepath.Clean(filepath.Join(c.ProjectDir, target)) != filepath.Clean(trackedPath) {
-		return fmt.Errorf("%s points to %s; expected %s", runtimePath, target, filepath.Base(trackedPath))
+	if path.Clean(path.Join(strings.ReplaceAll(c.ProjectDir, `\`, "/"), strings.ReplaceAll(target, `\`, "/"))) != path.Clean(trackedPath) {
+		return fmt.Errorf("%s points to %s; expected %s", runtimePath, target, path.Base(trackedPath))
 	}
 	return nil
 }

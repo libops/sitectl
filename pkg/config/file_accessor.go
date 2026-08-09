@@ -84,6 +84,7 @@ func (a *FileAccessor) ReadFileContext(ctx context.Context, filename string) ([]
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
 		return os.ReadFile(filename) // #nosec G304 -- sitectl file access is scoped by the caller-selected project/context path.
 	}
+	filename = normalizeRemotePath(filename)
 	remoteFile, err := a.sftp.Open(filename)
 	if err != nil {
 		return nil, err
@@ -160,7 +161,7 @@ func (a *FileAccessor) ReadFilesContext(ctx context.Context, paths []string) (ma
 						out <- readResult{path: path, err: err}
 						return
 					}
-					remoteFile, err := a.sftp.Open(path)
+					remoteFile, err := a.sftp.Open(normalizeRemotePath(path))
 					if err != nil {
 						out <- readResult{path: path, err: err}
 						cancel()
@@ -220,7 +221,7 @@ func (a *FileAccessor) StatVFS(path string) (*sftp.StatVFS, error) {
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
 		return nil, fmt.Errorf("statvfs is only available for remote file access")
 	}
-	return a.sftp.StatVFS(path)
+	return a.sftp.StatVFS(normalizeRemotePath(path))
 }
 
 func (a *FileAccessor) WriteFile(filename string, data []byte) error {
@@ -236,7 +237,8 @@ func (a *FileAccessor) WriteFile(filename string, data []byte) error {
 		}
 		return atomicCopyLocalWithMode(strings.NewReader(string(data)), filename, mode)
 	}
-	if err := mkdirAllRemote(a.sftp, filepath.Dir(filename)); err != nil {
+	filename = normalizeRemotePath(filename)
+	if err := mkdirAllRemote(a.sftp, remoteParentDirectory(filename)); err != nil {
 		return err
 	}
 	tempFilename, err := remoteUploadTempPath(filename)
@@ -286,7 +288,7 @@ func (a *FileAccessor) MkdirAll(path string) error {
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
 		return os.MkdirAll(path, 0o750)
 	}
-	return mkdirAllRemote(a.sftp, path)
+	return mkdirAllRemote(a.sftp, normalizeRemotePath(path))
 }
 
 func (a *FileAccessor) RemoveFile(filename string) error {
@@ -296,7 +298,7 @@ func (a *FileAccessor) RemoveFile(filename string) error {
 		}
 		return nil
 	}
-	if err := a.sftp.Remove(filename); err != nil && !isSFTPNotExist(err) {
+	if err := a.sftp.Remove(normalizeRemotePath(filename)); err != nil && !isSFTPNotExist(err) {
 		return err
 	}
 	return nil
@@ -313,6 +315,7 @@ func (a *FileAccessor) RemoveAll(path string) error {
 		return nil
 	}
 
+	path = normalizeRemotePath(path)
 	entries := []string{}
 	walker := a.sftp.Walk(path)
 	for walker.Step() {
@@ -354,6 +357,7 @@ func (a *FileAccessor) ListFiles(root string) ([]string, error) {
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
 		return listLocalFiles(root)
 	}
+	root = normalizeRemotePath(root)
 	walker := a.sftp.Walk(root)
 	files := []string{}
 	for walker.Step() {
@@ -363,11 +367,11 @@ func (a *FileAccessor) ListFiles(root string) ([]string, error) {
 		if walker.Stat().IsDir() {
 			continue
 		}
-		rel, err := filepath.Rel(root, walker.Path())
+		rel, err := remoteRelativePath(root, walker.Path())
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, filepath.ToSlash(rel))
+		files = append(files, rel)
 	}
 	return files, nil
 }
@@ -386,7 +390,7 @@ func (a *FileAccessor) FileExists(path string) (bool, error) {
 		}
 		return err == nil, err
 	}
-	_, err := a.sftp.Stat(path)
+	_, err := a.sftp.Stat(normalizeRemotePath(path))
 	if err != nil {
 		return false, nil
 	}
@@ -397,7 +401,21 @@ func (a *FileAccessor) Stat(path string) (fs.FileInfo, error) {
 	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
 		return os.Stat(path)
 	}
-	return a.sftp.Stat(path)
+	return a.sftp.Stat(normalizeRemotePath(path))
+}
+
+func (a *FileAccessor) Lstat(path string) (fs.FileInfo, error) {
+	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
+		return os.Lstat(path)
+	}
+	return a.sftp.Lstat(normalizeRemotePath(path))
+}
+
+func (a *FileAccessor) RealPath(path string) (string, error) {
+	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
+		return filepath.EvalSymlinks(path)
+	}
+	return a.sftp.RealPath(normalizeRemotePath(path))
 }
 
 func (a *FileAccessor) UploadFile(source, destination string) error {
@@ -414,7 +432,8 @@ func (a *FileAccessor) UploadFile(source, destination string) error {
 		return atomicCopyLocal(localFile, destination)
 	}
 
-	if err := mkdirAllRemote(a.sftp, path.Dir(destination)); err != nil {
+	destination = normalizeRemotePath(destination)
+	if err := mkdirAllRemote(a.sftp, remoteParentDirectory(destination)); err != nil {
 		return err
 	}
 	tempDestination, err := remoteUploadTempPath(destination)
@@ -495,11 +514,20 @@ func atomicCopyLocalWithMode(source io.Reader, destination string, mode fs.FileM
 }
 
 func remoteUploadTempPath(destination string) (string, error) {
+	destination = normalizeRemotePath(destination)
 	random := make([]byte, 16)
 	if _, err := rand.Read(random); err != nil {
 		return "", fmt.Errorf("generate remote upload name: %w", err)
 	}
 	return path.Join(path.Dir(destination), "."+path.Base(destination)+".sitectl-upload-"+hex.EncodeToString(random)), nil
+}
+
+func remoteParentDirectory(filename string) string {
+	return path.Dir(normalizeRemotePath(filename))
+}
+
+func normalizeRemotePath(filename string) string {
+	return path.Clean(strings.ReplaceAll(filename, `\`, "/"))
 }
 
 func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
