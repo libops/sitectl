@@ -50,3 +50,19 @@ func TestEnsureTrackedComposeOverrideSymlinkRemovesMissingTrackedLink(t *testing
 		t.Fatalf("expected runtime symlink removed, got err=%v", err)
 	}
 }
+
+func TestRemoteComposeOverridePathsUsePOSIXSeparators(t *testing.T) {
+	t.Parallel()
+
+	ctx := Context{
+		DockerHostType: ContextRemote,
+		ProjectDir:     `/srv\customers\museum`,
+		Environment:    "production",
+	}
+	if got, want := ctx.TrackedComposeOverridePath(), "/srv/customers/museum/docker-compose.production.yml"; got != want {
+		t.Fatalf("TrackedComposeOverridePath() = %q, want %q", got, want)
+	}
+	if got, want := ctx.RuntimeComposeOverridePath(), "/srv/customers/museum/docker-compose.override.yml"; got != want {
+		t.Fatalf("RuntimeComposeOverridePath() = %q, want %q", got, want)
+	}
+}

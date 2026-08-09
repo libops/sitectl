@@ -360,14 +360,23 @@ func (c *Context) FileExists(path string) (bool, error) {
 	return true, nil
 }
 
-func (c *Context) ResolveProjectPath(path string) string {
-	if strings.TrimSpace(path) == "" {
+func (c *Context) ResolveProjectPath(value string) string {
+	if strings.TrimSpace(value) == "" {
 		return ""
 	}
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path)
+	if c != nil && c.DockerHostType == ContextRemote {
+		value = strings.ReplaceAll(value, `\`, "/")
+		if remotePath := strings.TrimSpace(value); remotePath != "" {
+			if path.IsAbs(remotePath) {
+				return path.Clean(remotePath)
+			}
+			return path.Join(strings.ReplaceAll(c.ProjectDir, `\`, "/"), remotePath)
+		}
 	}
-	return filepath.Join(c.ProjectDir, path)
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	return filepath.Join(c.ProjectDir, value)
 }
 
 func (c *Context) EffectiveDrupalRootfs() string {
@@ -389,7 +398,7 @@ func (c *Context) HasComposeProject() (bool, error) {
 		return false, fmt.Errorf("context is nil")
 	}
 	for _, candidate := range composeProjectCandidates {
-		exists, err := c.FileExists(filepath.Join(c.ProjectDir, candidate))
+		exists, err := c.FileExists(c.ResolveProjectPath(candidate))
 		if err != nil {
 			return false, err
 		}

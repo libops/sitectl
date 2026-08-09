@@ -57,7 +57,9 @@ type remoteTemplateConnection interface {
 	Close() error
 	Run(context.Context, io.Writer, io.Writer, ...string) (string, error)
 	Lstat(string) (os.FileInfo, error)
-	ReadDir(string) ([]os.FileInfo, error)
+	ReadLink(string) (string, error)
+	ReadDirLimit(context.Context, string, int) ([]os.FileInfo, bool, error)
+	DirectoryHasEntries(context.Context, string) (bool, error)
 	Open(string) (remoteTemplateFile, error)
 	OpenFile(string, int) (remoteTemplateFile, error)
 	MkdirAll(string) error
@@ -65,6 +67,10 @@ type remoteTemplateConnection interface {
 	Chmod(string, os.FileMode) error
 	Remove(string) error
 	Rename(string, string) error
+}
+
+type remoteComposeCreateRootIdentityProvider interface {
+	composeCreateRootIdentity(context.Context, string) (string, error)
 }
 
 var openRemoteTemplateConnection = newSSHRemoteTemplateConnection
@@ -84,7 +90,7 @@ func newSSHRemoteTemplateConnection(runCtx context.Context, ctx *config.Context)
 	if runCtx == nil {
 		runCtx = context.Background()
 	}
-	if err := runCtx.Err(); err != nil {
+	if err := composeCreateContextError(runCtx); err != nil {
 		return nil, err
 	}
 	sshClient, err := ctx.DialSSH()
@@ -137,7 +143,7 @@ func (c *sshRemoteTemplateConnection) Run(runCtx context.Context, stdout, stderr
 	if runCtx == nil {
 		runCtx = context.Background()
 	}
-	if err := runCtx.Err(); err != nil {
+	if err := composeCreateContextError(runCtx); err != nil {
 		return "", err
 	}
 	if len(args) == 0 {
@@ -184,7 +190,7 @@ func (c *sshRemoteTemplateConnection) Run(runCtx context.Context, stdout, stderr
 	if err == nil {
 		return output, nil
 	}
-	if contextErr := runCtx.Err(); contextErr != nil {
+	if contextErr := composeCreateContextError(runCtx); contextErr != nil {
 		return output, contextErr
 	}
 	if detail := strings.TrimSpace(stderrBuffer.String()); detail != "" {
@@ -193,12 +199,166 @@ func (c *sshRemoteTemplateConnection) Run(runCtx context.Context, stdout, stderr
 	return output, err
 }
 
+func (c *sshRemoteTemplateConnection) composeCreateRootIdentity(runCtx context.Context, projectDir string) (string, error) {
+	output, err := c.Run(runCtx, nil, nil, "stat", "--format=%d:%i", "--", projectDir)
+	if err != nil {
+		return "", fmt.Errorf("inspect remote project root device and inode: %w", err)
+	}
+	identity, err := parseRemoteComposeCreateRootIdentity(output)
+	if err != nil {
+		return "", err
+	}
+	return identity, nil
+}
+
 func (c *sshRemoteTemplateConnection) Lstat(name string) (os.FileInfo, error) {
 	return c.sftp.Lstat(name)
 }
 
-func (c *sshRemoteTemplateConnection) ReadDir(name string) ([]os.FileInfo, error) {
-	return c.sftp.ReadDir(name)
+func (c *sshRemoteTemplateConnection) ReadLink(name string) (string, error) {
+	return c.sftp.ReadLink(name)
+}
+
+type remoteDirectoryNameCollector struct {
+	maximum        int
+	names          []string
+	current        []byte
+	discardCurrent bool
+	exceeded       bool
+	err            error
+}
+
+const maxRemoteComposeCreateEntryNameBytes = 4096
+
+func newRemoteDirectoryNameCollector(maximum int) *remoteDirectoryNameCollector {
+	capacity := maximum
+	if capacity > composeCreateDirectoryReadBatch {
+		capacity = composeCreateDirectoryReadBatch
+	}
+	return &remoteDirectoryNameCollector{maximum: maximum, names: make([]string, 0, capacity)}
+}
+
+func (c *remoteDirectoryNameCollector) Write(data []byte) (int, error) {
+	for _, value := range data {
+		if value == 0 {
+			c.finishName()
+			continue
+		}
+		if c.discardCurrent {
+			continue
+		}
+		if len(c.current) == maxRemoteComposeCreateEntryNameBytes {
+			if c.err == nil {
+				c.err = fmt.Errorf("remote directory entry name exceeds %d bytes", maxRemoteComposeCreateEntryNameBytes)
+			}
+			c.current = nil
+			c.discardCurrent = true
+			continue
+		}
+		c.current = append(c.current, value)
+	}
+	return len(data), nil
+}
+
+func (c *remoteDirectoryNameCollector) finishName() {
+	if c.discardCurrent {
+		c.current = nil
+		c.discardCurrent = false
+		return
+	}
+	name := string(c.current)
+	c.current = nil
+	if name == "" || name == "." || name == ".." || path.Base(name) != name {
+		if c.err == nil {
+			c.err = fmt.Errorf("remote directory contains unsafe entry name %q", name)
+		}
+		return
+	}
+	if len(c.names) == c.maximum {
+		c.exceeded = true
+		return
+	}
+	c.names = append(c.names, name)
+}
+
+func (c *remoteDirectoryNameCollector) result() ([]string, bool, error) {
+	if len(c.current) != 0 || c.discardCurrent {
+		if c.err == nil {
+			c.err = fmt.Errorf("remote directory listing ended with an incomplete entry")
+		}
+	}
+	return c.names, c.exceeded, c.err
+}
+
+type remoteDirectoryPresenceWriter struct {
+	present bool
+}
+
+func (w *remoteDirectoryPresenceWriter) Write(data []byte) (int, error) {
+	if len(data) > 0 {
+		w.present = true
+	}
+	return len(data), nil
+}
+
+func remoteDirectoryFindOperand(directory string) (string, error) {
+	directory = strings.TrimSpace(directory)
+	if directory == "" {
+		return "", fmt.Errorf("remote directory cannot be empty")
+	}
+	if strings.HasPrefix(directory, "-") {
+		directory = "./" + directory
+	}
+	return directory, nil
+}
+
+// ReadDirLimit streams one directory through find instead of allowing the SFTP
+// client to accumulate an attacker-controlled listing before sitectl can apply
+// its entry cap. Entry metadata is fetched only after the bounded name list is
+// complete.
+func (c *sshRemoteTemplateConnection) ReadDirLimit(runCtx context.Context, directory string, maximum int) ([]os.FileInfo, bool, error) {
+	if maximum < 0 {
+		return nil, false, fmt.Errorf("directory entry limit cannot be negative")
+	}
+	operand, err := remoteDirectoryFindOperand(directory)
+	if err != nil {
+		return nil, false, err
+	}
+	collector := newRemoteDirectoryNameCollector(maximum)
+	if _, err := c.Run(runCtx, collector, nil, "find", operand, "-mindepth", "1", "-maxdepth", "1", "-printf", "%f\\000"); err != nil {
+		return nil, false, fmt.Errorf("list remote directory %q with bounded output: %w", directory, err)
+	}
+	names, exceeded, err := collector.result()
+	if err != nil {
+		return nil, false, fmt.Errorf("parse remote directory %q listing: %w", directory, err)
+	}
+	if exceeded {
+		return nil, true, nil
+	}
+	entries := make([]os.FileInfo, 0, len(names))
+	for _, name := range names {
+		if err := composeCreateContextError(runCtx); err != nil {
+			return nil, false, err
+		}
+		info, err := c.Lstat(path.Join(directory, name))
+		if err != nil {
+			return nil, false, fmt.Errorf("inspect remote directory entry %q: %w", name, err)
+		}
+		entries = append(entries, info)
+	}
+	return entries, false, nil
+}
+
+func (c *sshRemoteTemplateConnection) DirectoryHasEntries(runCtx context.Context, directory string) (bool, error) {
+	operand, err := remoteDirectoryFindOperand(directory)
+	if err != nil {
+		return false, err
+	}
+	var presence remoteDirectoryPresenceWriter
+	if _, err := c.Run(runCtx, &presence, nil, "find", operand, "-mindepth", "1", "-maxdepth", "1", "-print", "-quit"); err != nil {
+		return false, fmt.Errorf("inspect remote directory %q with bounded output: %w", directory, err)
+	}
+	return presence.present, nil
 }
 
 func (c *sshRemoteTemplateConnection) Open(name string) (remoteTemplateFile, error) {
@@ -234,13 +394,16 @@ func (c *sshRemoteTemplateConnection) Rename(oldName, newName string) error {
 
 func remoteTemplateContextError(runCtx context.Context, err error) error {
 	if runCtx != nil && runCtx.Err() != nil {
+		if cause := context.Cause(runCtx); cause != nil {
+			return cause
+		}
 		return runCtx.Err()
 	}
 	return err
 }
 
 func remoteProjectDirectoryState(runCtx context.Context, connection remoteTemplateConnection, projectDir string) (bool, bool, error) {
-	if err := runCtx.Err(); err != nil {
+	if err := composeCreateContextError(runCtx); err != nil {
 		return false, false, err
 	}
 	info, err := connection.Lstat(projectDir)
@@ -253,11 +416,11 @@ func remoteProjectDirectoryState(runCtx context.Context, connection remoteTempla
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return true, false, fmt.Errorf("remote project directory %q must be a real directory, not a symlink or other file", projectDir)
 	}
-	entries, err := connection.ReadDir(projectDir)
+	notEmpty, err := connection.DirectoryHasEntries(runCtx, projectDir)
 	if err != nil {
 		return false, false, remoteTemplateContextError(runCtx, fmt.Errorf("read remote project directory %q: %w", projectDir, err))
 	}
-	return true, len(entries) > 0, nil
+	return true, notEmpty, nil
 }
 
 func inspectRemoteTemplateCheckout(runCtx context.Context, connection remoteTemplateConnection, projectDir string) (templateCheckoutMetadata, error) {
@@ -329,7 +492,7 @@ func inspectRemoteTemplateCheckout(runCtx context.Context, connection remoteTemp
 }
 
 func readRemoteTemplateMetadataFile(runCtx context.Context, connection remoteTemplateConnection, projectDir, relativePath string, maximum int64) ([]byte, bool, error) {
-	if err := runCtx.Err(); err != nil {
+	if err := composeCreateContextError(runCtx); err != nil {
 		return nil, false, err
 	}
 	remotePath := path.Join(projectDir, path.Clean(relativePath))
@@ -373,7 +536,7 @@ func readRemoteTemplateMetadataFile(runCtx context.Context, connection remoteTem
 	if int64(len(data)) > maximum {
 		return nil, false, fmt.Errorf("template metadata path %q exceeds %d bytes", relativePath, maximum)
 	}
-	if err := runCtx.Err(); err != nil {
+	if err := composeCreateContextError(runCtx); err != nil {
 		return nil, false, err
 	}
 	return data, true, nil
@@ -417,7 +580,7 @@ func finalizeRemoteTemplateCheckout(runCtx context.Context, connection remoteTem
 }
 
 func prepareRemoteTemplateLock(runCtx context.Context, connection remoteTemplateConnection, projectDir string, lock []byte) (temporaryPath string, err error) {
-	if err := runCtx.Err(); err != nil {
+	if err := composeCreateContextError(runCtx); err != nil {
 		return "", err
 	}
 	libopsPath := path.Join(projectDir, ".libops")
@@ -481,13 +644,19 @@ func prepareRemoteTemplateLock(runCtx context.Context, connection remoteTemplate
 		return "", remoteTemplateContextError(runCtx, fmt.Errorf("close temporary remote template lock: %w", err))
 	}
 	closed = true
-	if err = runCtx.Err(); err != nil {
+	if err = composeCreateContextError(runCtx); err != nil {
 		return "", err
 	}
 	return temporaryPath, nil
 }
 
 func cleanupOwnedRemoteTemplateCheckout(connection remoteTemplateConnection, projectDir string, cause error) error {
+	if err := validateComposeCreateStagingPath(path.Dir(projectDir), projectDir, true); err != nil {
+		return errors.Join(cause, fmt.Errorf("refuse unsafe remote template checkout cleanup: %w", err))
+	}
+	if errors.Is(cause, config.ErrProjectMutationLockLost) {
+		return preserveComposeCreateStaging(cause, projectDir)
+	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), remoteTemplateCleanupTimeout)
 	defer cancel()
 	if _, err := connection.Run(cleanupCtx, io.Discard, nil, "rm", "-rf", "--", projectDir); err != nil {

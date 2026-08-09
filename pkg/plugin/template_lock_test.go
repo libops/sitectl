@@ -107,7 +107,7 @@ spec:
 	if lock.APIVersion != templateLockAPIVersion || lock.Kind != templateLockKind || lock.Schema != templateLockSchema {
 		t.Fatalf("unexpected lock envelope: %+v", lock)
 	}
-	if lock.Template.Repository != repository || lock.Template.Commit != commit {
+	if lock.Template.Repository != repository || lock.Template.Ref != "main" || lock.Template.Commit != commit {
 		t.Fatalf("unexpected template source: %+v", lock.Template)
 	}
 	digest := sha256.Sum256([]byte(contract))
@@ -214,7 +214,7 @@ func TestCloneTemplateRepoRejectsCredentialBearingRepository(t *testing.T) {
 }
 
 func TestBuildTemplateLockIsDeterministicAndOmitsUnknownBuildValues(t *testing.T) {
-	metadata := templateCheckoutMetadata{Commit: testTemplateCommit}
+	metadata := templateCheckoutMetadata{Commit: testTemplateCommit, Ref: "main"}
 	plugins := []templateLockPackage{
 		{Package: "sitectl-z", Version: "dev", Revision: "none"},
 		{Package: "sitectl-a", Version: "1.0.0", Revision: "abcdef1"},
@@ -235,6 +235,9 @@ func TestBuildTemplateLockIsDeterministicAndOmitsUnknownBuildValues(t *testing.T
 	}
 	if strings.Contains(string(first), "version: dev") || strings.Contains(string(first), "revision: none") {
 		t.Fatalf("unknown build values were retained:\n%s", first)
+	}
+	if !strings.Contains(string(first), "ref: main") {
+		t.Fatalf("requested template ref was not retained:\n%s", first)
 	}
 	if got := parseFormattedBuildIdentity("dev (Built on unknown from Git SHA none)"); got != (buildIdentity{}) {
 		t.Fatalf("unknown build identity was retained: %+v", got)

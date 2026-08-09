@@ -116,6 +116,18 @@ func TestValidateRemoteProjectFileWriteRejectsSymlinkParent(t *testing.T) {
 	}
 }
 
+func TestResolveProjectPathUsesPOSIXPathsForRemoteContexts(t *testing.T) {
+	t.Parallel()
+
+	ctx := &Context{DockerHostType: ContextRemote, ProjectDir: `/srv\customers\museum`}
+	if got, want := ctx.ResolveProjectPath(`secrets\api\key`), "/srv/customers/museum/secrets/api/key"; got != want {
+		t.Fatalf("ResolveProjectPath(relative remote) = %q, want %q", got, want)
+	}
+	if got, want := ctx.ResolveProjectPath(`/var/lib\museum\compose.yaml`), "/var/lib/museum/compose.yaml"; got != want {
+		t.Fatalf("ResolveProjectPath(absolute remote) = %q, want %q", got, want)
+	}
+}
+
 type fakeProjectFileInspector struct {
 	infos     map[string]fs.FileInfo
 	realPaths map[string]string

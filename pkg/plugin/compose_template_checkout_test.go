@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/libops/sitectl/pkg/config"
 )
 
 func TestLocalTemplateCheckoutRejectsNonEmptyProject(t *testing.T) {
@@ -18,9 +20,10 @@ func TestLocalTemplateCheckoutRejectsNonEmptyProject(t *testing.T) {
 	}
 
 	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
-	created, err := sdk.ensureLocalComposeTemplateCheckout(context.Background(), io.Discard, ComposeCreateRequest{
-		TemplateRepo: "git@github.com:libops/omeka-s.git",
-	}, projectDir)
+	created, err := sdk.EnsureComposeTemplateCheckoutContext(context.Background(), io.Discard, ComposeCreateRequest{
+		CheckoutSource: CheckoutSourceTemplate,
+		TemplateRepo:   "git@github.com:libops/omeka-s.git",
+	}, &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir})
 	if err == nil || !strings.Contains(err.Error(), string(CheckoutSourceExisting)) {
 		t.Fatalf("ensureLocalComposeTemplateCheckout() error = %v", err)
 	}
@@ -40,9 +43,10 @@ func TestLocalTemplateCheckoutRejectsSymlinkProjectDirectory(t *testing.T) {
 	}
 
 	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
-	created, err := sdk.ensureLocalComposeTemplateCheckout(context.Background(), io.Discard, ComposeCreateRequest{
-		TemplateRepo: "git@github.com:libops/omeka-s.git",
-	}, projectDir)
+	created, err := sdk.EnsureComposeTemplateCheckoutContext(context.Background(), io.Discard, ComposeCreateRequest{
+		CheckoutSource: CheckoutSourceTemplate,
+		TemplateRepo:   "git@github.com:libops/omeka-s.git",
+	}, &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir})
 	if err == nil || !strings.Contains(err.Error(), "real directory") {
 		t.Fatalf("ensureLocalComposeTemplateCheckout() error = %v", err)
 	}
@@ -65,24 +69,30 @@ func TestLocalTemplateCloneFailureCleansNewProjectDirectory(t *testing.T) {
 		if name != "git" || len(args) == 0 || args[0] != "clone" {
 			t.Fatalf("unexpected command: %s %v", name, args)
 		}
-		if err := os.WriteFile(filepath.Join(projectDir, "partial"), []byte("partial\n"), 0o600); err != nil {
+		stagingPath := args[len(args)-1]
+		if err := os.WriteFile(filepath.Join(stagingPath, "partial"), []byte("partial\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return cloneErr
 	}
 
 	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
-	created, err := sdk.ensureLocalComposeTemplateCheckout(context.Background(), io.Discard, ComposeCreateRequest{
-		TemplateRepo: "git@github.com:libops/omeka-s.git",
-	}, projectDir)
+	created, err := sdk.EnsureComposeTemplateCheckoutContext(context.Background(), io.Discard, ComposeCreateRequest{
+		CheckoutSource: CheckoutSourceTemplate,
+		TemplateRepo:   "git@github.com:libops/omeka-s.git",
+	}, &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir})
 	if err == nil || !strings.Contains(err.Error(), cloneErr.Error()) {
 		t.Fatalf("ensureLocalComposeTemplateCheckout() error = %v", err)
 	}
 	if created {
 		t.Fatal("ensureLocalComposeTemplateCheckout() created = true, want false")
 	}
-	if _, err := os.Lstat(projectDir); !os.IsNotExist(err) {
-		t.Fatalf("partial checkout remains after clone failure: %v", err)
+	entries, readErr := os.ReadDir(projectDir)
+	if readErr != nil {
+		t.Fatalf("claimed project directory was removed after clone failure: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("partial checkout remains after clone failure: %v", entries)
 	}
 }
 
@@ -102,16 +112,21 @@ func TestLocalTemplateCloneHonorsCancellation(t *testing.T) {
 	}
 
 	sdk := NewSDK(Metadata{Name: "omeka-s", Version: "1.0.0"})
-	created, err := sdk.ensureLocalComposeTemplateCheckout(runCtx, io.Discard, ComposeCreateRequest{
-		TemplateRepo: "git@github.com:libops/omeka-s.git",
-	}, projectDir)
+	created, err := sdk.EnsureComposeTemplateCheckoutContext(runCtx, io.Discard, ComposeCreateRequest{
+		CheckoutSource: CheckoutSourceTemplate,
+		TemplateRepo:   "git@github.com:libops/omeka-s.git",
+	}, &config.Context{DockerHostType: config.ContextLocal, ProjectDir: projectDir})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ensureLocalComposeTemplateCheckout() error = %v, want context cancellation", err)
 	}
 	if created {
 		t.Fatal("ensureLocalComposeTemplateCheckout() created = true, want false")
 	}
-	if _, err := os.Lstat(projectDir); !os.IsNotExist(err) {
-		t.Fatalf("cancelled checkout remains: %v", err)
+	entries, readErr := os.ReadDir(projectDir)
+	if readErr != nil {
+		t.Fatalf("claimed project directory was removed after cancellation: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("cancelled checkout remains: %v", entries)
 	}
 }

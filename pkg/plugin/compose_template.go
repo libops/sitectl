@@ -103,6 +103,7 @@ type composeTemplateCreateRunner struct {
 	opts         ComposeTemplateCreateOptions
 	drupalRootfs string
 	bindErr      error
+	operations   composeTemplateCreateOperations
 }
 
 // RegisterComposeTemplateCreateRunner registers the SDK's standard Docker
@@ -220,44 +221,80 @@ func (r *composeTemplateCreateRunner) Run(cmd *cobra.Command) error {
 		return err
 	}
 	applyRemoteIngressCreateDefaults(ctx, req.Decisions)
-	cloned, err := r.sdk.EnsureComposeTemplateCheckoutContext(cmd.Context(), cmd.OutOrStdout(), req, ctx)
+	return withComposeTemplateCreateMutationLock(cmd, ctx, req, func(lockedCmd *cobra.Command) error {
+		return r.runLocked(lockedCmd, ctx, req)
+	})
+}
+
+func (r *composeTemplateCreateRunner) runLocked(cmd *cobra.Command, ctx *config.Context, req ComposeCreateRequest) error {
+	operations := r.operations
+	if operations == nil {
+		operations = defaultComposeTemplateCreateOperations{runner: r}
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
+		return err
+	}
+	cloned, err := operations.checkout(cmd, ctx, req)
 	if err != nil {
+		return errors.Join(err, composeCreateContextError(cmd.Context()))
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
 		return err
 	}
-	if err := refreshCreateContextComposeIdentity(ctx, req); err != nil {
+	if err := operations.refreshContext(cmd, ctx, req); err != nil {
+		return errors.Join(err, composeCreateContextError(cmd.Context()))
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
 		return err
 	}
-	if err := r.sdk.reconcileCreateServiceComponents(cmd.Context(), ctx, req.Decisions); err != nil {
+	if err := operations.reconcileComponents(cmd, ctx, req.Decisions); err != nil {
+		return errors.Join(err, composeCreateContextError(cmd.Context()))
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
 		return err
 	}
 	if !req.ImageOverrides.Empty() {
 		if ctx.DockerHostType == config.ContextRemote {
 			fmt.Fprintln(cmd.ErrOrStderr(), "Warning: modifying remote project files directly; commit and review these changes through version control before promoting them.")
 		}
-		if err := ApplyComposeImageOverridesContext(ctx, req.ImageOverrides); err != nil {
-			return err
+		if err := operations.applyImageOverrides(cmd, ctx, req.ImageOverrides); err != nil {
+			return errors.Join(err, composeCreateContextError(cmd.Context()))
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", ComposeImageOverrideFile)
+		if err := composeCreateContextError(cmd.Context()); err != nil {
+			return err
+		}
 	}
-	needsInit, err := composeTemplateNeedsInit(ctx, r.spec)
+	needsInit, err := operations.needsInit(cmd, ctx, r.spec)
 	if err != nil {
+		return errors.Join(err, composeCreateContextError(cmd.Context()))
+	}
+	if err := composeCreateContextError(cmd.Context()); err != nil {
 		return err
 	}
 	if cloned || needsInit {
-		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeInit); err != nil {
+		if err := operations.runCommands(cmd, ctx, r.spec.DockerComposeInit); err != nil {
+			return errors.Join(err, composeCreateContextError(cmd.Context()))
+		}
+		if err := composeCreateContextError(cmd.Context()); err != nil {
 			return err
 		}
 	}
 	if !req.SetupOnly {
-		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeBuild); err != nil {
+		if err := operations.runCommands(cmd, ctx, r.spec.DockerComposeBuild); err != nil {
+			return errors.Join(err, composeCreateContextError(cmd.Context()))
+		}
+		if err := composeCreateContextError(cmd.Context()); err != nil {
 			return err
 		}
-		if err := r.sdk.RunComposeProjectCommandList(cmd, ctx, r.spec.DockerComposeUp); err != nil {
+		if err := operations.runCommands(cmd, ctx, r.spec.DockerComposeUp); err != nil {
+			return errors.Join(err, composeCreateContextError(cmd.Context()))
+		}
+		if err := composeCreateContextError(cmd.Context()); err != nil {
 			return err
 		}
 	}
-	PrintComposeTemplateCreateSummary(cmd.OutOrStdout(), ctx, r.opts.ReadyMessage, req.SetupOnly)
-	return nil
+	return operations.printSummary(cmd, ctx, r.opts.ReadyMessage, req.SetupOnly)
 }
 
 func applyRemoteIngressCreateDefaults(ctx *config.Context, decisions map[string]corecomponent.ReviewDecision) {
@@ -320,7 +357,11 @@ func (s *SDK) EnsureComposeTemplateCheckout(out io.Writer, req ComposeCreateRequ
 }
 
 // EnsureComposeTemplateCheckoutContext ensures the requested Docker Compose
-// template exists for the target context with cancellation support.
+// template exists for the target context with cancellation support. New
+// templates are cloned and fully validated in a generated staging directory,
+// then published only while the claimed target is still empty. The caller must
+// pass its project mutation lock context and retain that lock when later create
+// mutations must be serialized with checkout publication.
 func (s *SDK) EnsureComposeTemplateCheckoutContext(runCtx context.Context, out io.Writer, req ComposeCreateRequest, ctx *config.Context) (bool, error) {
 	if s == nil {
 		return false, fmt.Errorf("plugin sdk is not initialized")
@@ -337,10 +378,10 @@ func (s *SDK) EnsureComposeTemplateCheckoutContext(runCtx context.Context, out i
 	if ctx == nil || strings.TrimSpace(ctx.ProjectDir) == "" {
 		return false, fmt.Errorf("project directory cannot be empty")
 	}
-	if ctx.DockerHostType == config.ContextRemote {
-		return s.ensureRemoteComposeTemplateCheckout(runCtx, out, req, ctx)
+	if err := ensureComposeCreateProjectDirectory(runCtx, ctx, req); err != nil {
+		return false, err
 	}
-	return s.ensureLocalComposeTemplateCheckout(runCtx, out, req, ctx.ProjectDir)
+	return s.EnsureClaimedComposeTemplateCheckoutContext(runCtx, out, req, ctx)
 }
 
 func (s *SDK) ensureLocalComposeTemplateCheckout(runCtx context.Context, out io.Writer, req ComposeCreateRequest, projectDir string) (bool, error) {
@@ -371,7 +412,7 @@ func (s *SDK) ensureLocalComposeTemplateCheckout(runCtx context.Context, out io.
 		if !ownedProjectDir {
 			return false, err
 		}
-		if cleanupErr := os.RemoveAll(projectDir); cleanupErr != nil {
+		if cleanupErr := cleanupLocalComposeCreateStaging(filepath.Dir(projectDir), projectDir); cleanupErr != nil {
 			return false, errors.Join(err, fmt.Errorf("clean up failed template checkout %q: %w", projectDir, cleanupErr))
 		}
 		return false, err
@@ -393,11 +434,11 @@ func localProjectDirectoryState(runCtx context.Context, projectDir string) (bool
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return true, false, fmt.Errorf("project directory %q must be a real directory, not a symlink or other file", projectDir)
 	}
-	entries, err := os.ReadDir(projectDir)
+	notEmpty, err := localComposeCreateDirectoryHasEntries(projectDir)
 	if err != nil {
 		return false, false, fmt.Errorf("read project directory %q: %w", projectDir, err)
 	}
-	return true, len(entries) > 0, nil
+	return true, notEmpty, nil
 }
 
 func refreshCreateContextComposeIdentity(ctx *config.Context, req ComposeCreateRequest) error {
@@ -488,6 +529,7 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 		}
 		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, err)
 	}
+	metadata.Ref = req.TemplateBranch
 	sitectl, plugins := s.templateLockPackages()
 	lock, err := buildTemplateLock(templateRepo, metadata, sitectl, plugins)
 	if err != nil {

@@ -33,7 +33,7 @@ func TestLocalProjectMutationLockIdentitySurvivesDirectoryRename(t *testing.T) {
 	if afterIdentity != beforeIdentity {
 		t.Fatalf("same directory identities differ after rename: before=%q after=%q", beforeIdentity, afterIdentity)
 	}
-	if projectMutationLockPath(afterIdentity, false) != projectMutationLockPath(beforeIdentity, false) {
+	if projectMutationLockFilename(afterIdentity) != projectMutationLockFilename(beforeIdentity) {
 		t.Fatal("same local filesystem object produced different project lock paths")
 	}
 }
