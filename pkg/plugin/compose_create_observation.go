@@ -271,7 +271,10 @@ func revalidateComposeCreateTargetObservation(runCtx context.Context, req Compos
 	}
 	got, err := observeComposeCreateTargetContext(runCtx, req, ctx)
 	if err != nil {
-		return fmt.Errorf("revalidate create target under mutation lock: %w", err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("revalidate create target under mutation lock: %w", err)
+		}
+		return fmt.Errorf("project directory %q changed while create waited for its mutation lock: %w", ctx.ProjectDir, err)
 	}
 	if got.state != want.state || got.stateFile != want.stateFile || got.stateDigest != want.stateDigest {
 		return fmt.Errorf("project directory %q changed while create waited for its mutation lock", ctx.ProjectDir)
