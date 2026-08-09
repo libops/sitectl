@@ -537,7 +537,7 @@ func (r *siteBackupRuntime) validateOwnedVolume(runCtx context.Context, logical,
 		return fmt.Errorf("decode Docker volume inspection for %q: %w", actual, err)
 	}
 	if len(inspected) != 1 || inspected[0].Name != actual {
-		return fmt.Errorf("Docker returned an ambiguous inspection result for owned volume %q", actual)
+		return fmt.Errorf("docker returned an ambiguous inspection result for owned volume %q", actual)
 	}
 	volume := inspected[0]
 	if volume.Driver != "local" || (volume.Scope != "" && volume.Scope != "local") || len(volume.Options) > 0 {
@@ -826,10 +826,10 @@ func (r *siteBackupRuntime) runDockerHelperOutput(runCtx context.Context, args .
 
 func namedBackupHelperArgs(args []string, name, identifier string) ([]string, error) {
 	if len(args) == 0 || args[0] != "run" {
-		return nil, fmt.Errorf("Docker helper command must be a docker run invocation")
+		return nil, fmt.Errorf("docker helper command must be a docker run invocation")
 	}
 	if !backupVolumeNamePattern.MatchString(name) || !restoreIdentifierPattern.MatchString(identifier) {
-		return nil, fmt.Errorf("Docker helper identity is unsafe")
+		return nil, fmt.Errorf("docker helper identity is unsafe")
 	}
 	result := []string{"run", "--name", name, "--label", siteBackupHelperLabel + "=" + identifier}
 	for _, arg := range args[1:] {
@@ -837,7 +837,7 @@ func namedBackupHelperArgs(args []string, name, identifier string) ([]string, er
 			continue
 		}
 		if arg == "--name" {
-			return nil, fmt.Errorf("Docker helper command already declares a container name")
+			return nil, fmt.Errorf("docker helper command already declares a container name")
 		}
 		result = append(result, arg)
 	}
@@ -867,7 +867,7 @@ func (r *siteBackupRuntime) removeDockerHelper(name, identifier string) error {
 	}
 	remover, ok := cli.CLI.(backupContainerRemover)
 	if !ok {
-		return fmt.Errorf("Docker client does not support forced helper removal")
+		return fmt.Errorf("docker client does not support forced helper removal")
 	}
 	if err := remover.ContainerRemove(cleanupCtx, inspected.ID, dockercontainer.RemoveOptions{Force: true}); err != nil && !containerderrdefs.IsNotFound(err) {
 		return err
