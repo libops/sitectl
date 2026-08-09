@@ -6,10 +6,12 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 )
 
 const defaultMariaDBService = "mariadb"
+const mariaDBSchemaInventorySQL = "SELECT HEX(SCHEMA_NAME) FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME"
 
 type mariaDBBackupOptions struct {
 	service      string
@@ -397,6 +400,9 @@ func runMariaDBImport(cmd *cobra.Command, ctx *config.Context, opts mariaDBImpor
 	if err := validateMariaDBDatabaseName(database); err != nil {
 		return err
 	}
+	if isMariaDBSystemSchema(database) {
+		return fmt.Errorf("refusing to replace MariaDB system schema %q", database)
+	}
 	databaseLabel := "MariaDB"
 	if database != "" {
 		databaseLabel = "MariaDB " + database
@@ -669,8 +675,8 @@ func validateMariaDBDatabaseName(database string) error {
 	if strings.HasPrefix(database, "-") {
 		return fmt.Errorf("database name cannot start with '-'")
 	}
-	if strings.Contains(database, "\x00") {
-		return fmt.Errorf("database name cannot contain NUL")
+	if strings.ContainsAny(database, "\x00\r\n") {
+		return fmt.Errorf("database name cannot contain NUL or line breaks")
 	}
 	return nil
 }
@@ -700,7 +706,121 @@ func mariaDBArtifactName(database string) string {
 	if database == "" {
 		return "mariadb.sql.gz"
 	}
-	return "mariadb-" + sanitizeArtifactPart(database) + ".sql.gz"
+	digest := sha256.Sum256([]byte(database))
+	return "mariadb-" + sanitizeArtifactPart(database) + "-" + hex.EncodeToString(digest[:16]) + ".sql.gz"
+}
+
+func inspectMariaDBSchemas(cmd *cobra.Command, ctx *config.Context, service string) ([]string, error) {
+	cli, containerName, password, err := mariaDBContainer(cmd, ctx, service)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = cli.Close()
+	}()
+
+	client := resolveContainerExecutable(cmd, cli, containerName, "mariadb", "mysql")
+	var stdout bytes.Buffer
+	exitCode, err := cli.Exec(cmd.Context(), docker.ExecOptions{
+		Container:    containerName,
+		Cmd:          mariaDBSchemaInventoryArgs(client),
+		Env:          []string{"MYSQL_PWD=" + strings.TrimSpace(password)},
+		AttachStdout: true,
+		AttachStderr: true,
+		Stdout:       &stdout,
+		Stderr:       io.Discard,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inspect MariaDB schema inventory: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, fmt.Errorf("inspect MariaDB schema inventory failed with exit code %d", exitCode)
+	}
+	return parseMariaDBSchemaInventory(stdout.String())
+}
+
+func mariaDBSchemaInventoryArgs(binary string) []string {
+	return []string{binary, "--user=root", "--batch", "--skip-column-names", "--raw", "--execute", mariaDBSchemaInventorySQL}
+}
+
+func parseMariaDBSchemaInventory(output string) ([]string, error) {
+	schemas := []string{}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		encoded := strings.TrimSpace(line)
+		if encoded == "" {
+			continue
+		}
+		decoded, err := hex.DecodeString(encoded)
+		if err != nil || len(decoded) == 0 {
+			return nil, fmt.Errorf("MariaDB schema inventory returned a malformed encoded name")
+		}
+		schema := string(decoded)
+		if seen[schema] {
+			return nil, fmt.Errorf("MariaDB schema inventory returned duplicate schema %q", schema)
+		}
+		seen[schema] = true
+		schemas = append(schemas, schema)
+	}
+	if len(schemas) == 0 {
+		return nil, fmt.Errorf("MariaDB schema inventory returned no schemas")
+	}
+	return schemas, nil
+}
+
+func validateMariaDBSchemaInventory(database string, schemas []string) error {
+	database = strings.TrimSpace(database)
+	if database == "" {
+		return fmt.Errorf("declared application database is required for full-site backup and restore")
+	}
+	if err := validateMariaDBDatabaseName(database); err != nil {
+		return err
+	}
+	if isMariaDBSystemSchema(database) {
+		return fmt.Errorf("MariaDB system schema %q cannot be the declared application database for full-site backup and restore", database)
+	}
+	unexpected := []string{}
+	seen := map[string]bool{}
+	foundInformationSchema := false
+	foundMySQLSchema := false
+	for _, schema := range schemas {
+		if seen[schema] {
+			return fmt.Errorf("MariaDB schema inventory contains duplicate schema %q", schema)
+		}
+		seen[schema] = true
+		if schema == "information_schema" {
+			foundInformationSchema = true
+		}
+		if schema == "mysql" {
+			foundMySQLSchema = true
+		}
+		if schema == database {
+			continue
+		}
+		if !isMariaDBSystemSchema(schema) {
+			unexpected = append(unexpected, schema)
+		}
+	}
+	sort.Strings(unexpected)
+	if len(unexpected) > 0 {
+		return fmt.Errorf("MariaDB contains undeclared application schemas %q; full-site backup and restore support only %q plus system schemas", unexpected, database)
+	}
+	if !foundInformationSchema || !foundMySQLSchema {
+		return fmt.Errorf("MariaDB schema inventory is incomplete; required system schemas are missing")
+	}
+	// The declared schema may be absent while restoring a damaged or incomplete
+	// site. Backup still fails closed when the immediately following dump cannot
+	// read it; restore can safely recreate it because no undeclared schema exists.
+	return nil
+}
+
+func isMariaDBSystemSchema(schema string) bool {
+	switch schema {
+	case "information_schema", "mysql", "performance_schema", "sys":
+		return true
+	default:
+		return false
+	}
 }
 
 func mariaDBRestoreWaitComposeArgs(service string) ([]string, error) {

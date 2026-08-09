@@ -165,10 +165,16 @@ func TestStagedArtifactDockerArgsUseReadOnlyBackupAndFixedEntrypoints(t *testing
 	if err != nil {
 		t.Fatalf("stagedArtifactDockerArgs() error = %v", err)
 	}
+	if !containsArgument(copyArgs, "/srv/site/backups/one:/backup:ro") {
+		t.Fatalf("copy args do not mount /backup read-only: %v", copyArgs)
+	}
+	if containsArgument(checkArgs, "/srv/site/backups/one:/backup:ro") || containsArgument(checkArgs, "/srv/site/backups/one:/backup:rw") {
+		t.Fatalf("check args access the mutable backup directory instead of only frozen staging: %v", checkArgs)
+	}
+	if !containsArgument(checkArgs, "sitectl-stage-001:/staged:ro") {
+		t.Fatalf("check args do not mount frozen staging read-only: %v", checkArgs)
+	}
 	for name, args := range map[string][]string{"copy": copyArgs, "check": checkArgs} {
-		if !containsArgument(args, "/srv/site/backups/one:/backup:ro") {
-			t.Fatalf("%s args do not mount /backup read-only: %v", name, args)
-		}
 		if containsArgument(args, "/srv/site/backups/one:/backup:rw") {
 			t.Fatalf("%s args mount /backup writable: %v", name, args)
 		}
@@ -181,6 +187,59 @@ func TestStagedArtifactDockerArgsUseReadOnlyBackupAndFixedEntrypoints(t *testing
 	}
 	if got := argumentAfter(checkArgs, "--entrypoint"); got != "tar" {
 		t.Fatalf("check entrypoint = %q, want tar", got)
+	}
+}
+
+func TestGNUTarPreflightUsesDirectVersionInvocation(t *testing.T) {
+	t.Parallel()
+
+	args, err := gnuTarVersionDockerArgs("example/init:1")
+	if err != nil {
+		t.Fatalf("gnuTarVersionDockerArgs() error = %v", err)
+	}
+	want := []string{"run", "--rm", "--entrypoint", "tar", "example/init:1", "--version"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("GNU tar preflight args = %v, want %v", args, want)
+	}
+	for _, output := range []string{"", "tar (BusyBox) 1.37.0", "wrapper\ntar (GNU tar) 1.35"} {
+		if err := validateGNUTarVersionOutput("example/init:1", output); err == nil {
+			t.Fatalf("validateGNUTarVersionOutput(%q) accepted non-GNU tar", output)
+		}
+	}
+	if err := validateGNUTarVersionOutput("example/init:1", "tar (GNU tar) 1.35\nCopyright"); err != nil {
+		t.Fatalf("validateGNUTarVersionOutput(GNU tar) error = %v", err)
+	}
+}
+
+func TestBackupVolumeSymlinkPreflightIsReadOnlyAndDoesNotFollowLinks(t *testing.T) {
+	t.Parallel()
+
+	args, err := backupVolumeSymlinkCheckDockerArgs("example/init:1", "site_files")
+	if err != nil {
+		t.Fatalf("backupVolumeSymlinkCheckDockerArgs() error = %v", err)
+	}
+	want := []string{
+		"run", "--rm", "--entrypoint", "find",
+		"-v", "site_files:/source:ro",
+		"example/init:1", "/source", "-type", "l", "-print", "-quit",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("symlink preflight args = %v, want %v", args, want)
+	}
+	for _, forbidden := range []string{"sh", "-c", "-L", "-follow", "site_files:/source:rw"} {
+		if containsArgument(args, forbidden) {
+			t.Fatalf("symlink preflight contains unsafe argument %q: %v", forbidden, args)
+		}
+	}
+	if err := validateBackupVolumeSymlinkOutput("site_files", ""); err != nil {
+		t.Fatalf("empty symlink scan error = %v", err)
+	}
+	err = validateBackupVolumeSymlinkOutput("site_files", "/source/private-link\n")
+	if err == nil || !strings.Contains(err.Error(), "contains at least one symbolic link") {
+		t.Fatalf("symlink scan error = %v, want explicit refusal", err)
+	}
+	if strings.Contains(err.Error(), "private-link") {
+		t.Fatalf("symlink refusal exposed an untrusted archive path: %v", err)
 	}
 }
 
@@ -449,6 +508,30 @@ func TestWithQuiescedSiteWritersResumesAfterPartialStopFailure(t *testing.T) {
 	}
 }
 
+func TestBackupDatabaseInventoryGateRunsImmediatelyBeforeDump(t *testing.T) {
+	t.Parallel()
+
+	operations := newFakeSiteBackupOperations()
+	err := backupDatabaseWithInventory(context.Background(), operations, "mariadb", "appdb", "/backup/mariadb.sql.gz")
+	if err != nil {
+		t.Fatalf("backupDatabaseWithInventory() error = %v", err)
+	}
+	want := []string{"database-inventory:mariadb:appdb", "backup-database"}
+	if !reflect.DeepEqual(operations.events, want) {
+		t.Fatalf("database backup gate events = %v, want %v", operations.events, want)
+	}
+
+	operations = newFakeSiteBackupOperations()
+	operations.failOnce["database-inventory:mariadb:appdb"] = 1
+	err = backupDatabaseWithInventory(context.Background(), operations, "mariadb", "appdb", "/backup/mariadb.sql.gz")
+	if err == nil || !strings.Contains(err.Error(), "schema inventory before full-site backup") {
+		t.Fatalf("backupDatabaseWithInventory() error = %v, want inventory refusal", err)
+	}
+	if eventIndex(operations.events, "backup-database") >= 0 {
+		t.Fatalf("inventory refusal still created a database dump: %v", operations.events)
+	}
+}
+
 func TestBackupVolumeArchiveNameCannotCollideAfterSanitizing(t *testing.T) {
 	t.Parallel()
 
@@ -589,6 +672,83 @@ func TestRestoreSnapshotUsesReadOnlyRecoveryAndNumericOwnership(t *testing.T) {
 	}
 }
 
+func TestExecuteSiteRestoreRejectsMissingGNUTarBeforeStaging(t *testing.T) {
+	t.Parallel()
+
+	operations := newFakeRestoreOperations()
+	operations.failOnce["backup-tooling:example/init:1"] = 1
+	err := executeSiteRestore(testBackupCommand(), operations, testSiteRestorePlan())
+	if err == nil || !strings.Contains(err.Error(), "restore tooling before staging") {
+		t.Fatalf("executeSiteRestore() error = %v, want tooling preflight refusal", err)
+	}
+	for _, forbidden := range []string{
+		"prepare-database-input",
+		"stage:files-stage",
+		"compose:down --remove-orphans --timeout 120",
+		"clear:site_files",
+	} {
+		if eventIndex(operations.events, forbidden) >= 0 {
+			t.Fatalf("tooling refusal still performed %q: %v", forbidden, operations.events)
+		}
+	}
+}
+
+func TestExecuteSiteRestoreRejectsUndeclaredDatabaseBeforeOutage(t *testing.T) {
+	t.Parallel()
+
+	operations := newFakeRestoreOperations()
+	operations.failOnce["database-inventory:mariadb:appdb"] = 1
+	err := executeSiteRestore(testBackupCommand(), operations, testSiteRestorePlan())
+	if err == nil || !strings.Contains(err.Error(), "schema inventory before restore outage") {
+		t.Fatalf("executeSiteRestore() error = %v, want database inventory refusal", err)
+	}
+	if eventIndex(operations.events, "stage:files-stage") < 0 {
+		t.Fatalf("inventory was not checked at the pre-outage boundary after staging: %v", operations.events)
+	}
+	stopWriters := eventIndex(operations.events, "compose:stop --timeout 120 web")
+	databaseInventory := eventIndex(operations.events, "database-inventory:mariadb:appdb")
+	resumeWriters := eventIndex(operations.events, "compose:start web")
+	if stopWriters < 0 || databaseInventory < stopWriters || resumeWriters < databaseInventory {
+		t.Fatalf("restore did not quiesce writers across inventory and resume them after refusal: %v", operations.events)
+	}
+	for _, forbidden := range []string{
+		"compose:down --remove-orphans --timeout 120",
+		"snapshot:site_files->files-recovery",
+		"clear:site_files",
+	} {
+		if eventIndex(operations.events, forbidden) >= 0 {
+			t.Fatalf("inventory refusal still performed %q: %v", forbidden, operations.events)
+		}
+	}
+	if operations.volumes["files-stage"] {
+		t.Fatalf("inventory refusal retained staged volume: %#v", operations.volumes)
+	}
+}
+
+func TestExecuteSiteRestoreRestartsQuiescedWritersWhenComposeDownFails(t *testing.T) {
+	t.Parallel()
+
+	operations := newFakeRestoreOperations()
+	operations.failOnce["compose:down --remove-orphans --timeout 120"] = 1
+	err := executeSiteRestore(testBackupCommand(), operations, testSiteRestorePlan())
+	if err == nil || !strings.Contains(err.Error(), "stop site for transactional restore") {
+		t.Fatalf("executeSiteRestore() error = %v, want failed outage", err)
+	}
+	stopWriters := eventIndex(operations.events, "compose:stop --timeout 120 web")
+	databaseInventory := eventIndex(operations.events, "database-inventory:mariadb:appdb")
+	down := eventIndex(operations.events, "compose:down --remove-orphans --timeout 120")
+	restartSite := eventIndex(operations.events, "compose:up --remove-orphans --wait --wait-timeout 600 -d")
+	if stopWriters < 0 || databaseInventory < stopWriters || down < databaseInventory || restartSite < down {
+		t.Fatalf("failed outage did not restore the quiesced site in order: %v", operations.events)
+	}
+	if eventIndex(operations.events, "compose:start web") >= 0 {
+		t.Fatalf("failed outage used a partial writer restart instead of full Compose recovery: %v", operations.events)
+	}
+	if eventIndex(operations.events, "snapshot:site_files->files-recovery") >= 0 || eventIndex(operations.events, "clear:site_files") >= 0 {
+		t.Fatalf("failed outage reached volume mutation: %v", operations.events)
+	}
+}
+
 func TestExecuteSiteRestoreStagesAndSnapshotsBeforeDestructiveCommit(t *testing.T) {
 	t.Parallel()
 
@@ -600,6 +760,8 @@ func TestExecuteSiteRestoreStagesAndSnapshotsBeforeDestructiveCommit(t *testing.
 
 	down := eventIndex(operations.events, "compose:down --remove-orphans --timeout 120")
 	stageFiles := eventIndex(operations.events, "stage:files-stage")
+	stopWriters := eventIndex(operations.events, "compose:stop --timeout 120 web")
+	databaseInventory := eventIndex(operations.events, "database-inventory:mariadb:appdb")
 	snapshotFiles := eventIndex(operations.events, "snapshot:site_files->files-recovery")
 	snapshotDatabase := eventIndex(operations.events, "snapshot:site_database->database-recovery")
 	clearFiles := eventIndex(operations.events, "clear:site_files")
@@ -608,7 +770,7 @@ func TestExecuteSiteRestoreStagesAndSnapshotsBeforeDestructiveCommit(t *testing.
 	revalidateDatabase := lastEventIndex(operations.events, "validate-artifact:mariadb.sql.gz")
 	importDatabase := eventIndex(operations.events, "restore-database:mariadb")
 	for name, index := range map[string]int{
-		"down": down, "stage files": stageFiles,
+		"down": down, "stage files": stageFiles, "stop writers": stopWriters, "database inventory": databaseInventory,
 		"snapshot files": snapshotFiles, "snapshot database": snapshotDatabase,
 		"clear files": clearFiles, "clear database": clearDatabase,
 		"wait database": waitDatabase, "revalidate database": revalidateDatabase, "import database": importDatabase,
@@ -617,8 +779,11 @@ func TestExecuteSiteRestoreStagesAndSnapshotsBeforeDestructiveCommit(t *testing.
 			t.Fatalf("missing %s event in %v", name, operations.events)
 		}
 	}
-	if stageFiles > down {
-		t.Fatalf("artifacts were not staged before outage: %v", operations.events)
+	if stageFiles > stopWriters || stopWriters > databaseInventory || databaseInventory > down {
+		t.Fatalf("artifacts were not staged and writers were not quiesced across inventory before outage: %v", operations.events)
+	}
+	if eventIndex(operations.events, "compose:start web") >= 0 {
+		t.Fatalf("successful outage incorrectly resumed individual writers: %v", operations.events)
 	}
 	if snapshotFiles < down || snapshotDatabase < down || snapshotFiles > clearFiles || snapshotDatabase > clearFiles {
 		t.Fatalf("current volumes were not fully snapshotted before commit: %v", operations.events)
@@ -919,6 +1084,14 @@ func (f *fakeSiteBackupOperations) record(event string) error {
 		return fmt.Errorf("injected failure at %s", event)
 	}
 	return nil
+}
+
+func (f *fakeSiteBackupOperations) validateBackupTooling(_ context.Context, image string) error {
+	return f.record("backup-tooling:" + image)
+}
+
+func (f *fakeSiteBackupOperations) validateDatabaseInventory(_ context.Context, service, database string) error {
+	return f.record("database-inventory:" + service + ":" + database)
 }
 
 func (f *fakeSiteBackupOperations) runningServices(context.Context) ([]string, error) {

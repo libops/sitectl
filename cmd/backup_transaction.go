@@ -28,6 +28,8 @@ const (
 )
 
 type siteBackupOperations interface {
+	validateBackupTooling(context.Context, string) error
+	validateDatabaseInventory(context.Context, string, string) error
 	runningServices(context.Context) ([]string, error)
 	compose(context.Context, ...string) error
 	backupDatabase(context.Context, string, string, string) error
@@ -83,10 +85,51 @@ func withQuiescedSiteWriters(runCtx context.Context, operations siteBackupOperat
 	return backup()
 }
 
+func backupDatabaseWithInventory(runCtx context.Context, operations siteBackupOperations, service, database, output string) error {
+	if err := operations.validateDatabaseInventory(runCtx, service, database); err != nil {
+		return fmt.Errorf("validate MariaDB schema inventory before full-site backup: %w", err)
+	}
+	return operations.backupDatabase(runCtx, service, database, output)
+}
+
+func quiesceSiteWritersBeforeRestoreInventory(runCtx context.Context, operations siteBackupOperations, databaseService string) ([]string, error) {
+	running, err := operations.runningServices(runCtx)
+	if err != nil {
+		return nil, fmt.Errorf("inspect running services before restore inventory: %w", err)
+	}
+	if !containsString(running, databaseService) {
+		return nil, fmt.Errorf("MariaDB service %q must be running before validating a destructive restore", databaseService)
+	}
+	writers := stringsExcept(running, databaseService)
+	if len(writers) == 0 {
+		return nil, nil
+	}
+	if err := operations.compose(runCtx, append([]string{"stop", "--timeout", "120"}, writers...)...); err != nil {
+		resumeErr := resumeSiteWritersAfterRestorePreflight(operations, writers)
+		return nil, errors.Join(fmt.Errorf("quiesce application services before restore inventory: %w", err), resumeErr)
+	}
+	return writers, nil
+}
+
+func resumeSiteWritersAfterRestorePreflight(operations siteBackupOperations, writers []string) error {
+	if len(writers) == 0 {
+		return nil
+	}
+	resumeCtx, cancel := context.WithTimeout(context.Background(), siteRestoreComposeRecoveryTimeout)
+	defer cancel()
+	if err := operations.compose(resumeCtx, append([]string{"start"}, writers...)...); err != nil {
+		return fmt.Errorf("resume application services after restore preflight: %w", err)
+	}
+	return nil
+}
+
 func executeSiteRestore(cmd *cobra.Command, operations siteBackupOperations, plan siteRestorePlan) error {
 	runCtx := cmd.Context()
 	temporaryVolumes := []string{}
 	recoveryVolumes := []string{}
+	if err := operations.validateBackupTooling(runCtx, plan.image); err != nil {
+		return fmt.Errorf("validate full-site restore tooling before staging: %w", err)
+	}
 	archives := []string{plan.database.archive}
 	for _, volume := range plan.volumes {
 		archives = append(archives, volume.archive)
@@ -117,6 +160,21 @@ func executeSiteRestore(cmd *cobra.Command, operations siteBackupOperations, pla
 	for _, volume := range plan.volumes {
 		if err := stage(workDir, volume.stageVolume, volume.archive, volume.checksum, false); err != nil {
 			return finishRestoreBeforeOutage(operations, temporaryVolumes, workDir, fmt.Errorf("stage backup for volume %s: %w", volume.logical, err))
+		}
+	}
+	databaseExistsBeforeOutage, err := operations.volumeExists(runCtx, plan.database.actualVolume)
+	if err != nil {
+		return finishRestoreBeforeOutage(operations, temporaryVolumes, workDir, fmt.Errorf("inspect MariaDB data volume before restore outage: %w", err))
+	}
+	if databaseExistsBeforeOutage {
+		quiescedWriters, err := quiesceSiteWritersBeforeRestoreInventory(runCtx, operations, plan.database.service)
+		if err != nil {
+			return finishRestoreBeforeOutage(operations, temporaryVolumes, workDir, err)
+		}
+		if err := operations.validateDatabaseInventory(runCtx, plan.database.service, plan.database.databaseName); err != nil {
+			cause := fmt.Errorf("validate MariaDB schema inventory before restore outage: %w", err)
+			cause = errors.Join(cause, resumeSiteWritersAfterRestorePreflight(operations, quiescedWriters))
+			return finishRestoreBeforeOutage(operations, temporaryVolumes, workDir, cause)
 		}
 	}
 
@@ -456,6 +514,38 @@ func (r *siteBackupRuntime) restoreDatabase(runCtx context.Context, service, dat
 
 func (r *siteBackupRuntime) validateArtifact(runCtx context.Context, backupDir, archive, checksum string, tarArchive bool) error {
 	return validateContextBackupArtifact(runCtx, r.ctx, backupDir, archive, checksum, tarArchive)
+}
+
+func (r *siteBackupRuntime) validateBackupTooling(runCtx context.Context, image string) error {
+	args, err := gnuTarVersionDockerArgs(image)
+	if err != nil {
+		return err
+	}
+	output, err := r.runDockerHelperOutput(runCtx, args...)
+	if err != nil {
+		return fmt.Errorf("full-site backup and restore require GNU tar in Compose init image %q: %w", image, err)
+	}
+	return validateGNUTarVersionOutput(image, output)
+}
+
+func (r *siteBackupRuntime) validateDatabaseInventory(runCtx context.Context, service, database string) error {
+	schemas, err := inspectMariaDBSchemas(r.command(runCtx), r.ctx, service)
+	if err != nil {
+		return err
+	}
+	return validateMariaDBSchemaInventory(database, schemas)
+}
+
+func (r *siteBackupRuntime) validateBackupVolumeTopology(runCtx context.Context, image, volume string) error {
+	args, err := backupVolumeSymlinkCheckDockerArgs(image, volume)
+	if err != nil {
+		return err
+	}
+	output, err := r.runDockerHelperOutput(runCtx, args...)
+	if err != nil {
+		return fmt.Errorf("inspect symbolic links in backup volume %q: %w", volume, err)
+	}
+	return validateBackupVolumeSymlinkOutput(volume, output)
 }
 
 func (r *siteBackupRuntime) backupVolume(runCtx context.Context, image, volume, backupDir, archive string) error {
@@ -913,6 +1003,45 @@ func stagedArtifactDockerArgs(image, backupDir, archive, stageVolume string, dat
 		image,
 	}
 	return copyArgs, append(checkArgs, check...), nil
+}
+
+func gnuTarVersionDockerArgs(image string) ([]string, error) {
+	if err := validateBackupImageAndVolumes(image); err != nil {
+		return nil, err
+	}
+	return []string{"run", "--rm", "--entrypoint", "tar", strings.TrimSpace(image), "--version"}, nil
+}
+
+func validateGNUTarVersionOutput(image, output string) error {
+	detected := strings.TrimSpace(output)
+	if newline := strings.IndexByte(detected, '\n'); newline >= 0 {
+		detected = detected[:newline]
+	}
+	if detected == "tar (GNU tar)" || strings.HasPrefix(detected, "tar (GNU tar) ") {
+		return nil
+	}
+	if detected == "" {
+		detected = "no version output"
+	}
+	return fmt.Errorf("full-site backup and restore require GNU tar in Compose init image %q; detected %q", strings.TrimSpace(image), detected)
+}
+
+func backupVolumeSymlinkCheckDockerArgs(image, volume string) ([]string, error) {
+	if err := validateBackupImageAndVolumes(image, volume); err != nil {
+		return nil, err
+	}
+	return []string{
+		"run", "--rm", "--entrypoint", "find",
+		"-v", volume + ":/source:ro",
+		strings.TrimSpace(image), "/source", "-type", "l", "-print", "-quit",
+	}, nil
+}
+
+func validateBackupVolumeSymlinkOutput(volume, output string) error {
+	if strings.TrimSpace(output) == "" {
+		return nil
+	}
+	return fmt.Errorf("volume %q contains at least one symbolic link; full-site backup refuses link-bearing volumes because links cannot be restored without an explicit containment policy", volume)
 }
 
 func stagedArtifactChecksumDockerArgs(image, archive, stageVolume string) ([]string, error) {

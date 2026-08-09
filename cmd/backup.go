@@ -34,7 +34,10 @@ type siteBackupManifest struct {
 	Checksums       map[string]string `yaml:"sha256"`
 }
 
-const siteBackupManifestVersion = 2
+// Version 3 records only backups admitted by the exact MariaDB inventory gate.
+// Refusing older manifests prevents a pre-gate single-schema dump from being
+// mistaken for a complete full-site backup.
+const siteBackupManifestVersion = 3
 const supportedMariaDBDataTarget = "/var/lib/mysql"
 
 type siteVolumeRestore struct {
@@ -176,6 +179,9 @@ func runSiteBackupCreate(cmd *cobra.Command, ctx *config.Context, output string)
 	}
 
 	runtime := newSiteBackupRuntime(cmd, ctx)
+	if err := runtime.validateBackupTooling(cmd.Context(), image); err != nil {
+		return fmt.Errorf("validate full-site backup tooling: %w", err)
+	}
 	databaseActual, err := actualComposeVolumeName(compose, databaseLogical)
 	if err != nil {
 		return err
@@ -235,14 +241,6 @@ func runSiteBackupCreate(cmd *cobra.Command, ctx *config.Context, output string)
 		archiveNames[archive] = logical
 		volumeTargets = append(volumeTargets, siteVolumeBackupTarget{logical: logical, actual: actual, archive: archive})
 	}
-	if err := createPrivateBackupDirectory(cmd.Context(), ctx, backupDir); err != nil {
-		return err
-	}
-	backupDir, err = resolveProjectBackupPath(cmd.Context(), ctx, output, true)
-	if err != nil {
-		return err
-	}
-
 	resultErr = withQuiescedSiteWriters(cmd.Context(), runtime, databaseService, func() error {
 		if err := runtime.ensureVolumeAttachments(cmd.Context(), databaseActual, databaseService); err != nil {
 			return fmt.Errorf("verify MariaDB backup boundary: %w", err)
@@ -252,8 +250,20 @@ func runSiteBackupCreate(cmd *cobra.Command, ctx *config.Context, output string)
 				return fmt.Errorf("verify backup boundary for volume %s: %w", target.logical, err)
 			}
 		}
+		for _, target := range volumeTargets {
+			if err := runtime.validateBackupVolumeTopology(cmd.Context(), image, target.actual); err != nil {
+				return fmt.Errorf("validate backup topology for volume %s: %w", target.logical, err)
+			}
+		}
+		if err := createPrivateBackupDirectory(cmd.Context(), ctx, backupDir); err != nil {
+			return err
+		}
+		backupDir, err = resolveProjectBackupPath(cmd.Context(), ctx, output, true)
+		if err != nil {
+			return err
+		}
 		databasePath := filepath.Join(backupDir, "mariadb.sql.gz")
-		if err := runtime.backupDatabase(cmd.Context(), databaseService, databaseName, databasePath); err != nil {
+		if err := backupDatabaseWithInventory(cmd.Context(), runtime, databaseService, databaseName, databasePath); err != nil {
 			return err
 		}
 		if err := secureContextFile(cmd.Context(), ctx, databasePath); err != nil {

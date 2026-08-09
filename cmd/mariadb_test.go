@@ -270,6 +270,7 @@ func TestValidateMariaDBDatabaseName(t *testing.T) {
 		{name: "leading dash", database: "-appdb", wantErr: "cannot start with '-'"},
 		{name: "trimmed leading dash", database: " -appdb ", wantErr: "cannot start with '-'"},
 		{name: "nul byte", database: "app\x00db", wantErr: "cannot contain NUL"},
+		{name: "line break", database: "app\ndb", wantErr: "cannot contain NUL or line breaks"},
 	}
 
 	for _, tc := range tests {
@@ -356,8 +357,96 @@ func TestMaybeGzipReader(t *testing.T) {
 func TestMariaDBArtifactNameIncludesDatabase(t *testing.T) {
 	t.Parallel()
 
-	if got, want := mariaDBArtifactName("app/db"), "mariadb-app-db.sql.gz"; got != want {
+	digest := sha256.Sum256([]byte("app/db"))
+	want := "mariadb-app-db-" + fmt.Sprintf("%x", digest[:16]) + ".sql.gz"
+	if got := mariaDBArtifactName("app/db"); got != want {
 		t.Fatalf("mariaDBArtifactName() = %q, want %q", got, want)
+	}
+}
+
+func TestMariaDBArtifactNameDistinguishesSanitizedCollisions(t *testing.T) {
+	t.Parallel()
+
+	if got := mariaDBArtifactName(" \t "); got != "mariadb.sql.gz" {
+		t.Fatalf("empty database artifact name = %q, want mariadb.sql.gz", got)
+	}
+	first := mariaDBArtifactName("institution archive")
+	second := mariaDBArtifactName("institution-archive")
+	if first == second {
+		t.Fatalf("collision-prone artifact names are equal: %q", first)
+	}
+	if first != mariaDBArtifactName(" institution archive ") {
+		t.Fatalf("artifact name is not deterministic after trimming: %q", first)
+	}
+}
+
+func TestMariaDBSchemaInventoryUsesDirectHexQuery(t *testing.T) {
+	t.Parallel()
+
+	got := mariaDBSchemaInventoryArgs("mariadb")
+	want := []string{"mariadb", "--user=root", "--batch", "--skip-column-names", "--raw", "--execute", mariaDBSchemaInventorySQL}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mariaDBSchemaInventoryArgs() = %v, want %v", got, want)
+	}
+	for _, arg := range got {
+		if arg == "sh" || arg == "-c" {
+			t.Fatalf("schema inventory uses a shell argument: %v", got)
+		}
+	}
+}
+
+func TestMariaDBSchemaInventoryAllowsOnlyDeclaredAndSystemSchemas(t *testing.T) {
+	t.Parallel()
+
+	encoded := strings.Join([]string{
+		fmt.Sprintf("%X", []byte("information_schema")),
+		fmt.Sprintf("%X", []byte("mysql")),
+		fmt.Sprintf("%X", []byte("performance_schema")),
+		fmt.Sprintf("%X", []byte("sys")),
+		fmt.Sprintf("%X", []byte("appdb")),
+	}, "\n")
+	schemas, err := parseMariaDBSchemaInventory(encoded)
+	if err != nil {
+		t.Fatalf("parseMariaDBSchemaInventory() error = %v", err)
+	}
+	if err := validateMariaDBSchemaInventory("appdb", schemas); err != nil {
+		t.Fatalf("validateMariaDBSchemaInventory() error = %v", err)
+	}
+	if err := validateMariaDBSchemaInventory("mysql", schemas); err == nil || !strings.Contains(err.Error(), "system schema") {
+		t.Fatalf("system application schema validation error = %v", err)
+	}
+	if err := validateMariaDBSchemaInventory("appdb", []string{"mysql", "appdb"}); err == nil || !strings.Contains(err.Error(), "inventory is incomplete") {
+		t.Fatalf("incomplete system inventory error = %v", err)
+	}
+
+	encoded += "\n" + fmt.Sprintf("%X", []byte("institution archive"))
+	schemas, err = parseMariaDBSchemaInventory(encoded)
+	if err != nil {
+		t.Fatalf("parseMariaDBSchemaInventory(extra) error = %v", err)
+	}
+	err = validateMariaDBSchemaInventory("appdb", schemas)
+	if err == nil || !strings.Contains(err.Error(), "undeclared application schemas") || !strings.Contains(err.Error(), "institution archive") {
+		t.Fatalf("unexpected schema validation error = %v", err)
+	}
+}
+
+func TestMariaDBSchemaInventoryAllowsMissingDeclaredSchemaForRestoreRecovery(t *testing.T) {
+	t.Parallel()
+
+	schemas := []string{"information_schema", "mysql", "performance_schema", "sys"}
+	if err := validateMariaDBSchemaInventory("appdb", schemas); err != nil {
+		t.Fatalf("validateMariaDBSchemaInventory() error = %v", err)
+	}
+}
+
+func TestParseMariaDBSchemaInventoryRejectsAmbiguousOutput(t *testing.T) {
+	t.Parallel()
+
+	mysql := fmt.Sprintf("%X", []byte("mysql"))
+	for _, output := range []string{"", "not-hex", mysql + "\n" + mysql} {
+		if _, err := parseMariaDBSchemaInventory(output); err == nil {
+			t.Fatalf("parseMariaDBSchemaInventory(%q) unexpectedly succeeded", output)
+		}
 	}
 }
 
