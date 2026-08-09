@@ -36,6 +36,8 @@ core and every supported sibling application-plugin checkout that is present.
 `make build` and `make test` only download declared modules; they never rewrite
 `go.mod` or `go.sum`. Use `make deps-update` only when intentionally changing
 dependency versions, and use `make mod-check` in CI to reject tidy drift.
+Plugin authors should also review [SDK migration notes](SDK_MIGRATIONS.md)
+before updating their sitectl dependency.
 
 ## Template provenance and downstream ownership
 

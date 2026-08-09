@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -190,7 +192,7 @@ func TestMariaDBDumpArgsDefaultsToAllDatabases(t *testing.T) {
 	t.Parallel()
 
 	got := mariaDBDumpArgs("mariadb-dump", mariaDBBackupOptions{})
-	want := []string{"mariadb-dump", "--single-transaction", "--quick", "--routines", "--triggers", "--user=root", "--all-databases"}
+	want := []string{"mariadb-dump", "--single-transaction", "--quick", "--routines", "--triggers", "--events", "--user=root", "--all-databases"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("mariaDBDumpArgs() = %v, want %v", got, want)
 	}
@@ -200,9 +202,45 @@ func TestMariaDBDumpArgsUsesDatabase(t *testing.T) {
 	t.Parallel()
 
 	got := mariaDBDumpArgs("mysqldump", mariaDBBackupOptions{database: "appdb"})
-	want := []string{"mysqldump", "--single-transaction", "--quick", "--routines", "--triggers", "--user=root", "appdb"}
+	want := []string{"mysqldump", "--single-transaction", "--quick", "--routines", "--triggers", "--events", "--user=root", "appdb"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("mariaDBDumpArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestMariaDBCLIArgsUseDirectContainerArgv(t *testing.T) {
+	t.Parallel()
+
+	got, err := mariaDBCLIArgs("mariadb", "root", "institution archive")
+	if err != nil {
+		t.Fatalf("mariaDBCLIArgs() error = %v", err)
+	}
+	want := []string{"mariadb", "--user=root", "institution archive"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mariaDBCLIArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestMariaDBCLIArgsRejectUnsafeOrMissingValues(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		binary   string
+		user     string
+		database string
+	}{
+		{name: "missing binary", user: "root"},
+		{name: "missing user", binary: "mariadb"},
+		{name: "option-like database", binary: "mariadb", user: "root", database: "--execute=DROP DATABASE app"},
+		{name: "nul user", binary: "mariadb", user: "root\x00admin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := mariaDBCLIArgs(tc.binary, tc.user, tc.database); err == nil {
+				t.Fatal("expected invalid CLI arguments to fail")
+			}
+		})
 	}
 }
 
@@ -320,6 +358,45 @@ func TestMariaDBArtifactNameIncludesDatabase(t *testing.T) {
 
 	if got, want := mariaDBArtifactName("app/db"), "mariadb-app-db.sql.gz"; got != want {
 		t.Fatalf("mariaDBArtifactName() = %q, want %q", got, want)
+	}
+}
+
+func TestVerifyMariaDBImportChecksumUsesExactPrivateBytes(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte("CREATE TABLE exact_bytes (id INT);\n")
+	digest := sha256.Sum256(payload)
+	file := tempMariaDBInputFile(t, payload)
+	if err := verifyMariaDBImportChecksum(file, fmt.Sprintf("%x", digest[:])); err != nil {
+		t.Fatalf("verifyMariaDBImportChecksum() error = %v", err)
+	}
+	position, err := file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if position != 0 {
+		t.Fatalf("verified import file position = %d, want 0", position)
+	}
+	if err := verifyMariaDBImportChecksum(file, strings.Repeat("0", 64)); err == nil {
+		t.Fatal("verifyMariaDBImportChecksum() accepted different bytes")
+	}
+}
+
+func TestMariaDBRestoreWaitComposeArgsWaitBeforeImport(t *testing.T) {
+	t.Parallel()
+
+	got, err := mariaDBRestoreWaitComposeArgs("mariadb")
+	if err != nil {
+		t.Fatalf("mariaDBRestoreWaitComposeArgs() error = %v", err)
+	}
+	want := []string{"up", "--wait", "--wait-timeout", "600", "-d", "mariadb"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mariaDBRestoreWaitComposeArgs() = %v, want %v", got, want)
+	}
+	for _, service := range []string{"", "--project-directory", "mariadb\nother"} {
+		if _, err := mariaDBRestoreWaitComposeArgs(service); err == nil {
+			t.Fatalf("mariaDBRestoreWaitComposeArgs(%q) unexpectedly succeeded", service)
+		}
 	}
 }
 

@@ -1,9 +1,8 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
@@ -39,7 +38,7 @@ func init() {
 	composeCmd.AddCommand(composeCleanCmd)
 }
 
-func runComposeCleanCommand(cmd *cobra.Command, yes bool) error {
+func runComposeCleanCommand(cmd *cobra.Command, yes bool) (returnErr error) {
 	ctx, spec, err := composeCleanContext(cmd)
 	if err != nil {
 		return err
@@ -47,7 +46,19 @@ func runComposeCleanCommand(cmd *cobra.Command, yes bool) error {
 	if err := confirmComposeClean(ctx, yes); err != nil {
 		return err
 	}
-	if err := runComposeDownVolumes(cmd, ctx); err != nil {
+	lock, err := ctx.AcquireProjectMutationLock(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("acquire project mutation lock: %w", err)
+	}
+	lockedCmd := *cmd
+	lockedCmd.SetContext(lock.Context())
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("release project mutation lock: %w", releaseErr))
+		}
+	}()
+
+	if err := runComposeDownVolumes(&lockedCmd, ctx); err != nil {
 		return err
 	}
 	removed, err := composeReconcileReset(ctx, spec)
@@ -118,17 +129,11 @@ func confirmComposeClean(ctx *config.Context, yes bool) error {
 }
 
 func runComposeDownVolumes(cmd *cobra.Command, ctx *config.Context) error {
-	commandText := ctx.DockerComposeShellCommand("docker compose down -v")
-	fmt.Fprintf(cmd.OutOrStdout(), "Running %s\n", commandText)
-	config.LogDockerComposeCommand(ctx, commandText)
-	command := exec.CommandContext(cmd.Context(), "bash", "-lc", commandText) // #nosec G204 -- fixed docker compose command rewritten from context-owned metadata.
-	command.Dir = ctx.ProjectDir
-	command.Env = os.Environ()
-	command.Stdin = cmd.InOrStdin()
-	command.Stdout = cmd.OutOrStdout()
-	command.Stderr = cmd.ErrOrStderr()
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("run %s: %w", commandText, err)
+	if ctx == nil {
+		return fmt.Errorf("context cannot be nil")
+	}
+	if err := runContextCompose(cmd, *ctx, []string{"down", "-v"}); err != nil {
+		return fmt.Errorf("run docker compose down -v: %w", err)
 	}
 	return nil
 }

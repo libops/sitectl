@@ -88,7 +88,7 @@ func TestResolveContainerExecutablePrefersInstalledBinary(t *testing.T) {
 	if got != "valkey-cli" {
 		t.Fatalf("resolveContainerExecutable() = %q, want valkey-cli", got)
 	}
-	wantCmd := []string{"sh", "-lc", "command -v valkey-cli"}
+	wantCmd := []string{"valkey-cli", "--version"}
 	if !reflect.DeepEqual(gotCmd, wantCmd) {
 		t.Fatalf("exec command = %v, want %v", gotCmd, wantCmd)
 	}
@@ -101,11 +101,37 @@ func TestResolveContainerExecutableFallsBackWhenPreferredMissing(t *testing.T) {
 	})
 
 	serviceExecCapture = func(ctx context.Context, cli *docker.DockerClient, container, workingDir string, cmd []string) (string, error) {
-		return "", fmt.Errorf("not found")
+		return "", fmt.Errorf(`exec: "valkey-cli": executable file not found in $PATH`)
 	}
 
 	got := resolveContainerExecutable(&cobra.Command{Use: "ping"}, nil, "valkey-1", "valkey-cli", "redis-cli")
 	if got != "redis-cli" {
 		t.Fatalf("resolveContainerExecutable() = %q, want redis-cli", got)
+	}
+}
+
+func TestResolveContainerExecutableDoesNotMaskPreferredOperationalFailure(t *testing.T) {
+	previous := serviceExecCapture
+	t.Cleanup(func() {
+		serviceExecCapture = previous
+	})
+
+	serviceExecCapture = func(context.Context, *docker.DockerClient, string, string, []string) (string, error) {
+		return "", fmt.Errorf("valkey-cli failed with exit code 1: connection refused")
+	}
+
+	if got := resolveContainerExecutable(&cobra.Command{Use: "ping"}, nil, "valkey-1", "valkey-cli", "redis-cli"); got != "valkey-cli" {
+		t.Fatalf("resolveContainerExecutable() = %q, want preferred binary after operational failure", got)
+	}
+}
+
+func TestContainerExecutableMissingErrorClassification(t *testing.T) {
+	t.Parallel()
+
+	if !docker.IsExecutableNotFound(fmt.Errorf(`exec: "memcached-tool": executable file not found in $PATH`)) {
+		t.Fatal("expected missing executable error to be recognized")
+	}
+	if docker.IsExecutableNotFound(fmt.Errorf("memcached-tool failed with exit code 1: connection refused")) {
+		t.Fatal("operational command failure must not trigger a different fallback client")
 	}
 }

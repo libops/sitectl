@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,10 +30,11 @@ type mariaDBBackupOptions struct {
 }
 
 type mariaDBImportOptions struct {
-	service  string
-	input    string
-	database string
-	yolo     bool
+	service          string
+	input            string
+	database         string
+	expectedChecksum string
+	yolo             bool
 }
 
 type mariaDBSyncOptions struct {
@@ -76,22 +79,74 @@ func mariaDBCLICommand() *cobra.Command {
 		Short: "Open an interactive MariaDB client in the database container",
 		Long: `Open the MariaDB command-line client inside the active site's database container.
 
-The password is read inside the container from /run/secrets/DB_ROOT_PASSWORD and is
-never copied to the host command line, environment, or sitectl output.`,
+The password is resolved from the configured mounted secret or database container
+environment and sent only in the Docker exec environment. It is never placed on the
+host command line or written to sitectl output.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, err := resolveCurrentContext(cmd)
 			if err != nil {
 				return err
 			}
-			clientArgs := []string{"exec", opts.service, "sh", "-euc", `password="$(cat /run/secrets/DB_ROOT_PASSWORD)"; export MYSQL_PWD="${password}"; exec mariadb --user "$1" ${2:+"$2"}`, "sitectl-mariadb", opts.user, opts.database}
-			return runContextCompose(cmd, *ctx, clientArgs)
+			clientArgs, err := mariaDBCLIArgs("mariadb", opts.user, opts.database)
+			if err != nil {
+				return err
+			}
+			cli, containerName, password, err := mariaDBContainer(cmd, ctx, opts.service)
+			if err != nil {
+				return err
+			}
+			defer cli.Close()
+
+			clientArgs[0] = resolveContainerExecutable(cmd, cli, containerName, "mariadb", "mysql")
+			exitCode, err := cli.Exec(cmd.Context(), docker.ExecOptions{
+				Container:    containerName,
+				Cmd:          clientArgs,
+				Env:          []string{"MYSQL_PWD=" + strings.TrimSpace(password)},
+				AttachStdin:  true,
+				AttachStdout: true,
+				AttachStderr: true,
+				Tty:          true,
+				Stdin:        cmd.InOrStdin(),
+				Stdout:       cmd.OutOrStdout(),
+				Stderr:       cmd.ErrOrStderr(),
+			})
+			if err != nil {
+				return fmt.Errorf("open interactive MariaDB client: %w", err)
+			}
+			if exitCode != 0 {
+				return fmt.Errorf("interactive MariaDB client exited with code %d", exitCode)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&opts.service, "service", defaultMariaDBService, "Compose service containing the MariaDB client and root secret.")
 	cmd.Flags().StringVar(&opts.user, "user", "root", "Database account used by the interactive client.")
 	cmd.Flags().StringVar(&opts.database, "database", "", "Database selected when the client starts; empty leaves it unselected.")
 	return cmd
+}
+
+func mariaDBCLIArgs(binary, user, database string) ([]string, error) {
+	binary = strings.TrimSpace(binary)
+	user = strings.TrimSpace(user)
+	database = strings.TrimSpace(database)
+	if binary == "" {
+		return nil, fmt.Errorf("MariaDB client executable cannot be empty")
+	}
+	if user == "" {
+		return nil, fmt.Errorf("MariaDB user cannot be empty")
+	}
+	if strings.Contains(binary+user, "\x00") {
+		return nil, fmt.Errorf("MariaDB client executable and user cannot contain NUL")
+	}
+	if err := validateMariaDBDatabaseName(database); err != nil {
+		return nil, err
+	}
+	args := []string{binary, "--user=" + user}
+	if database != "" {
+		args = append(args, database)
+	}
+	return args, nil
 }
 
 func mariaDBUpgradeCommand() *cobra.Command {
@@ -331,7 +386,7 @@ func runMariaDBBackup(cmd *cobra.Command, ctx *config.Context, opts mariaDBBacku
 	if err := tempFile.Close(); err != nil {
 		return err
 	}
-	return ctx.UploadFile(tempPath, opts.output)
+	return corejob.UploadContextFile(cmd.Context(), ctx, tempPath, opts.output)
 }
 
 func runMariaDBImport(cmd *cobra.Command, ctx *config.Context, opts mariaDBImportOptions) error {
@@ -362,19 +417,16 @@ func runMariaDBImport(cmd *cobra.Command, ctx *config.Context, opts mariaDBImpor
 		_ = cli.Close()
 	}()
 
-	tempFile, err := os.CreateTemp("", "sitectl-mariadb-import-*.sql")
+	tempDir, err := os.MkdirTemp("", "sitectl-mariadb-import-*")
 	if err != nil {
 		return err
 	}
-	tempPath := tempFile.Name()
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
+	tempPath := filepath.Join(tempDir, "database.sql")
 	defer func() {
-		_ = os.Remove(tempPath)
+		_ = os.RemoveAll(tempDir)
 	}()
 
-	if err := corejob.DownloadContextFile(ctx, opts.input, tempPath); err != nil {
+	if err := corejob.DownloadContextFileContext(cmd.Context(), ctx, opts.input, tempPath); err != nil {
 		return err
 	}
 	inputFile, err := os.Open(tempPath) // #nosec G304 -- tempPath is created by this process and populated before import.
@@ -384,6 +436,9 @@ func runMariaDBImport(cmd *cobra.Command, ctx *config.Context, opts mariaDBImpor
 	defer func() {
 		_ = inputFile.Close()
 	}()
+	if err := verifyMariaDBImportChecksum(inputFile, opts.expectedChecksum); err != nil {
+		return err
+	}
 	reader, cleanupReader, err := maybeGzipReader(inputFile)
 	if err != nil {
 		return err
@@ -420,6 +475,28 @@ func runMariaDBImport(cmd *cobra.Command, ctx *config.Context, opts mariaDBImpor
 	}
 	if exitCode != 0 {
 		return fmt.Errorf("mariadb import failed with exit code %d: %s", exitCode, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+func verifyMariaDBImportChecksum(file *os.File, expected string) error {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if expected == "" {
+		return nil
+	}
+	if !sha256HexPattern.MatchString(expected) {
+		return fmt.Errorf("expected MariaDB import SHA-256 checksum is invalid")
+	}
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return fmt.Errorf("checksum private MariaDB import file: %w", err)
+	}
+	actual := fmt.Sprintf("%x", hasher.Sum(nil))
+	if actual != expected {
+		return fmt.Errorf("private MariaDB import file SHA-256 mismatch: got %s, want %s", actual, expected)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind verified MariaDB import file: %w", err)
 	}
 	return nil
 }
@@ -546,7 +623,7 @@ func mariaDBContainer(cmd *cobra.Command, ctx *config.Context, service string) (
 }
 
 func mariaDBDumpArgs(binary string, opts mariaDBBackupOptions) []string {
-	args := []string{binary, "--single-transaction", "--quick", "--routines", "--triggers", "--user=root"}
+	args := []string{binary, "--single-transaction", "--quick", "--routines", "--triggers", "--events", "--user=root"}
 	if strings.TrimSpace(opts.database) != "" {
 		return append(args, strings.TrimSpace(opts.database))
 	}
@@ -624,6 +701,14 @@ func mariaDBArtifactName(database string) string {
 		return "mariadb.sql.gz"
 	}
 	return "mariadb-" + sanitizeArtifactPart(database) + ".sql.gz"
+}
+
+func mariaDBRestoreWaitComposeArgs(service string) ([]string, error) {
+	service = strings.TrimSpace(service)
+	if !backupVolumeNamePattern.MatchString(service) {
+		return nil, fmt.Errorf("MariaDB restore service %q is not a safe Compose service name", service)
+	}
+	return []string{"up", "--wait", "--wait-timeout", "600", "-d", service}, nil
 }
 
 func sanitizeArtifactPart(value string) string {

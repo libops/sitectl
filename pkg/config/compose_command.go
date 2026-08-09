@@ -46,6 +46,27 @@ func (c Context) DockerComposeSubcommandArgs(args []string) []string {
 	return dockerComposeSubcommandArgs(args, c.dockerComposeTranslatedProjectDir() != "")
 }
 
+// DockerComposeArgv returns an argv-style Docker Compose command adjusted for
+// the context's project directory, Compose files, environment files, and local
+// daemon path mapping. Non-Compose argv is copied unchanged. The boolean result
+// reports whether the resulting command is `docker compose up`.
+func (c Context) DockerComposeArgv(argv []string) ([]string, bool) {
+	if len(argv) < 2 || argv[0] != "docker" || argv[1] != "compose" {
+		return append([]string{}, argv...), false
+	}
+	subcommandIndex := dockerComposeArgvSubcommandIndex(argv, 2)
+	if subcommandIndex < 0 {
+		return append([]string{}, argv...), false
+	}
+	subcommand := argv[subcommandIndex]
+	tail := append([]string{}, argv[2:subcommandIndex]...)
+	tail = append(tail, c.DockerComposeSubcommandArgs(argv[subcommandIndex:])...)
+	out := []string{"docker", "compose"}
+	out = append(out, c.DockerComposeGlobalArgsForCommand(subcommand)...)
+	out = append(out, tail...)
+	return out, subcommand == "up"
+}
+
 // DockerComposeShellCommand rewrites executable "docker compose ..." commands
 // in a shell list so they honor the context's Compose and environment files.
 // It also supplies daemon-visible project paths for local sshfs workspaces.
@@ -280,6 +301,19 @@ func isSimpleEnvOption(value string) bool {
 func dockerComposeSubcommandWordIndex(words []shellCommandWord, start int) int {
 	for index := start; index < len(words); index++ {
 		option := words[index].value
+		if !strings.HasPrefix(option, "-") {
+			return index
+		}
+		if composeGlobalOptionTakesValue(option) && !strings.Contains(option, "=") {
+			index++
+		}
+	}
+	return -1
+}
+
+func dockerComposeArgvSubcommandIndex(argv []string, start int) int {
+	for index := start; index < len(argv); index++ {
+		option := argv[index]
 		if !strings.HasPrefix(option, "-") {
 			return index
 		}

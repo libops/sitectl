@@ -150,63 +150,199 @@ func runDockerStats(ctxCfg *config.Context) (string, error) {
 }
 
 func runHostMetrics(ctxCfg *config.Context) (string, error) {
-	script := `
-load1=""
-if [ -r /proc/loadavg ]; then
-  load1=$(awk '{print $1}' /proc/loadavg 2>/dev/null)
-fi
-if [ -z "$load1" ] && command -v uptime >/dev/null 2>&1; then
-  load1=$(uptime 2>/dev/null | sed -E 's/.*load averages?: ([0-9.]+).*/\1/' | awk '{print $1}')
-  load1=${load1%%,*}
-fi
+	if ctxCfg == nil {
+		return "", fmt.Errorf("context cannot be nil")
+	}
 
-cpu_count=""
-if command -v getconf >/dev/null 2>&1; then
-  cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
-fi
-if [ -z "$cpu_count" ] && command -v nproc >/dev/null 2>&1; then
-  cpu_count=$(nproc 2>/dev/null || true)
-fi
+	var load1 string
+	var cpuCount string
+	var netRX uint64
+	var netTX uint64
+	collected := false
+	accessor, accessorErr := ctxCfg.NewFileAccessor()
+	if accessorErr == nil {
+		defer accessor.Close()
+		if data, err := accessor.ReadFile("/proc/loadavg"); err == nil {
+			collected = true
+			load1 = parseProcLoadAverage(string(data))
+		}
+		if data, err := accessor.ReadFile("/proc/cpuinfo"); err == nil {
+			collected = true
+			cpuCount = strconv.Itoa(parseProcCPUCount(string(data)))
+			if cpuCount == "0" {
+				cpuCount = ""
+			}
+		}
+		if data, err := accessor.ReadFile("/proc/net/dev"); err == nil {
+			collected = true
+			netRX, netTX = parseProcNetworkTotals(string(data))
+		}
+	}
 
-disk_total_kb=""
-disk_avail_kb=""
-if command -v df >/dev/null 2>&1; then
-  set -- $(df -kP . 2>/dev/null | awk 'NR==2 {print $2, $4}')
-  disk_total_kb=$1
-  disk_avail_kb=$2
-fi
+	if load1 == "" {
+		if output, err := runHostCommand(ctxCfg, "uptime"); err == nil {
+			collected = true
+			load1 = parseUptimeLoadAverage(output)
+		}
+	}
+	if cpuCount == "" {
+		if output, err := runHostCommand(ctxCfg, "getconf", "_NPROCESSORS_ONLN"); err == nil {
+			collected = true
+			cpuCount = firstPositiveInteger(output)
+		}
+	}
+	if cpuCount == "" {
+		if output, err := runHostCommand(ctxCfg, "nproc"); err == nil {
+			collected = true
+			cpuCount = firstPositiveInteger(output)
+		}
+	}
 
-net_rx_bytes=0
-net_tx_bytes=0
-if [ -r /proc/net/dev ]; then
-  while IFS= read -r line; do
-    case "$line" in
-      *:*)
-        iface=$(printf '%s\n' "$line" | cut -d: -f1 | tr -d ' ')
-        case "$iface" in
-          lo|docker*|veth*|br-*|virbr*|tailscale*|tun*|tap*)
-            continue
-            ;;
-        esac
-        data=$(printf '%s\n' "$line" | cut -d: -f2)
-        set -- $data
-        net_rx_bytes=$((net_rx_bytes + $1))
-        net_tx_bytes=$((net_tx_bytes + $9))
-        ;;
-    esac
-  done < /proc/net/dev
-fi
+	var diskTotalKB string
+	var diskAvailKB string
+	if output, err := runHostCommand(ctxCfg, "df", "-kP", "."); err == nil {
+		collected = true
+		diskTotalKB, diskAvailKB = parsePOSIXDiskUsage(output)
+	}
+	if !collected {
+		return "", fmt.Errorf("host metric probes were unavailable")
+	}
 
-printf '{"load1":"%s","cpu_count":"%s","disk_total_kb":"%s","disk_avail_kb":"%s","net_rx_bytes":"%s","net_tx_bytes":"%s"}\n' \
-  "$load1" "$cpu_count" "$disk_total_kb" "$disk_avail_kb" "$net_rx_bytes" "$net_tx_bytes"
-`
+	payload, err := json.Marshal(hostMetricsPayload{
+		Load1:       load1,
+		CPUCount:    cpuCount,
+		DiskTotalKB: diskTotalKB,
+		DiskAvailKB: diskAvailKB,
+		NetRXBytes:  strconv.FormatUint(netRX, 10),
+		NetTXBytes:  strconv.FormatUint(netTX, 10),
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode host metrics: %w", err)
+	}
+	return string(payload), nil
+}
+
+func runHostCommand(ctxCfg *config.Context, name string, args ...string) (string, error) {
+	command := exec.Command(name, args...) // #nosec G204 -- executable and arguments are fixed host metric probes selected by sitectl.
+	command.Dir = ctxCfg.ProjectDir
 	if ctxCfg.DockerHostType == config.ContextLocal {
-		cmd := exec.Command("sh", "-lc", script)
-		cmd.Dir = ctxCfg.ProjectDir
-		output, err := cmd.CombinedOutput()
+		output, err := command.CombinedOutput()
 		return string(output), err
 	}
-	return ctxCfg.RunQuietCommand(exec.Command("sh", "-lc", script))
+	return ctxCfg.RunQuietCommand(command)
+}
+
+func parseProcLoadAverage(output string) string {
+	fields := strings.Fields(output)
+	if len(fields) == 0 {
+		return ""
+	}
+	if _, err := strconv.ParseFloat(fields[0], 64); err != nil {
+		return ""
+	}
+	return fields[0]
+}
+
+func parseUptimeLoadAverage(output string) string {
+	lower := strings.ToLower(output)
+	marker := "load average:"
+	index := strings.LastIndex(lower, marker)
+	if index < 0 {
+		marker = "load averages:"
+		index = strings.LastIndex(lower, marker)
+	}
+	if index < 0 {
+		return ""
+	}
+	values := strings.Fields(strings.NewReplacer(",", " ", ":", " ").Replace(output[index+len(marker):]))
+	if len(values) == 0 {
+		return ""
+	}
+	if _, err := strconv.ParseFloat(values[0], 64); err != nil {
+		return ""
+	}
+	return values[0]
+}
+
+func parseProcCPUCount(output string) int {
+	count := 0
+	for _, line := range strings.Split(output, "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 && strings.TrimSpace(parts[0]) == "processor" {
+			count++
+		}
+	}
+	return count
+}
+
+func firstPositiveInteger(output string) string {
+	fields := strings.Fields(output)
+	if len(fields) == 0 {
+		return ""
+	}
+	value, err := strconv.Atoi(fields[0])
+	if err != nil || value <= 0 {
+		return ""
+	}
+	return strconv.Itoa(value)
+}
+
+func parsePOSIXDiskUsage(output string) (string, string) {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for index := len(lines) - 1; index >= 1; index-- {
+		fields := strings.Fields(lines[index])
+		if len(fields) < 4 {
+			continue
+		}
+		if _, err := strconv.ParseUint(fields[1], 10, 64); err != nil {
+			continue
+		}
+		if _, err := strconv.ParseUint(fields[3], 10, 64); err != nil {
+			continue
+		}
+		return fields[1], fields[3]
+	}
+	return "", ""
+}
+
+func parseProcNetworkTotals(output string) (uint64, uint64) {
+	var rxTotal uint64
+	var txTotal uint64
+	for _, line := range strings.Split(output, "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		iface := strings.TrimSpace(parts[0])
+		if ignoredHostNetworkInterface(iface) {
+			continue
+		}
+		fields := strings.Fields(parts[1])
+		if len(fields) < 9 {
+			continue
+		}
+		rx, rxErr := strconv.ParseUint(fields[0], 10, 64)
+		tx, txErr := strconv.ParseUint(fields[8], 10, 64)
+		if rxErr == nil {
+			rxTotal += rx
+		}
+		if txErr == nil {
+			txTotal += tx
+		}
+	}
+	return rxTotal, txTotal
+}
+
+func ignoredHostNetworkInterface(iface string) bool {
+	if iface == "" || iface == "lo" {
+		return true
+	}
+	for _, prefix := range []string{"docker", "veth", "br-", "virbr", "tailscale", "tun", "tap"} {
+		if strings.HasPrefix(iface, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func composePSArgs(ctxCfg config.Context) []string {

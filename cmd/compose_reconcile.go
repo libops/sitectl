@@ -2,13 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -51,6 +52,7 @@ type composeReconcileDecision struct {
 type composeReconcileOptions struct {
 	Force     bool
 	ResetInit bool
+	Yolo      bool
 }
 
 type composeReconcileStatus struct {
@@ -91,7 +93,8 @@ type composeConfigSecret struct {
 }
 
 type composeConfigVolume struct {
-	Name string `json:"name"`
+	Name     string `json:"name"`
+	External bool   `json:"external"`
 }
 
 type composeConfigServiceVolume struct {
@@ -128,6 +131,11 @@ var (
 	composeReconcileRemoveFile    = os.Remove
 	composeReconcileReadConfig    = readComposeConfigDocument
 	composeReconcileUserID        = currentComposeReconcileUserID
+	composeReconcileLocalIdentity = config.LocalComposeHostNumericIdentity
+	composeReconcileInput         = config.GetInput
+	composeReconcileAcquireLock   = func(runCtx context.Context, ctx *config.Context) (*config.ProjectMutationLock, error) {
+		return ctx.AcquireProjectMutationLock(runCtx)
+	}
 )
 
 var composeReconcileCmd = &cobra.Command{
@@ -141,7 +149,8 @@ Starts with additional Compose flags or selected services pass through unchanged
 run this command explicitly first when those starts also need lifecycle repair.
 Use --force to rerun build/up even when the project is cached as current. Use
 --reset-init to remove plugin-declared init artifacts and init volumes before
-reconciling.`,
+reconciling. Because that operation destroys data, it requires a typed
+confirmation unless --yolo is supplied.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		force, err := cmd.Flags().GetBool("force")
@@ -152,9 +161,14 @@ reconciling.`,
 		if err != nil {
 			return err
 		}
+		yolo, err := cmd.Flags().GetBool("yolo")
+		if err != nil {
+			return err
+		}
 		return runComposeReconcileCommand(cmd, composeReconcileOptions{
 			Force:     force,
 			ResetInit: resetInit,
+			Yolo:      yolo,
 		})
 	},
 }
@@ -162,6 +176,7 @@ reconciling.`,
 func init() {
 	composeReconcileCmd.Flags().Bool("force", false, "Ignore the reconcile cache and rerun build/up.")
 	composeReconcileCmd.Flags().Bool("reset-init", false, "Remove plugin-declared init artifacts and init volumes before reconciling.")
+	composeReconcileCmd.Flags().Bool("yolo", false, "Skip the destructive --reset-init confirmation prompt.")
 	composeCmd.AddCommand(composeReconcileCmd)
 }
 
@@ -202,13 +217,23 @@ func (s composeReconcileStatus) summary() string {
 	return strings.Join(parts, "; ")
 }
 
-func maybeRunComposeReconcile(cmd *cobra.Command, ctx *config.Context) (bool, error) {
+func maybeRunComposeReconcile(cmd *cobra.Command, ctx *config.Context) (handled bool, returnErr error) {
 	if cmd == nil || ctx == nil || ctx.DockerHostType != config.ContextLocal {
 		return false, nil
 	}
 	if strings.TrimSpace(ctx.Plugin) == "" || strings.TrimSpace(ctx.Plugin) == "core" {
 		return false, nil
 	}
+	lock, err := composeReconcileAcquireLock(cmd.Context(), ctx)
+	if err != nil {
+		return false, fmt.Errorf("acquire project mutation lock: %w", err)
+	}
+	originalContext := cmd.Context()
+	cmd.SetContext(lock.Context())
+	defer func() {
+		cmd.SetContext(originalContext)
+		returnErr = errors.Join(returnErr, lock.Release())
+	}()
 
 	decision, err := composeReconcileDecisionForContext(ctx)
 	if err != nil {
@@ -228,7 +253,7 @@ func maybeRunComposeReconcile(cmd *cobra.Command, ctx *config.Context) (bool, er
 	return true, nil
 }
 
-func runComposeReconcileCommand(cmd *cobra.Command, opts composeReconcileOptions) error {
+func runComposeReconcileCommand(cmd *cobra.Command, opts composeReconcileOptions) (returnErr error) {
 	ctx, err := resolveCurrentContext(cmd)
 	if err != nil {
 		return err
@@ -242,7 +267,6 @@ func runComposeReconcileCommand(cmd *cobra.Command, opts composeReconcileOptions
 	if strings.TrimSpace(ctx.ProjectDir) == "" {
 		return fmt.Errorf("context %q does not define a project directory", ctx.Name)
 	}
-
 	spec, ok, err := composeReconcileSpec(strings.TrimSpace(ctx.Plugin))
 	if err != nil {
 		return err
@@ -250,6 +274,23 @@ func runComposeReconcileCommand(cmd *cobra.Command, opts composeReconcileOptions
 	if !ok {
 		return fmt.Errorf("plugin %q does not define a create lifecycle", ctx.Plugin)
 	}
+	if opts.ResetInit {
+		// Do not hold the project mutation lock while waiting for an operator.
+		// The reset plan is rebuilt from Compose while holding the lock below.
+		if err := confirmComposeReconcileReset(ctx, opts.Yolo); err != nil {
+			return err
+		}
+	}
+	lock, err := composeReconcileAcquireLock(cmd.Context(), ctx)
+	if err != nil {
+		return fmt.Errorf("acquire project mutation lock: %w", err)
+	}
+	originalContext := cmd.Context()
+	cmd.SetContext(lock.Context())
+	defer func() {
+		cmd.SetContext(originalContext)
+		returnErr = errors.Join(returnErr, lock.Release())
+	}()
 
 	if opts.ResetInit {
 		removed, err := composeReconcileReset(ctx, spec)
@@ -282,6 +323,30 @@ func runComposeReconcileCommand(cmd *cobra.Command, opts composeReconcileOptions
 	}
 	if err := composeReconcileMark(ctx, decision.Status, decision.Spec); err != nil {
 		return err
+	}
+	return nil
+}
+
+func confirmComposeReconcileReset(ctx *config.Context, yolo bool) error {
+	if yolo {
+		return nil
+	}
+	contextName := strings.TrimSpace(ctx.Name)
+	if contextName == "" {
+		contextName = "this context"
+	}
+	token := "reset " + contextName
+	input, err := composeReconcileInput(
+		fmt.Sprintf("This will permanently remove declared initialization files and local named volumes for %q.", contextName),
+		fmt.Sprintf("Project directory: %s", strings.TrimSpace(ctx.ProjectDir)),
+		"Database contents, uploaded files, generated secrets, and certificates in those declared resources can be lost.",
+		fmt.Sprintf("Type %q to continue: ", token),
+	)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(input) != token {
+		return fmt.Errorf("compose reconcile reset cancelled")
 	}
 	return nil
 }
@@ -659,79 +724,95 @@ func dockerVolumeRemove(volume string) error {
 }
 
 func resetComposeReconcileInitState(ctx *config.Context, spec plugin.CreateSpec) ([]string, error) {
-	removed := []string{}
-	artifactPaths := map[string]bool{}
-	for _, artifact := range spec.InitArtifacts {
-		path := strings.TrimSpace(artifact.Path)
-		if path == "" {
-			continue
-		}
-		fullPath := composeProjectPath(ctx, path)
-		artifactPaths[filepath.Clean(fullPath)] = true
-		info, err := os.Lstat(fullPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return removed, fmt.Errorf("inspect %s: %w", path, err)
-		}
-		if info.IsDir() {
-			return removed, fmt.Errorf("refusing to remove init artifact directory %s", path)
-		}
-		if err := composeReconcileRemoveFile(fullPath); err != nil && !os.IsNotExist(err) {
-			return removed, fmt.Errorf("remove %s: %w", path, err)
-		}
-		removed = append(removed, "file "+path)
-	}
-
 	composeConfig, err := composeReconcileReadConfig(ctx)
 	if err != nil {
-		return removed, fmt.Errorf("inspect compose volumes: %w", err)
+		return nil, fmt.Errorf("inspect compose volumes: %w", err)
 	}
 	configuredVolumes := composeConfiguredVolumeNames(ctx, composeConfig)
-	for _, secret := range composeConfig.Secrets {
-		if strings.TrimSpace(secret.File) == "" {
-			continue
-		}
-		fullPath := composeProjectPath(ctx, secret.File)
-		if artifactPaths[filepath.Clean(fullPath)] {
-			continue
-		}
-		info, statErr := os.Lstat(fullPath)
-		if os.IsNotExist(statErr) {
-			continue
-		}
-		if statErr != nil {
-			return removed, statErr
-		}
-		if info.IsDir() {
-			return removed, fmt.Errorf("refusing to remove init artifact directory %s", secret.File)
-		}
-		if err := composeReconcileRemoveFile(fullPath); err != nil && !os.IsNotExist(err) {
-			return removed, err
-		}
-		removed = append(removed, "file "+secret.File)
-	}
+	volumePlan := []string{}
 	requestedVolumes := map[string]bool{}
 	for _, volume := range spec.InitVolumes {
 		name := strings.TrimSpace(volume.Name)
+		if name == "" || requestedVolumes[name] {
+			continue
+		}
 		requestedVolumes[name] = true
-		if name == "" {
-			continue
+		configured, ok := composeConfig.Volumes[name]
+		if !ok {
+			return nil, fmt.Errorf("refusing to reset undeclared Compose volume %q", name)
 		}
-		dockerVolume := configuredVolumes[name]
-		if strings.TrimSpace(dockerVolume) == "" {
-			dockerVolume = name
+		if configured.External {
+			return nil, fmt.Errorf("refusing to reset external Compose volume %q", name)
 		}
-		if err := composeReconcileVolumeRemove(dockerVolume); err != nil {
-			return removed, err
+		dockerVolume := strings.TrimSpace(configuredVolumes[name])
+		if dockerVolume == "" {
+			return nil, fmt.Errorf("resolve declared Compose volume %q", name)
 		}
-		removed = append(removed, "volume "+dockerVolume)
+		volumePlan = append(volumePlan, dockerVolume)
 	}
-	for logical, dockerVolume := range configuredVolumes {
-		if requestedVolumes[logical] {
+
+	type artifactRemoval struct {
+		label string
+		path  string
+	}
+	artifactPlan := []artifactRemoval{}
+	plannedArtifacts := map[string]bool{}
+	planArtifact := func(label, configuredPath string) error {
+		fullPath, err := safeComposeInitArtifactPath(ctx, configuredPath)
+		if err != nil {
+			return err
+		}
+		clean := filepath.Clean(fullPath)
+		if plannedArtifacts[clean] {
+			return nil
+		}
+		if err := ensureComposeInitArtifactExistingAncestor(ctx, filepath.Dir(fullPath), configuredPath); err != nil {
+			return err
+		}
+		info, err := os.Lstat(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("inspect %s: %w", configuredPath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to remove init artifact symlink %s", configuredPath)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("refusing to remove init artifact directory %s", configuredPath)
+		}
+		plannedArtifacts[clean] = true
+		artifactPlan = append(artifactPlan, artifactRemoval{label: label, path: fullPath})
+		return nil
+	}
+
+	for _, artifact := range spec.InitArtifacts {
+		artifactPath := strings.TrimSpace(artifact.Path)
+		if artifactPath == "" {
 			continue
 		}
+		if err := planArtifact("file "+artifactPath, artifactPath); err != nil {
+			return nil, err
+		}
+	}
+	for name, secret := range composeConfig.Secrets {
+		if strings.TrimSpace(secret.File) == "" {
+			continue
+		}
+		if err := planArtifact("file "+secret.File, secret.File); err != nil {
+			return nil, fmt.Errorf("refusing unsafe Compose secret %q: %w", name, err)
+		}
+	}
+
+	removed := make([]string, 0, len(artifactPlan)+len(volumePlan))
+	for _, artifact := range artifactPlan {
+		if err := composeReconcileRemoveFile(artifact.path); err != nil && !os.IsNotExist(err) {
+			return removed, fmt.Errorf("remove %s: %w", artifact.label, err)
+		}
+		removed = append(removed, artifact.label)
+	}
+	for _, dockerVolume := range volumePlan {
 		if err := composeReconcileVolumeRemove(dockerVolume); err != nil {
 			return removed, err
 		}
@@ -792,12 +873,6 @@ func composeImageOverrideServices(ctx *config.Context) (map[string]string, map[s
 
 func runComposeReconcileCommands(cmd *cobra.Command, ctx *config.Context, decision composeReconcileDecision) error {
 	spec := decision.Spec
-	if decision.RunInit {
-		if err := ensureComposeReconcileInitArtifactDirs(ctx, spec); err != nil {
-			return err
-		}
-	}
-
 	var commands []string
 	if decision.RunInit {
 		commands = append(commands, spec.DockerComposeInit...)
@@ -806,7 +881,28 @@ func runComposeReconcileCommands(cmd *cobra.Command, ctx *config.Context, decisi
 		commands = append(commands, spec.DockerComposeBuild...)
 	}
 	commands = append(commands, spec.DockerComposeUp...)
-	if len(commands) == 0 {
+	commandsToRun := make([]string, 0, len(commands))
+	for _, commandText := range commands {
+		commandText = strings.TrimSpace(commandText)
+		if commandText == "" || (decision.RunInit && isLegacyHostUIDArtifactCommand(ctx, spec, commandText)) {
+			continue
+		}
+		_, plans, err := planLifecycleCommandList(ctx, commandText)
+		if err != nil {
+			return fmt.Errorf("validate compose reconcile command %q: %w", commandText, err)
+		}
+		if err := validateLifecycleProjectScripts(ctx, commandText, plans); err != nil {
+			return err
+		}
+		commandsToRun = append(commandsToRun, commandText)
+	}
+
+	if decision.RunInit {
+		if err := ensureComposeReconcileInitArtifactDirs(ctx, spec); err != nil {
+			return err
+		}
+	}
+	if len(commandsToRun) == 0 {
 		return nil
 	}
 
@@ -819,22 +915,9 @@ func runComposeReconcileCommands(cmd *cobra.Command, ctx *config.Context, decisi
 	}
 	env := config.AppendEnvOverrides(os.Environ(), envValues)
 
-	for _, commandText := range commands {
-		commandText = strings.TrimSpace(commandText)
-		if commandText == "" {
-			continue
-		}
-		commandText = ctx.DockerComposeShellCommand(commandText)
-		fmt.Fprintf(cmd.OutOrStdout(), "Running %s\n", commandText)
-		config.LogDockerComposeCommand(ctx, commandText)
-		command := exec.CommandContext(cmd.Context(), "bash", "-lc", commandText) // #nosec G204 -- commands come from trusted plugin create metadata.
-		command.Dir = ctx.ProjectDir
-		command.Env = env
-		command.Stdin = cmd.InOrStdin()
-		command.Stdout = cmd.OutOrStdout()
-		command.Stderr = cmd.ErrOrStderr()
-		if err := command.Run(); err != nil {
-			return fmt.Errorf("run %s: %w", commandText, err)
+	for _, commandText := range commandsToRun {
+		if err := runLifecycleCommandList(cmd, ctx, commandText, env, false); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -846,15 +929,108 @@ func ensureComposeReconcileInitArtifactDirs(ctx *config.Context, spec plugin.Cre
 		if path == "" {
 			continue
 		}
-		parent := filepath.Dir(composeProjectPath(ctx, path))
+		artifactPath, err := safeComposeInitArtifactPath(ctx, path)
+		if err != nil {
+			return err
+		}
+		parent := filepath.Dir(artifactPath)
 		if parent == "." || parent == string(filepath.Separator) {
 			continue
+		}
+		if err := ensureComposeInitArtifactExistingAncestor(ctx, parent, path); err != nil {
+			return err
 		}
 		if err := os.MkdirAll(parent, 0o755); err != nil {
 			return fmt.Errorf("create init artifact directory %s: %w", filepath.Dir(path), err)
 		}
+		if err := ensureComposeInitArtifactParent(ctx, parent, path); err != nil {
+			return err
+		}
+	}
+	userID := strings.TrimSpace(composeReconcileUserID())
+	for _, artifact := range spec.InitArtifacts {
+		if artifact.ValueFrom != plugin.InitArtifactValueFromHostUID {
+			continue
+		}
+		if userID == "" || userID == "unknown" {
+			return fmt.Errorf("resolve host uid for init artifact %s", artifact.Path)
+		}
+		path, err := safeComposeInitArtifactPath(ctx, artifact.Path)
+		if err != nil {
+			return err
+		}
+		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to replace host uid artifact symlink %s", artifact.Path)
+		} else if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("inspect host uid artifact %s: %w", artifact.Path, err)
+		}
+		if err := os.WriteFile(path, []byte(userID+"\n"), 0o600); err != nil {
+			return fmt.Errorf("write host uid artifact %s: %w", artifact.Path, err)
+		}
 	}
 	return nil
+}
+
+func safeComposeInitArtifactPath(ctx *config.Context, artifactPath string) (string, error) {
+	artifactPath = strings.TrimSpace(artifactPath)
+	if ctx == nil || strings.TrimSpace(ctx.ProjectDir) == "" {
+		return "", fmt.Errorf("project directory cannot be empty")
+	}
+	if artifactPath == "" || filepath.IsAbs(artifactPath) {
+		return "", fmt.Errorf("init artifact path must be relative to the project: %q", artifactPath)
+	}
+	clean := filepath.Clean(artifactPath)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("init artifact path escapes the project: %q", artifactPath)
+	}
+	return filepath.Join(ctx.ProjectDir, clean), nil
+}
+
+func ensureComposeInitArtifactExistingAncestor(ctx *config.Context, parent, artifactPath string) error {
+	existing := parent
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			return ensureComposeInitArtifactParent(ctx, existing, artifactPath)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect init artifact parent for %s: %w", artifactPath, err)
+		}
+		next := filepath.Dir(existing)
+		if next == existing {
+			return fmt.Errorf("find existing init artifact parent for %s", artifactPath)
+		}
+		existing = next
+	}
+}
+
+func ensureComposeInitArtifactParent(ctx *config.Context, parent, artifactPath string) error {
+	projectRoot := canonicalComposeProjectDir(ctx.ProjectDir)
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return fmt.Errorf("resolve init artifact parent for %s: %w", artifactPath, err)
+	}
+	resolvedParent, err = filepath.Abs(resolvedParent)
+	if err != nil {
+		return fmt.Errorf("resolve absolute init artifact parent for %s: %w", artifactPath, err)
+	}
+	relative, err := filepath.Rel(projectRoot, resolvedParent)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("init artifact parent escapes the project through a symlink: %q", artifactPath)
+	}
+	return nil
+}
+
+func isLegacyHostUIDArtifactCommand(ctx *config.Context, spec plugin.CreateSpec, commandText string) bool {
+	fields := strings.Fields(commandText)
+	if len(fields) != 4 || fields[0] != "id" || fields[1] != "-u" || fields[2] != ">" {
+		return false
+	}
+	writtenPath := filepath.Clean(composeProjectPath(ctx, fields[3]))
+	for _, artifact := range spec.InitArtifacts {
+		if artifact.ValueFrom == plugin.InitArtifactValueFromHostUID && writtenPath == filepath.Clean(composeProjectPath(ctx, artifact.Path)) {
+			return true
+		}
+	}
+	return false
 }
 
 func composeReconcileChecked(ctx *config.Context, spec plugin.CreateSpec) (bool, error) {
@@ -977,11 +1153,14 @@ func composeReconcileCacheKey(ctx *config.Context, spec plugin.CreateSpec) (stri
 }
 
 func currentComposeReconcileUserID() string {
-	current, err := user.Current()
-	if err != nil || strings.TrimSpace(current.Uid) == "" {
+	uid, _, available, err := composeReconcileLocalIdentity()
+	if err != nil {
 		return "unknown"
 	}
-	return strings.TrimSpace(current.Uid)
+	if !available {
+		return "0"
+	}
+	return uid
 }
 
 func composeReconcileProjectFingerprint(projectDir string) string {

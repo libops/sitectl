@@ -400,6 +400,20 @@ func (a *FileAccessor) Stat(path string) (fs.FileInfo, error) {
 	return a.sftp.Stat(path)
 }
 
+func (a *FileAccessor) Lstat(path string) (fs.FileInfo, error) {
+	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
+		return os.Lstat(path)
+	}
+	return a.sftp.Lstat(path)
+}
+
+func (a *FileAccessor) RealPath(path string) (string, error) {
+	if a == nil || a.ctx == nil || a.ctx.DockerHostType == ContextLocal {
+		return filepath.EvalSymlinks(path)
+	}
+	return a.sftp.RealPath(path)
+}
+
 func (a *FileAccessor) UploadFile(source, destination string) error {
 	localFile, err := os.Open(source) // #nosec G304 -- source is an explicit caller-selected upload path.
 	if err != nil {

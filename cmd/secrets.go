@@ -22,9 +22,17 @@ type composeSecret struct {
 	File string `json:"file"`
 }
 type composeVolume struct {
-	Name string `json:"name"`
+	Name       string            `json:"name"`
+	Driver     string            `json:"driver"`
+	DriverOpts map[string]string `json:"driver_opts"`
+	External   bool              `json:"external"`
 }
-type composeServiceVolume struct{ Type, Source string }
+type composeServiceVolume struct {
+	Type     string `json:"type"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only"`
+}
 type composeService struct {
 	Image   string                 `json:"image"`
 	Volumes []composeServiceVolume `json:"volumes"`

@@ -36,6 +36,7 @@ type serviceContainer struct {
 }
 
 var serviceExecCapture = docker.ExecCapture
+var serviceExecCaptureWithInput = docker.ExecCaptureWithInput
 
 func resolveServiceContainer(cmd *cobra.Command, service string) (*serviceContainer, error) {
 	service = strings.TrimSpace(service)
@@ -212,13 +213,22 @@ func memcachedStatsCommand() *cobra.Command {
 			}
 			defer target.cli.Close()
 
-			output, err := docker.ExecCapture(cmd.Context(), target.cli, target.containerName, "", []string{
-				"sh",
-				"-lc",
-				"if command -v memcached-tool >/dev/null 2>&1; then memcached-tool 127.0.0.1:11211 stats; else printf 'stats\\r\\nquit\\r\\n' | nc 127.0.0.1 11211; fi",
-			})
+			output, err := serviceExecCapture(cmd.Context(), target.cli, target.containerName, "", []string{"memcached-tool", "127.0.0.1:11211", "stats"})
 			if err != nil {
-				return err
+				if !docker.IsExecutableNotFound(err) {
+					return err
+				}
+				output, err = serviceExecCaptureWithInput(
+					cmd.Context(),
+					target.cli,
+					target.containerName,
+					"",
+					[]string{"nc", "127.0.0.1", "11211"},
+					strings.NewReader("stats\r\nquit\r\n"),
+				)
+				if err != nil {
+					return err
+				}
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), output)
 			return nil
@@ -229,7 +239,7 @@ func memcachedStatsCommand() *cobra.Command {
 }
 
 func resolveContainerExecutable(cmd *cobra.Command, cli *docker.DockerClient, containerName string, preferred, fallback string) string {
-	if _, err := serviceExecCapture(cmd.Context(), cli, containerName, "", []string{"sh", "-lc", "command -v " + preferred}); err == nil {
+	if _, err := serviceExecCapture(cmd.Context(), cli, containerName, "", []string{preferred, "--version"}); err == nil || !docker.IsExecutableNotFound(err) {
 		return preferred
 	}
 	return fallback

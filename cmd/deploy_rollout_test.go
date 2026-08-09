@@ -2,9 +2,7 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -123,6 +121,32 @@ func TestSplitLeadingComposePreparationCommands(t *testing.T) {
 	}
 }
 
+func TestValidateDeployRolloutFinalStart(t *testing.T) {
+	t.Parallel()
+	ctx := &config.Context{DockerHostType: config.ContextLocal, ProjectDir: t.TempDir()}
+	tests := []struct {
+		name     string
+		commands []string
+		wantErr  bool
+	}{
+		{name: "missing after preparation", commands: nil, wantErr: true},
+		{name: "conditional start", commands: []string{"false || docker compose up -d"}, wantErr: true},
+		{name: "trailing non-start", commands: []string{"docker compose up -d", "true"}, wantErr: true},
+		{name: "direct compose start", commands: []string{"docker compose exec -T app migrate", "docker compose up -d"}},
+		{name: "direct make start", commands: []string{"make up"}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDeployRolloutFinalStart(ctx, test.commands)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateDeployRolloutFinalStart() error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestRunDeployComposeRolloutPropagatesCommandFailure(t *testing.T) {
 	t.Parallel()
 	cmd := &cobra.Command{}
@@ -136,7 +160,6 @@ func TestRunDeployComposeRolloutPropagatesCommandFailure(t *testing.T) {
 }
 
 func TestRunDeployComposeRolloutHonorsContextComposeFiles(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "docker-args.txt")
 	projectDir := t.TempDir()
 	ctx := &config.Context{
 		DockerHostType: config.ContextLocal,
@@ -144,27 +167,21 @@ func TestRunDeployComposeRolloutHonorsContextComposeFiles(t *testing.T) {
 		ComposeFile:    []string{"compose.yaml", "compose production.yaml"},
 		EnvFile:        []string{".env"},
 	}
-	cmd := &cobra.Command{}
-	cmd.SetContext(context.Background())
-	cmd.SetOut(io.Discard)
-	command := fmt.Sprintf("docker() { printf '%%s\\n' \"$*\" > %q; }; docker compose ps", logPath)
-	if err := runDeployComposeRollout(cmd, ctx, []string{command}, false); err != nil {
-		t.Fatalf("runDeployComposeRollout() error = %v", err)
-	}
-	data, err := os.ReadFile(logPath)
+	got, composeUp, err := lifecycleCommandArgv(ctx, "docker compose ps")
 	if err != nil {
-		t.Fatalf("ReadFile(docker log) error = %v", err)
+		t.Fatalf("lifecycleCommandArgv() error = %v", err)
 	}
-	got := strings.TrimSpace(string(data))
-	for _, expected := range []string{
-		"compose",
-		"-f " + filepath.Join(projectDir, "compose.yaml"),
-		"-f " + filepath.Join(projectDir, "compose production.yaml"),
-		"--env-file " + filepath.Join(projectDir, ".env"),
+	if composeUp {
+		t.Fatal("docker compose ps must not be classified as compose up")
+	}
+	want := []string{
+		"docker", "compose",
+		"-f", filepath.Join(projectDir, "compose.yaml"),
+		"-f", filepath.Join(projectDir, "compose production.yaml"),
+		"--env-file", filepath.Join(projectDir, ".env"),
 		"ps",
-	} {
-		if !strings.Contains(got, expected) {
-			t.Fatalf("docker arguments = %q, want %q", got, expected)
-		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lifecycleCommandArgv() = %v, want %v", got, want)
 	}
 }

@@ -1,9 +1,13 @@
 package docker
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -22,17 +26,12 @@ const (
 	containerFileLockHeartbeat       = 5 * time.Second
 	containerFileLockReleaseTimeout  = 10 * time.Second
 	containerFileLockMaxErrorMessage = 4096
-	containerFileLockScript          = `( IFS= read -r -t 0 _ </dev/null ); status=$?
-if [ "$status" -gt 1 ]; then
-  printf 'container shell does not support read timeouts\n' >&2
-  exit 64
-fi
-printf '` + containerFileLockHandshake + `\n'
-while IFS= read -r -t 30 message; do
-  [ "$message" = release ] && exit 0
-done
-exit 0`
+	containerFileLockProgramDir      = "/tmp"
+	containerFileLockProgramPrefix   = "sitectl-container-file-lock-"
 )
+
+//go:embed assets/container-file-lock.sh
+var containerFileLockProgram []byte
 
 var ErrContainerFileLockHeld = errors.New("container file lock is already held")
 
@@ -66,6 +65,7 @@ type containerFileLockAPI interface {
 	ContainerExecCreate(ctx context.Context, containerID string, options dockercontainer.ExecOptions) (dockercontainer.ExecCreateResponse, error)
 	ContainerExecAttach(ctx context.Context, execID string, options dockercontainer.ExecAttachOptions) (dockertypes.HijackedResponse, error)
 	ContainerExecInspect(ctx context.Context, execID string) (dockercontainer.ExecInspect, error)
+	CopyToContainer(ctx context.Context, containerID, destination string, content io.Reader, options dockercontainer.CopyToContainerOptions) error
 }
 
 // AcquireContainerFileLock takes a non-blocking exclusive flock inside the
@@ -91,14 +91,21 @@ func (d *DockerClient) AcquireContainerFileLock(ctx context.Context, options Con
 		return nil, fmt.Errorf("docker client does not support container exec locking")
 	}
 
+	programPath, programArchive, err := prepareContainerFileLockProgram()
+	if err != nil {
+		return nil, err
+	}
 	execResponse, err := execAPI.ContainerExecCreate(ctx, container, dockercontainer.ExecOptions{
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
-		Cmd:          []string{"flock", "-n", lockPath, "sh", "-c", containerFileLockScript},
+		Cmd:          []string{"sh", programPath, lockPath},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create container file lock holder: %w", err)
+	}
+	if err := execAPI.CopyToContainer(ctx, container, containerFileLockProgramDir, programArchive, dockercontainer.CopyToContainerOptions{}); err != nil {
+		return nil, fmt.Errorf("stage container file lock program: %w", err)
 	}
 	response, err := execAPI.ContainerExecAttach(ctx, execResponse.ID, dockercontainer.ExecAttachOptions{})
 	if err != nil {
@@ -141,6 +148,32 @@ func (d *DockerClient) AcquireContainerFileLock(ctx context.Context, options Con
 	}
 	go lock.heartbeat()
 	return lock, nil
+}
+
+func prepareContainerFileLockProgram() (string, io.Reader, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", nil, fmt.Errorf("generate container file lock program name: %w", err)
+	}
+	name := containerFileLockProgramPrefix + hex.EncodeToString(nonce[:]) + ".sh"
+	var archive bytes.Buffer
+	archiveWriter := tar.NewWriter(&archive)
+	header := &tar.Header{
+		Name:     name,
+		Mode:     0o444,
+		Size:     int64(len(containerFileLockProgram)),
+		Typeflag: tar.TypeReg,
+	}
+	if err := archiveWriter.WriteHeader(header); err != nil {
+		return "", nil, fmt.Errorf("write container file lock program archive header: %w", err)
+	}
+	if _, err := archiveWriter.Write(containerFileLockProgram); err != nil {
+		return "", nil, fmt.Errorf("write container file lock program archive: %w", err)
+	}
+	if err := archiveWriter.Close(); err != nil {
+		return "", nil, fmt.Errorf("close container file lock program archive: %w", err)
+	}
+	return path.Join(containerFileLockProgramDir, name), bytes.NewReader(archive.Bytes()), nil
 }
 
 func inspectContainerFileLock(execAPI containerFileLockAPI, execID string) (dockercontainer.ExecInspect, error) {
