@@ -623,7 +623,7 @@ func TestExecuteSiteRestoreStagesAndSnapshotsBeforeDestructiveCommit(t *testing.
 	if snapshotFiles < down || snapshotDatabase < down || snapshotFiles > clearFiles || snapshotDatabase > clearFiles {
 		t.Fatalf("current volumes were not fully snapshotted before commit: %v", operations.events)
 	}
-	if !(clearDatabase < waitDatabase && waitDatabase < revalidateDatabase && revalidateDatabase < importDatabase) {
+	if clearDatabase >= waitDatabase || waitDatabase >= revalidateDatabase || revalidateDatabase >= importDatabase {
 		t.Fatalf("MariaDB restore did not clear fresh data, wait, revalidate frozen input, then import: %v", operations.events)
 	}
 	if operations.volumes["files-recovery"] || operations.volumes["database-recovery"] {

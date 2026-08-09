@@ -581,7 +581,7 @@ func buildSiteRestorePlan(ctx *config.Context, compose composeSecretConfig, mani
 			return siteRestorePlan{}, err
 		}
 		if previous, duplicate := seenActual[actual]; duplicate {
-			return siteRestorePlan{}, fmt.Errorf("Compose volumes %q and %q resolve to the same destructive restore target %q", previous, logical, actual)
+			return siteRestorePlan{}, fmt.Errorf("compose volumes %q and %q resolve to the same destructive restore target %q", previous, logical, actual)
 		}
 		seenActual[actual] = logical
 		plan.volumes = append(plan.volumes, siteVolumeRestore{
@@ -637,7 +637,7 @@ func validateComposeOwnedVolume(logical string, volume composeVolume) error {
 		return fmt.Errorf("owned Compose volume name %q is unsafe", logical)
 	}
 	if volume.External {
-		return fmt.Errorf("Compose volume %q is externally managed", logical)
+		return fmt.Errorf("compose volume %q is externally managed", logical)
 	}
 	driver := strings.TrimSpace(volume.Driver)
 	if driver != "" && driver != "local" {
@@ -658,7 +658,7 @@ func fullSiteExcludedStorage(compose composeSecretConfig) ([]string, error) {
 	excluded := []string{}
 	for _, service := range services {
 		if !backupVolumeNamePattern.MatchString(service) {
-			return nil, fmt.Errorf("Compose service name %q is unsafe for full-site backup", service)
+			return nil, fmt.Errorf("compose service name %q is unsafe for full-site backup", service)
 		}
 		for _, volume := range compose.Services[service].Volumes {
 			if volume.ReadOnly {

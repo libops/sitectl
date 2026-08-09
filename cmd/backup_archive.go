@@ -107,7 +107,7 @@ func validateBackupTarTopology(reader *tar.Reader) error {
 			return fmt.Errorf("archive root entry %q is not a directory", header.Name)
 		}
 		switch header.Typeflag {
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if strings.HasSuffix(header.Name, "/") {
 				return fmt.Errorf("regular file %q uses a directory path", header.Name)
 			}

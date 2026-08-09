@@ -186,7 +186,10 @@ func lifecycleExpansionBoundary(remainder string) bool {
 		return true
 	}
 	value := remainder[0]
-	return !((value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || value == '_')
+	if (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || value == '_' {
+		return false
+	}
+	return true
 }
 
 // ProjectScriptPath resolves a direct project script invocation without

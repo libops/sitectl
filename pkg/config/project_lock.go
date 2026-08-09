@@ -98,7 +98,7 @@ func (c *Context) AcquireProjectMutationLock(runCtx context.Context) (*ProjectMu
 	if remote && held.remote && held.requestedPath == requestedPath && held.lockPath != "" {
 		return &ProjectMutationLock{context: runCtx}, nil
 	}
-	identityPath := requestedPath
+	var identityPath string
 	if remote {
 		var err error
 		identityPath, err = c.canonicalRemoteProjectMutationLockIdentity(runCtx)

@@ -864,10 +864,6 @@ func (c *DockerChecker) checkComposeService(ctx context.Context, service string,
 	return sitevalidate.Result{Name: "service:" + service, Status: sitevalidate.StatusOK, Detail: strings.Join(details, "; ")}
 }
 
-func (c *DockerChecker) checkExec(ctx context.Context, name, service string, command []string) sitevalidate.Result {
-	return c.checkExecAlternatives(ctx, name, service, []containerExecAlternative{{Command: command}})
-}
-
 func (c *DockerChecker) checkExecAlternatives(ctx context.Context, name, service string, alternatives []containerExecAlternative) sitevalidate.Result {
 	output, err := c.execServiceAlternatives(ctx, service, alternatives)
 	if err != nil {
