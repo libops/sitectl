@@ -83,8 +83,8 @@ func TestRunComposeProjectArgvContextPreservesDynamicArgsLocallyAndRemotely(t *t
 	})
 
 	want := []string{"curl", "--data", "$5\nsecond", "$PWD", "space here", `quote'\";$(not-code)`}
-	for _, hostType := range []string{config.ContextLocal, config.ContextRemote} {
-		t.Run(hostType, func(t *testing.T) {
+	for _, hostType := range []config.ContextType{config.ContextLocal, config.ContextRemote} {
+		t.Run(string(hostType), func(t *testing.T) {
 			var got []string
 			runComposeProjectLocalArgvContext = func(_ context.Context, _ string, _ io.Reader, _, _ io.Writer, _ []string, argv []string) error {
 				got = append([]string{}, argv...)
