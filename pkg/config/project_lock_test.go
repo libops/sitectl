@@ -69,9 +69,12 @@ func (f fakeRemoteProjectLockFileInfo) Sys() any           { return f.stat }
 func TestMonitorRemoteProjectMutationLockCancelsContextWhenProcessExits(t *testing.T) {
 	t.Parallel()
 
-	waitResult := &projectMutationWaitResult{done: make(chan struct{})}
 	releaseStarted := make(chan struct{})
 	releaseState := &atomic.Uint32{}
+	waitResult := newProjectMutationWaitResult(func() error {
+		return errors.New("ssh channel closed")
+	}, releaseState)
+	<-waitResult.done
 	lossState := newProjectMutationLockLossState()
 	lockContext, cancel := context.WithCancelCause(context.Background())
 	monitorDone := make(chan struct{})
@@ -79,8 +82,6 @@ func TestMonitorRemoteProjectMutationLockCancelsContextWhenProcessExits(t *testi
 		monitorRemoteProjectMutationLock(waitResult, releaseStarted, releaseState, lossState, cancel)
 		close(monitorDone)
 	}()
-	waitResult.err = errors.New("ssh channel closed")
-	close(waitResult.done)
 	<-monitorDone
 	if !errors.Is(context.Cause(lockContext), ErrProjectMutationLockLost) {
 		t.Fatalf("remote lock context cause = %v, want ErrProjectMutationLockLost", context.Cause(lockContext))
@@ -88,6 +89,34 @@ func TestMonitorRemoteProjectMutationLockCancelsContextWhenProcessExits(t *testi
 	markedContext := context.WithValue(context.Background(), projectMutationLockLossContextKey{}, lossState)
 	if !ProjectMutationLockContextLost(markedContext) {
 		t.Fatal("remote lock loss was not retained in the lock context state")
+	}
+}
+
+func TestRemoteProjectMutationLockExitBeforeReleaseCannotBeReclassifiedByDelayedMonitor(t *testing.T) {
+	t.Parallel()
+
+	releaseStarted := make(chan struct{})
+	releaseState := &atomic.Uint32{}
+	waitResult := newProjectMutationWaitResult(func() error {
+		return errors.New("ssh channel closed")
+	}, releaseState)
+	// Delay monitor scheduling until Wait has completed and Release has begun.
+	// The wait goroutine must already have claimed physical loss, so Release
+	// cannot overwrite it with the normal-release state.
+	<-waitResult.done
+	if releaseState.CompareAndSwap(0, 1) {
+		t.Fatal("Release reclassified an already-completed lock process as a normal release")
+	}
+	close(releaseStarted)
+
+	lossState := newProjectMutationLockLossState()
+	lockContext, cancel := context.WithCancelCause(context.Background())
+	monitorRemoteProjectMutationLock(waitResult, releaseStarted, releaseState, lossState, cancel)
+	if !errors.Is(context.Cause(lockContext), ErrProjectMutationLockLost) {
+		t.Fatalf("remote lock context cause = %v, want ErrProjectMutationLockLost", context.Cause(lockContext))
+	}
+	if !lossState.lost.Load() {
+		t.Fatal("physical lock loss was reclassified as a normal release")
 	}
 }
 

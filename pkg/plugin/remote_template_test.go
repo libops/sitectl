@@ -17,6 +17,7 @@ import (
 type localRemoteTemplateConnection struct {
 	commands         [][]string
 	run              func([]string) (string, error)
+	runContext       func(context.Context, []string) (string, error)
 	beforeGitRemoval func(string)
 	mkdir            func(string) error
 	rename           func(string, string) error
@@ -29,11 +30,14 @@ func (c *localRemoteTemplateConnection) Close() error {
 	return nil
 }
 
-func (c *localRemoteTemplateConnection) Run(_ context.Context, _, _ io.Writer, args ...string) (string, error) {
+func (c *localRemoteTemplateConnection) Run(runCtx context.Context, _, _ io.Writer, args ...string) (string, error) {
 	command := append([]string(nil), args...)
 	c.commands = append(c.commands, command)
 	if c.beforeGitRemoval != nil && len(command) == 4 && command[0] == "rm" && command[1] == "-rf" && command[2] == "--" && filepath.Base(command[3]) == ".git" {
 		c.beforeGitRemoval(command[3])
+	}
+	if c.runContext != nil {
+		return c.runContext(runCtx, command)
 	}
 	if c.run == nil {
 		return "", nil
@@ -119,6 +123,86 @@ func TestRemoteDirectoryNameCollectorEnforcesLimitAcrossWrites(t *testing.T) {
 	}
 	if !exceeded || !reflect.DeepEqual(names, []string{"two", "one"}) {
 		t.Fatalf("bounded remote directory names = %#v, exceeded=%t", names, exceeded)
+	}
+}
+
+func TestCleanupOwnedRemoteTemplateCheckoutIgnoresOrdinaryCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	_, stagingPath := createRemoteTemplateCleanupStaging(t)
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cleanupCalled := false
+	connection := &localRemoteTemplateConnection{
+		runContext: func(cleanupCtx context.Context, args []string) (string, error) {
+			cleanupCalled = true
+			if err := cleanupCtx.Err(); err != nil {
+				t.Fatalf("ordinary caller cancellation reached recovery context: %v", err)
+			}
+			if len(args) != 4 || args[0] != "rm" || args[1] != "-rf" || args[2] != "--" || args[3] != stagingPath {
+				t.Fatalf("unexpected cleanup command: %v", args)
+			}
+			return "", os.RemoveAll(stagingPath)
+		},
+	}
+	err := cleanupOwnedRemoteTemplateCheckout(runCtx, connection, stagingPath, context.Canceled)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, errComposeCreateRecoveryRequired) {
+		t.Fatalf("ordinary cancellation cleanup error = %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("ordinary caller cancellation skipped staging recovery")
+	}
+	if _, err := os.Lstat(stagingPath); !os.IsNotExist(err) {
+		t.Fatalf("ordinary cancellation left staging path behind: %v", err)
+	}
+}
+
+func TestCleanupOwnedRemoteTemplateCheckoutPreservesRecordedLockLossBeforeCleanup(t *testing.T) {
+	t.Parallel()
+
+	_, stagingPath := createRemoteTemplateCleanupStaging(t)
+	runCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(config.ErrProjectMutationLockLost)
+	cause := errors.New("clone failed")
+	connection := &localRemoteTemplateConnection{
+		runContext: func(context.Context, []string) (string, error) {
+			t.Fatal("destructive cleanup ran after lock loss was recorded")
+			return "", nil
+		},
+	}
+	err := cleanupOwnedRemoteTemplateCheckout(runCtx, connection, stagingPath, cause)
+	if !errors.Is(err, cause) || !errors.Is(err, config.ErrProjectMutationLockLost) || !errors.Is(err, errComposeCreateRecoveryRequired) {
+		t.Fatalf("recorded lock-loss cleanup error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stagingPath, "partial")); err != nil {
+		t.Fatalf("recorded lock loss did not preserve staging: %v", err)
+	}
+}
+
+func TestCleanupOwnedRemoteTemplateCheckoutPreservesLockLossDuringCleanup(t *testing.T) {
+	t.Parallel()
+
+	_, stagingPath := createRemoteTemplateCleanupStaging(t)
+	runCtx, cancel := context.WithCancelCause(context.Background())
+	cause := errors.New("clone failed")
+	connection := &localRemoteTemplateConnection{
+		runContext: func(cleanupCtx context.Context, args []string) (string, error) {
+			if err := cleanupCtx.Err(); err != nil {
+				t.Fatalf("cleanup context was cancelled before lock loss: %v", err)
+			}
+			if len(args) != 4 || args[3] != stagingPath {
+				t.Fatalf("unexpected cleanup command: %v", args)
+			}
+			cancel(config.ErrProjectMutationLockLost)
+			return "", context.Canceled
+		},
+	}
+	err := cleanupOwnedRemoteTemplateCheckout(runCtx, connection, stagingPath, cause)
+	if !errors.Is(err, cause) || !errors.Is(err, config.ErrProjectMutationLockLost) || !errors.Is(err, errComposeCreateRecoveryRequired) {
+		t.Fatalf("during-cleanup lock-loss error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stagingPath, "partial")); err != nil {
+		t.Fatalf("lock loss during cleanup did not preserve staging: %v", err)
 	}
 }
 
@@ -754,4 +838,20 @@ func createRemoteGitDirectory(t *testing.T, projectDir string) {
 	if err := os.MkdirAll(filepath.Join(projectDir, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func createRemoteTemplateCleanupStaging(t *testing.T) (string, string) {
+	t.Helper()
+	projectDir := t.TempDir()
+	stagingPath, err := newComposeCreateStagingPath(projectDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(stagingPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stagingPath, "partial"), []byte("partial\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return projectDir, stagingPath
 }

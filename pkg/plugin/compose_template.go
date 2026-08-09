@@ -506,7 +506,7 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 		ownedProjectDir = true
 		if err := connection.Chmod(ctx.ProjectDir, 0o750); err != nil {
 			claimErr := fmt.Errorf("set remote project directory permissions: %w", err)
-			return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, claimErr)
+			return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, claimErr)
 		}
 	}
 	cloneArgs := []string{"git", "clone"}
@@ -520,14 +520,14 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 		if !ownedProjectDir {
 			return false, cloneErr
 		}
-		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, cloneErr)
+		return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, cloneErr)
 	}
 	metadata, err := inspectRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir)
 	if err != nil {
 		if !ownedProjectDir {
 			return false, err
 		}
-		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, err)
+		return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, err)
 	}
 	metadata.Ref = req.TemplateBranch
 	sitectl, plugins := s.templateLockPackages()
@@ -536,14 +536,14 @@ func (s *SDK) ensureRemoteComposeTemplateCheckout(runCtx context.Context, out io
 		if !ownedProjectDir {
 			return false, err
 		}
-		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, err)
+		return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, err)
 	}
 	if err := finalizeRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, req.TemplateBranch, lock); err != nil {
 		finalizeErr := fmt.Errorf("finalize remote template checkout: %w", err)
 		if !ownedProjectDir {
 			return false, finalizeErr
 		}
-		return false, cleanupOwnedRemoteTemplateCheckout(connection, ctx.ProjectDir, finalizeErr)
+		return false, cleanupOwnedRemoteTemplateCheckout(runCtx, connection, ctx.ProjectDir, finalizeErr)
 	}
 	return true, nil
 }

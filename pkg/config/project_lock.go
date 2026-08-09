@@ -493,9 +493,9 @@ func (c *Context) acquireRemoteProjectMutationLock(runCtx, lockContext context.C
 		_ = client.Close()
 		return nil, fmt.Errorf("start remote project lock: %w", err)
 	}
-	waitResult := newProjectMutationWaitResult(session.Wait)
 	releaseStarted := make(chan struct{})
 	releaseState := &atomic.Uint32{}
+	waitResult := newProjectMutationWaitResult(session.Wait, releaseState)
 	var releaseOnce sync.Once
 	beginRelease := func() {
 		releaseOnce.Do(func() {
@@ -532,10 +532,15 @@ type projectMutationWaitResult struct {
 	err  error
 }
 
-func newProjectMutationWaitResult(wait func() error) *projectMutationWaitResult {
+func newProjectMutationWaitResult(wait func() error, releaseState *atomic.Uint32) *projectMutationWaitResult {
 	result := &projectMutationWaitResult{done: make(chan struct{})}
 	go func() {
 		result.err = wait()
+		// Linearize physical process exit before publishing completion. Release
+		// may claim state 1 only while the lock process is still active; once
+		// this transition claims state 2, a delayed monitor cannot misclassify
+		// the earlier exit as a normal release.
+		releaseState.CompareAndSwap(0, 2)
 		close(result.done)
 	}()
 	return result
@@ -552,10 +557,9 @@ func (r *projectMutationWaitResult) Wait() error {
 func monitorRemoteProjectMutationLock(waitResult *projectMutationWaitResult, releaseStarted <-chan struct{}, releaseState *atomic.Uint32, lossState *projectMutationLockLossState, cancel context.CancelCauseFunc) {
 	select {
 	case <-releaseStarted:
-		return
 	case <-waitResult.done:
 	}
-	if !releaseState.CompareAndSwap(0, 2) {
+	if releaseState.Load() != 2 {
 		return
 	}
 	lossState.markLost()

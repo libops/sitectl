@@ -650,19 +650,37 @@ func prepareRemoteTemplateLock(runCtx context.Context, connection remoteTemplate
 	return temporaryPath, nil
 }
 
-func cleanupOwnedRemoteTemplateCheckout(connection remoteTemplateConnection, projectDir string, cause error) error {
+func cleanupOwnedRemoteTemplateCheckout(runCtx context.Context, connection remoteTemplateConnection, projectDir string, cause error) error {
 	if err := validateComposeCreateStagingPath(path.Dir(projectDir), projectDir, true); err != nil {
 		return errors.Join(cause, fmt.Errorf("refuse unsafe remote template checkout cleanup: %w", err))
 	}
-	if errors.Is(cause, config.ErrProjectMutationLockLost) {
-		return preserveComposeCreateStaging(cause, projectDir)
+	if lossCause := remoteTemplateCheckoutLockLossCause(runCtx, cause); lossCause != nil {
+		return preserveComposeCreateStaging(lossCause, projectDir)
 	}
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), remoteTemplateCleanupTimeout)
+	cleanupCtx, cancel := context.WithTimeout(config.ProjectMutationLockFenceContext(runCtx), remoteTemplateCleanupTimeout)
 	defer cancel()
-	if _, err := connection.Run(cleanupCtx, io.Discard, nil, "rm", "-rf", "--", projectDir); err != nil {
-		return errors.Join(cause, fmt.Errorf("clean up failed remote template checkout: %w", err))
+	_, cleanupErr := connection.Run(cleanupCtx, io.Discard, nil, "rm", "-rf", "--", projectDir)
+	if cleanupErr != nil {
+		cleanupErr = fmt.Errorf("clean up failed remote template checkout: %w", cleanupErr)
+	}
+	combinedCause := errors.Join(cause, cleanupErr)
+	if lossCause := remoteTemplateCheckoutLockLossCause(runCtx, combinedCause); lossCause != nil {
+		return preserveComposeCreateStaging(lossCause, projectDir)
+	}
+	if cleanupErr != nil {
+		return combinedCause
 	}
 	return cause
+}
+
+func remoteTemplateCheckoutLockLossCause(runCtx context.Context, cause error) error {
+	if errors.Is(cause, config.ErrProjectMutationLockLost) {
+		return cause
+	}
+	if config.ProjectMutationLockContextLost(runCtx) || errors.Is(composeCreateContextError(runCtx), config.ErrProjectMutationLockLost) {
+		return errors.Join(cause, config.ErrProjectMutationLockLost)
+	}
+	return nil
 }
 
 func isSFTPOperationUnsupported(err error) bool {
