@@ -77,7 +77,7 @@ func TestLifecycleCommandArgvPreservesDockerGlobalOptionsForCompose(t *testing.T
 	if err != nil {
 		t.Fatalf("lifecycleCommandArgv() error = %v", err)
 	}
-	want := []string{"docker", "--context", "production", "compose", "-f", "compose.yaml", "up", "-d"}
+	want := []string{"docker", "--context", "production", "compose", "-f", "/srv/project/compose.yaml", "up", "-d"}
 	if !reflect.DeepEqual(got, want) || !composeUp {
 		t.Fatalf("lifecycleCommandArgv() = %v, composeUp=%t; want %v, true", got, composeUp, want)
 	}

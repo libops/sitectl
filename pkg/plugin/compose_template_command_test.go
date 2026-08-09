@@ -34,16 +34,23 @@ func TestRunComposeProjectCommandContextHonorsRemoteComposeFiles(t *testing.T) {
 	if err := sdk.RunComposeProjectCommandContext(context.Background(), ctx, ctx.ProjectDir, io.Discard, io.Discard, "docker compose ps"); err != nil {
 		t.Fatalf("RunComposeProjectCommandContext() error = %v", err)
 	}
-	for _, expected := range []string{
-		"cd '/srv/app' && docker compose",
-		"-f /srv/app/compose.yaml",
-		"-f '/srv/app/compose production.yaml'",
-		"--env-file /srv/app/.env",
+	const prefix = "cd '/srv/app' && "
+	if !strings.HasPrefix(gotCommand, prefix) {
+		t.Fatalf("remote command = %q, want prefix %q", gotCommand, prefix)
+	}
+	gotArgv, err := shellquote.Split(strings.TrimPrefix(gotCommand, prefix))
+	if err != nil {
+		t.Fatalf("split remote command: %v", err)
+	}
+	wantArgv := []string{
+		"docker", "compose",
+		"-f", "/srv/app/compose.yaml",
+		"-f", "/srv/app/compose production.yaml",
+		"--env-file", "/srv/app/.env",
 		"ps",
-	} {
-		if !strings.Contains(gotCommand, expected) {
-			t.Fatalf("remote command = %q, want %q", gotCommand, expected)
-		}
+	}
+	if !reflect.DeepEqual(gotArgv, wantArgv) {
+		t.Fatalf("remote command argv = %q, want %q", gotArgv, wantArgv)
 	}
 	if strings.Contains(gotCommand, "bash -lc") || strings.Contains(gotCommand, "sh -c") {
 		t.Fatalf("remote lifecycle command unexpectedly contains an inline shell program: %q", gotCommand)
