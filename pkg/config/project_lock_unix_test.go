@@ -59,6 +59,29 @@ func TestLocalProjectMutationLockUsesPrivatePerUserDirectory(t *testing.T) {
 	}
 }
 
+func TestLocalProjectMutationLockDirectoryOwnerAllowed(t *testing.T) {
+	tests := []struct {
+		name    string
+		owner   uint32
+		uid     uint32
+		private bool
+		want    bool
+	}{
+		{name: "operator-owned home", owner: 1000, uid: 1000, want: true},
+		{name: "root-owned home", owner: 0, uid: 1000, want: true},
+		{name: "root-owned private state", owner: 0, uid: 1000, private: true, want: false},
+		{name: "other-user-owned home", owner: 1001, uid: 1000, want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := localProjectMutationLockDirectoryOwnerAllowed(test.owner, test.uid, test.private); got != test.want {
+				t.Fatalf("localProjectMutationLockDirectoryOwnerAllowed(%d, %d, %t) = %t, want %t", test.owner, test.uid, test.private, got, test.want)
+			}
+		})
+	}
+}
+
 func TestAcquireLocalProjectMutationLockRejectsSymlink(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
