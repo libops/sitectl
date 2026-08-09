@@ -84,7 +84,10 @@ func validateLocalProjectMutationLockDirectory(directory string, info os.FileInf
 	if !ok {
 		return fmt.Errorf("local project lock directory %q does not expose an owner", directory)
 	}
-	if uint32(stat.Uid) != uid {
+	if !localProjectMutationLockDirectoryOwnerAllowed(uint32(stat.Uid), uid, private) {
+		if !private {
+			return fmt.Errorf("local project lock directory %q is owned by uid %d, want uid %d or root", directory, stat.Uid, uid)
+		}
 		return fmt.Errorf("local project lock directory %q is owned by uid %d, want uid %d", directory, stat.Uid, uid)
 	}
 	if private {
@@ -95,6 +98,12 @@ func validateLocalProjectMutationLockDirectory(directory string, info os.FileInf
 		return fmt.Errorf("local project lock parent %q must not be group- or world-writable", directory)
 	}
 	return nil
+}
+
+// A root-owned, non-writable home is a safe parent for user-owned sitectl
+// state. Private state and lock directories must still belong to the operator.
+func localProjectMutationLockDirectoryOwnerAllowed(owner, uid uint32, private bool) bool {
+	return owner == uid || (!private && owner == 0)
 }
 
 func openLocalProjectMutationLock(lockPath string) (*os.File, error) {
