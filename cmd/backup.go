@@ -942,15 +942,6 @@ func validateBackupArchiveName(archive string) error {
 	return nil
 }
 
-func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
 func stringsExcept(values []string, excluded string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
