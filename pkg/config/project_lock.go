@@ -519,6 +519,7 @@ func (c *Context) acquireRemoteProjectMutationLock(runCtx, lockContext context.C
 		// Acquisition cancellation must interrupt a remote flock that is still
 		// waiting. Once the handshake succeeds, only Release ends the lock so a
 		// caller can keep rollback/recovery protected after command cancellation.
+		cancelLockContext(err)
 		closeResources()
 		_ = lock.Release()
 		return nil, fmt.Errorf("acquire remote project lock: %w: %s", err, strings.TrimSpace(string(stderr.data)))

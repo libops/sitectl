@@ -327,7 +327,7 @@ func composeCreateExistingStateDigest(runCtx context.Context, ctx *config.Contex
 			return "", [sha256.Size]byte{}, fmt.Errorf("read Compose input %q: %w", input, err)
 		}
 		if len(data) > maxComposeCreateStateBytes-totalBytes {
-			return "", [sha256.Size]byte{}, fmt.Errorf("Compose inputs exceed %d bytes", maxComposeCreateStateBytes)
+			return "", [sha256.Size]byte{}, fmt.Errorf("compose inputs exceed %d bytes", maxComposeCreateStateBytes)
 		}
 		totalBytes += len(data)
 		_, _ = io.WriteString(hasher, input+"\x00"+strconv.Itoa(len(data))+"\x00")
