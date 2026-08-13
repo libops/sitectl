@@ -82,13 +82,18 @@ func (r standardComposeWebHealthcheckRunner) Run(cmd *cobra.Command, ctx *config
 	if serviceURL := healthcheckURLFromServiceEnvironment(ctx, appService, r.opts); serviceURL != "" {
 		targetURL = serviceURL
 	}
-	if traefikURL, ok, err := corehealthcheck.PublicURLFromTraefik(ctx, corehealthcheck.TraefikRouteOptions{
-		AppService:    appService,
+	appRoute := IngressRoute{
+		Name:          "app",
+		Service:       appService,
 		Router:        r.opts.TraefikRouter,
 		DefaultScheme: firstHealthcheckValue(r.opts.DefaultScheme, "http"),
 		DefaultDomain: firstHealthcheckValue(r.opts.DefaultDomain, "localhost"),
-	}); err == nil && ok && shouldPreferTraefikHealthcheckURL(targetURL, traefikURL) {
-		targetURL = traefikURL
+		Primary:       true,
+	}
+	if resolved, err := ResolveIngressRoute(ctx, IngressRoutes{Routes: []IngressRoute{appRoute}}, appRoute.Name); err == nil &&
+		resolved.Resolution == IngressRouteResolutionTraefik &&
+		shouldPreferTraefikHealthcheckURL(targetURL, resolved.URL) {
+		targetURL = resolved.URL
 	}
 	results := []sitevalidate.Result{
 		checker.CheckHTTPRoute(

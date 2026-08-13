@@ -14,7 +14,6 @@ import (
 
 	"github.com/libops/sitectl/pkg/config"
 	"github.com/libops/sitectl/pkg/docker"
-	"github.com/libops/sitectl/pkg/healthcheck"
 	"github.com/libops/sitectl/pkg/plugin"
 	coretraefik "github.com/libops/sitectl/pkg/services/traefik"
 	"github.com/spf13/cobra"
@@ -254,7 +253,7 @@ func buildIngressStats(runCtx context.Context, resolved statsResolvedContext) st
 	report.Routes = make([]statsIngressRoute, 0, len(routes.Routes))
 	for i, route := range routes.Routes {
 		route.DefaultScheme = firstStatsValue(route.DefaultScheme, routes.Scheme, "http")
-		route.DefaultDomain = firstStatsValue(route.DefaultDomain, routes.Domain, "localhost")
+		route.DefaultDomain = firstStatsValue(route.DefaultDomain, routes.Domain, statsDefaultIngressDomain(ctx))
 		route.Primary = route.Primary || i == 0
 		resolvedRoute := resolveStatsIngressRoute(runCtx, ctx, route)
 		if resolvedRoute.Error != "" {
@@ -351,9 +350,16 @@ func defaultStatsIngressRoutes(ctx *config.Context) plugin.IngressRoutes {
 		Name:          "app",
 		Service:       firstStatsValue(defaultIngressAppService(ctx), "app"),
 		DefaultScheme: "http",
-		DefaultDomain: "localhost",
+		DefaultDomain: statsDefaultIngressDomain(ctx),
 		Primary:       true,
 	}}}
+}
+
+func statsDefaultIngressDomain(ctx *config.Context) string {
+	if ctx == nil || ctx.DockerHostType == config.ContextLocal {
+		return "localhost"
+	}
+	return ""
 }
 
 func resolveStatsIngressRoute(runCtx context.Context, ctx *config.Context, route plugin.IngressRoute) statsIngressRoute {
@@ -365,22 +371,13 @@ func resolveStatsIngressRoute(runCtx context.Context, ctx *config.Context, route
 		Primary:        route.Primary,
 		Status:         "resolved",
 	}
-	resolved, ok, err := healthcheck.PublicURLFromTraefik(ctx, healthcheck.TraefikRouteOptions{
-		AppService:     route.Service,
-		Router:         route.Router,
-		TraefikService: route.TraefikService,
-		DefaultScheme:  route.DefaultScheme,
-		DefaultDomain:  route.DefaultDomain,
-	})
+	resolvedRoute, err := plugin.ResolveIngressRoute(ctx, plugin.IngressRoutes{Routes: []plugin.IngressRoute{route}}, route.Name)
+	resolved := resolvedRoute.URL
 	if err != nil {
 		out.Status = "error"
 		out.Error = err.Error()
-		resolved = fallbackStatsRouteURL(route)
-	} else if !ok {
+	} else if resolvedRoute.Resolution == plugin.IngressRouteResolutionCatalog {
 		out.Status = "fallback"
-		resolved = fallbackStatsRouteURL(route)
-	} else {
-		resolved = withStatsRoutePath(resolved, route.Path)
 	}
 	if withRuntimePort := publicURLWithRunningHostPort(runCtx, ctx, resolved); withRuntimePort != "" {
 		resolved = withRuntimePort
@@ -388,37 +385,6 @@ func resolveStatsIngressRoute(runCtx context.Context, ctx *config.Context, route
 	out.URL = statsPublicURL(resolved)
 	out.Scheme, out.Domain = splitStatsURL(out.URL)
 	return out
-}
-
-func withStatsRoutePath(value, routePath string) string {
-	routePath = strings.TrimSpace(routePath)
-	if routePath == "" {
-		return value
-	}
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil {
-		return value
-	}
-	if !strings.HasPrefix(routePath, "/") {
-		routePath = "/" + strings.TrimLeft(routePath, "/")
-	}
-	if parsed.Path == "" || parsed.Path == "/" {
-		parsed.Path = routePath
-	}
-	return parsed.String()
-}
-
-func fallbackStatsRouteURL(route plugin.IngressRoute) string {
-	scheme := firstStatsValue(route.DefaultScheme, "http")
-	domain := firstStatsValue(route.DefaultDomain, "localhost")
-	path := strings.TrimSpace(route.Path)
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + strings.TrimLeft(path, "/")
-	}
-	if path == "/" {
-		path = ""
-	}
-	return (&url.URL{Scheme: scheme, Host: domain, Path: path}).String()
 }
 
 func splitStatsURL(value string) (string, string) {
