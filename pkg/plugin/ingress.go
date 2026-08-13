@@ -106,7 +106,7 @@ func (p standardComposeWebIngressRouteProvider) Routes(cmd *cobra.Command, ctx *
 		return IngressRoutes{}, err
 	}
 	scheme := "http"
-	domain := "localhost"
+	domain := standardComposeWebDefaultDomain(ctx)
 	usedIngressEnv := false
 	if ingressScheme, ingressDomain, ok := ingressSchemeDomainFromEnv(env, scheme, domain); ok {
 		scheme = ingressScheme
@@ -122,7 +122,7 @@ func (p standardComposeWebIngressRouteProvider) Routes(cmd *cobra.Command, ctx *
 				break
 			}
 		}
-		if domain == "localhost" {
+		if domain == "" || domain == "localhost" {
 			for _, key := range p.opts.DomainVariables {
 				if value := strings.TrimSpace(env[strings.TrimSpace(key)]); value != "" {
 					domain = value
@@ -149,6 +149,13 @@ func (p standardComposeWebIngressRouteProvider) Routes(cmd *cobra.Command, ctx *
 			Primary:       true,
 		}},
 	}, nil
+}
+
+func standardComposeWebDefaultDomain(ctx *config.Context) string {
+	if ctx == nil || ctx.DockerHostType == config.ContextLocal {
+		return "localhost"
+	}
+	return ""
 }
 
 type staticIngressRouteProvider struct {
@@ -298,7 +305,7 @@ func ingressSchemeDomainFromEnv(env map[string]string, defaultScheme, defaultDom
 	scheme := firstIngressValue(env["INGRESS_SCHEME"], defaultScheme, "http")
 	domain := firstIngressHostname(env["INGRESS_HOSTNAMES"])
 	if domain == "" {
-		domain = firstIngressValue(defaultDomain, "localhost")
+		domain = firstIngressValue(defaultDomain)
 	}
 	return scheme, domain, strings.TrimSpace(env["INGRESS_SCHEME"]) != "" || strings.TrimSpace(env["INGRESS_HOSTNAMES"]) != ""
 }

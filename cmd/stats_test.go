@@ -112,6 +112,28 @@ func TestResolveStatsIngressRouteUsesTraefikConfig(t *testing.T) {
 	}
 }
 
+func TestStatsIngressDefaultsDoNotAssumeRemoteLocalhost(t *testing.T) {
+	t.Parallel()
+
+	remote := &config.Context{DockerHostType: config.ContextRemote}
+	if got := statsDefaultIngressDomain(remote); got != "" {
+		t.Fatalf("statsDefaultIngressDomain(remote) = %q, want empty", got)
+	}
+	routes := defaultStatsIngressRoutes(remote)
+	if len(routes.Routes) != 1 || routes.Routes[0].DefaultDomain != "" {
+		t.Fatalf("defaultStatsIngressRoutes(remote) = %+v, want no fallback domain", routes)
+	}
+	resolved := resolveStatsIngressRoute(t.Context(), remote, routes.Routes[0])
+	if resolved.URL != "" || resolved.Domain != "" || resolved.Status != "error" {
+		t.Fatalf("resolveStatsIngressRoute(remote) = %+v, want unresolved without localhost", resolved)
+	}
+
+	local := &config.Context{DockerHostType: config.ContextLocal}
+	if got := statsDefaultIngressDomain(local); got != "localhost" {
+		t.Fatalf("statsDefaultIngressDomain(local) = %q, want localhost", got)
+	}
+}
+
 func TestStatsPublicURLKeepsNonRootPath(t *testing.T) {
 	t.Parallel()
 
