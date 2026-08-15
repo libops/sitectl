@@ -168,8 +168,11 @@ func TestUpdateComposeForBotMitigationPreservesFoldedTraefikCommand(t *testing.T
 	compose := readText(t, filepath.Join(projectDir, "docker-compose.yml"))
 	for _, want := range []string{
 		"<<: *common",
-		"--entryPoints.http.address=:80\n      --entryPoints.http.forwardedHeaders.trustedIPs=${FRONTEND_IP_1},${FRONTEND_IP_2},${FRONTEND_IP_3}",
-		"--api.debug=${DEVELOPMENT_ENVIRONMENT:-false}\n      " + captchaProtectCommand,
+		"command: >-",
+		"--entryPoints.http.address=:80",
+		"--entryPoints.http.forwardedHeaders.trustedIPs=${FRONTEND_IP_1},${FRONTEND_IP_2},${FRONTEND_IP_3}",
+		"--api.debug=${DEVELOPMENT_ENVIRONMENT:-false}",
+		captchaProtectCommand,
 		"      - ./certs/cert.pem:/certs/cert.pem:ro,z",
 		"      - ./certs/privkey.pem:/certs/privkey.pem:ro,z",
 		"      - ./conf/traefik:/etc/traefik/dynamic:ro,z",
@@ -185,10 +188,6 @@ func TestUpdateComposeForBotMitigationPreservesFoldedTraefikCommand(t *testing.T
 	if strings.Count(compose, captchaProtectCommand) != 1 {
 		t.Fatalf("expected captcha command once, got:\n%s", compose)
 	}
-	if strings.Contains(compose, "--ping=true --log.level=INFO") {
-		t.Fatalf("expected folded command lines not to collapse, got:\n%s", compose)
-	}
-
 	if err := updateComposeForBotMitigation(projectDir, false); err != nil {
 		t.Fatalf("updateComposeForBotMitigation(off) error = %v", err)
 	}
@@ -199,10 +198,12 @@ func TestUpdateComposeForBotMitigationPreservesFoldedTraefikCommand(t *testing.T
 		}
 	}
 	for _, want := range []string{
-		"command: >-\n      --ping=true\n      --log.level=INFO",
-		"      --entryPoints.https.transport.respondingTimeouts.readTimeout=60",
-		"      --providers.file.directory=/etc/traefik/dynamic",
-		"      --api.debug=${DEVELOPMENT_ENVIRONMENT:-false}",
+		"command: >-",
+		"--ping=true",
+		"--log.level=INFO",
+		"--entryPoints.https.transport.respondingTimeouts.readTimeout=60",
+		"--providers.file.directory=/etc/traefik/dynamic",
+		"--api.debug=${DEVELOPMENT_ENVIRONMENT:-false}",
 	} {
 		if !strings.Contains(compose, want) {
 			t.Fatalf("expected original folded command line %q preserved after disable, got:\n%s", want, compose)

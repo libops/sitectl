@@ -54,6 +54,76 @@ volumes:
 	}
 }
 
+func TestComposeProjectTreatsSectionAndServiceNamesAsLiteralYQKeys(t *testing.T) {
+	t.Parallel()
+
+	const serviceName = `api.*?[blue]`
+	composeFile, err := ParseComposeProject([]byte(`
+"x.*?[definitions]": stale-scalar
+services:
+  "api.*?[blue]":
+    image: api
+  sequence-consumer:
+    depends_on:
+      - "api.*?[blue]"
+  mapping-consumer:
+    depends_on:
+      "api.*?[blue]":
+        condition: service_started
+`))
+	if err != nil {
+		t.Fatalf("ParseComposeProject() error = %v", err)
+	}
+
+	if !composeFile.RemoveService(serviceName) {
+		t.Fatalf("RemoveService(%q) did not remove service", serviceName)
+	}
+	root, err := composeFile.rootMap()
+	if err != nil {
+		t.Fatalf("rootMap() after RemoveService() error = %v", err)
+	}
+	services := nestedMap(root["services"])
+	if _, exists := services[serviceName]; exists {
+		t.Fatalf("expected service %q removed, got %#v", serviceName, services)
+	}
+	for _, consumer := range []string{"sequence-consumer", "mapping-consumer"} {
+		service := nestedMap(services[consumer])
+		if _, exists := service["depends_on"]; exists {
+			t.Fatalf("expected empty dependency block removed from %q, got %#v", consumer, service)
+		}
+	}
+
+	const sectionName = `x.*?[definitions]`
+	const entryName = `entry.*?[blue]`
+	composeFile.SetDefinition(sectionName, entryName, map[string]any{"enabled": true})
+	root, err = composeFile.rootMap()
+	if err != nil {
+		t.Fatalf("rootMap() after SetDefinition() error = %v", err)
+	}
+	section := nestedMap(root[sectionName])
+	if entry := nestedMap(section[entryName]); entry == nil || entry["enabled"] != true {
+		t.Fatalf("expected literal section entry to be set, got %#v", root)
+	}
+	if !composeFile.DeleteDefinition(sectionName, entryName) {
+		t.Fatalf("DeleteDefinition(%q, %q) did not remove entry", sectionName, entryName)
+	}
+	root, err = composeFile.rootMap()
+	if err != nil {
+		t.Fatalf("rootMap() after DeleteDefinition() error = %v", err)
+	}
+	if _, exists := root[sectionName]; exists {
+		t.Fatalf("expected empty literal section %q removed, got %#v", sectionName, root)
+	}
+
+	sequenceSection, err := ParseComposeProject([]byte("custom: [zero, one]\n"))
+	if err != nil {
+		t.Fatalf("ParseComposeProject(sequence section) error = %v", err)
+	}
+	if sequenceSection.DeleteDefinition("custom", "0") {
+		t.Fatal("DeleteDefinition() treated a sequence index as a mapping key")
+	}
+}
+
 func TestManagerDisableAndEnableComponent(t *testing.T) {
 	t.Parallel()
 

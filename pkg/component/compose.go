@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/libops/sitectl/pkg/yamlnode"
+	"github.com/mikefarah/yq/v4/pkg/yqlib"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -413,13 +413,13 @@ func mergeIntoDocumentSection(doc *YAMLDocument, section string, entries map[str
 	if doc == nil || len(entries) == 0 {
 		return
 	}
-	target := ensureDocumentSection(doc, section)
-	for _, name := range sortedComposeDefinitionNames(entries) {
-		valueNode, err := yamlNodeForValue(entries[name])
-		if err != nil {
-			continue
+	if target := yamlCandidateAtKeys(doc.node, section); target == nil || target.Kind != yqlib.MappingNode {
+		if err := doc.setYAMLValue([]string{section}, map[string]any{}); err != nil {
+			return
 		}
-		yamlnode.SetMappingValue(target, name, valueNode)
+	}
+	for _, name := range sortedComposeDefinitionNames(entries) {
+		_ = doc.setYAMLValue([]string{section, name}, entries[name])
 	}
 }
 
@@ -427,49 +427,29 @@ func setDocumentSectionEntry(doc *YAMLDocument, section, name string, value any)
 	if doc == nil || strings.TrimSpace(section) == "" || strings.TrimSpace(name) == "" {
 		return
 	}
-	valueNode, err := yamlNodeForValue(value)
-	if err != nil {
-		return
+	if target := yamlCandidateAtKeys(doc.node, section); target == nil || target.Kind != yqlib.MappingNode {
+		if err := doc.setYAMLValue([]string{section}, map[string]any{}); err != nil {
+			return
+		}
 	}
-	yamlnode.SetMappingValue(ensureDocumentSection(doc, section), name, valueNode)
+	_ = doc.setYAMLValue([]string{section, name}, value)
 }
 
 func deleteDocumentSectionEntry(doc *YAMLDocument, section, name string) bool {
 	if doc == nil || strings.TrimSpace(section) == "" || strings.TrimSpace(name) == "" {
 		return false
 	}
-	root := doc.mappingRoot()
-	if root == nil {
+	if yamlCandidateAtKeys(doc.node, section, name) == nil {
 		return false
 	}
-	target := yamlnode.MappingValue(root, section)
-	if target == nil || target.Kind != yaml.MappingNode || yamlnode.MappingValue(target, name) == nil {
+	if err := doc.deleteYAMLKeys(section, name); err != nil {
 		return false
 	}
-	yamlnode.DeleteMappingKey(target, name)
-	if len(target.Content) == 0 {
-		yamlnode.DeleteMappingKey(root, section)
+	if sectionNode := yamlCandidateAtKeys(doc.node, section); sectionNode != nil &&
+		sectionNode.Kind == yqlib.MappingNode && len(sectionNode.Content) == 0 {
+		_ = doc.deleteYAMLKeys(section)
 	}
 	return true
-}
-
-func ensureDocumentSection(doc *YAMLDocument, section string) *yaml.Node {
-	root := doc.ensureMappingRoot()
-	target := yamlnode.MappingValue(root, section)
-	if target == nil {
-		target = &yaml.Node{
-			Kind:    yaml.MappingNode,
-			Tag:     "!!map",
-			Content: []*yaml.Node{},
-		}
-		yamlnode.SetMappingValue(root, section, target)
-	}
-	if target.Kind != yaml.MappingNode {
-		target.Kind = yaml.MappingNode
-		target.Tag = "!!map"
-		target.Content = []*yaml.Node{}
-	}
-	return target
 }
 
 func sortedComposeDefinitionNames(entries map[string]any) []string {
@@ -487,41 +467,20 @@ func removeDocumentServiceDependencyReferences(doc *YAMLDocument, name string) {
 	if doc == nil {
 		return
 	}
-	root := doc.mappingRoot()
-	if root == nil {
-		return
-	}
-	services := yamlnode.MappingValue(root, "services")
-	if services == nil || services.Kind != yaml.MappingNode {
-		return
-	}
-	for i := 1; i < len(services.Content); i += 2 {
-		service := services.Content[i]
-		if service == nil || service.Kind != yaml.MappingNode {
-			continue
-		}
-		dependsOn := yamlnode.MappingValue(service, "depends_on")
-		switch {
-		case dependsOn == nil:
-			continue
-		case dependsOn.Kind == yaml.SequenceNode:
-			filtered := make([]*yaml.Node, 0, len(dependsOn.Content))
-			for _, item := range dependsOn.Content {
-				if item != nil && item.Kind == yaml.ScalarNode && item.Value == name {
-					continue
-				}
-				filtered = append(filtered, item)
-			}
-			if len(filtered) == 0 {
-				yamlnode.DeleteMappingKey(service, "depends_on")
-			} else {
-				dependsOn.Content = filtered
-			}
-		case dependsOn.Kind == yaml.MappingNode:
-			yamlnode.DeleteMappingKey(dependsOn, name)
-			if len(dependsOn.Content) == 0 {
-				yamlnode.DeleteMappingKey(service, "depends_on")
-			}
-		}
-	}
+
+	servicesPath := yamlPath("services")
+	dependsOnPath := yamlPath("depends_on")
+	variables := map[string]any{"name": name}
+
+	sequenceReferencePath := servicesPath + `[] | select(has("depends_on")) | select(` + dependsOnPath + ` | kind == "seq") | ` +
+		dependsOnPath + `[] | select((to_string | @base64) == ($name | @base64))`
+	_, _ = doc.evaluateWithValues(`del((`+sequenceReferencePath+`))`, false, variables)
+
+	mappingReferencePath := servicesPath + `[] | select(has("depends_on")) | select(` + dependsOnPath + ` | kind == "map") | ` +
+		dependsOnPath + `[] | select((key | to_string | @base64) == ($name | @base64))`
+	_, _ = doc.evaluateWithValues(`del((`+mappingReferencePath+`))`, false, variables)
+
+	emptyDependsOnPath := servicesPath + `[] | select(has("depends_on")) | select(` + dependsOnPath +
+		` | ((kind == "map" or kind == "seq") and length == 0)) | ` + dependsOnPath
+	_, _ = doc.evaluate(`del((`+emptyDependsOnPath+`))`, false)
 }

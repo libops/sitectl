@@ -8,8 +8,6 @@ import (
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
-	"github.com/libops/sitectl/pkg/yamlnode"
-	yaml "gopkg.in/yaml.v3"
 )
 
 type DrupalConfigSet struct {
@@ -78,17 +76,31 @@ func (d *DrupalConfigSet) ReplaceString(old, new string) {
 
 func (d *DrupalConfigSet) DeleteMapEntries(match MapEntryMatch) error {
 	for name, data := range d.files {
-		var node yaml.Node
-		if err := yaml.Unmarshal(data, &node); err != nil {
+		doc, err := LoadYAMLDocument(data)
+		if err != nil {
 			return fmt.Errorf("unmarshal drupal config file %q: %w", name, err)
 		}
-		if deleteMapEntries(&node, match) {
-			updated, err := yaml.Marshal(&node)
-			if err != nil {
-				return fmt.Errorf("marshal drupal config file %q: %w", name, err)
-			}
-			d.files[name] = updated
+
+		matchExpression := matchingMapEntryExpression(match)
+		variables := map[string]any{
+			"key":   match.Key,
+			"value": match.Value,
 		}
+		context, err := doc.evaluateWithValues(matchExpression, false, variables)
+		if err != nil {
+			return fmt.Errorf("find drupal config map entries in %q: %w", name, err)
+		}
+		if context.MatchingNodes.Len() == 0 {
+			continue
+		}
+		if _, err := doc.evaluateWithValues(`del((`+matchExpression+`))`, false, variables); err != nil {
+			return fmt.Errorf("delete drupal config map entries in %q: %w", name, err)
+		}
+		updated, err := doc.Bytes()
+		if err != nil {
+			return fmt.Errorf("marshal drupal config file %q: %w", name, err)
+		}
+		d.files[name] = updated
 	}
 	return nil
 }
@@ -128,40 +140,10 @@ func (d *DrupalConfigSet) Save(ctx *config.Context) error {
 	return nil
 }
 
-func deleteMapEntries(node *yaml.Node, match MapEntryMatch) bool {
-	changed := false
-
-	switch node.Kind {
-	case yaml.DocumentNode:
-		for _, child := range node.Content {
-			if deleteMapEntries(child, match) {
-				changed = true
-			}
-		}
-	case yaml.MappingNode:
-		filtered := make([]*yaml.Node, 0, len(node.Content))
-		for i := 0; i < len(node.Content); i += 2 {
-			keyNode := node.Content[i]
-			valueNode := node.Content[i+1]
-			if keyNode.Value == match.Key && yamlnode.ScalarValue(valueNode) == match.Value {
-				changed = true
-				continue
-			}
-			if deleteMapEntries(valueNode, match) {
-				changed = true
-			}
-			filtered = append(filtered, keyNode, valueNode)
-		}
-		if changed {
-			node.Content = filtered
-		}
-	case yaml.SequenceNode:
-		for _, child := range node.Content {
-			if deleteMapEntries(child, match) {
-				changed = true
-			}
-		}
+func matchingMapEntryExpression(match MapEntryMatch) string {
+	path := `.. | select(kind == "map") | .[] | select((key | to_string | @base64) == ($key | @base64))`
+	if match.Value == "" {
+		return path + ` | select(kind != "scalar" or (to_string | trim | @base64) == ($value | @base64))`
 	}
-
-	return changed
+	return path + ` | select(kind == "scalar" and (to_string | trim | @base64) == ($value | @base64))`
 }
