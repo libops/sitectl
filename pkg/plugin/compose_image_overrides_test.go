@@ -207,7 +207,7 @@ func TestClearComposeImageOverridesPreservesUnrelatedOverrides(t *testing.T) {
 	}
 }
 
-func TestComposeImageOverridesPreserveForkedComposeTextAcrossSetUpdateAndClear(t *testing.T) {
+func TestComposeImageOverridesPreserveForkedComposeContentAcrossSetUpdateAndClear(t *testing.T) {
 	projectDir := t.TempDir()
 	path := filepath.Join(projectDir, ComposeImageOverrideFile)
 	original := `# downstream operator comment
@@ -243,14 +243,14 @@ services:
 	for _, want := range []string{
 		"# downstream operator comment",
 		"x-common: &common",
-		"        image: \"registry.example/app:v2\" # keep image rationale",
-		"                BASE_IMAGE: \"registry.example/base:v2\" # keep base rationale",
-		"                EXTRA_FLAG: \"enabled\"",
-		"            context: .",
-		"            dockerfile: Dockerfile.custom",
-		"            - ./custom:/opt/custom:ro,z",
-		"        <<: *common",
-		"        image: old.example/worker:v1 # untouched worker",
+		"    image: \"registry.example/app:v2\" # keep image rationale",
+		"        BASE_IMAGE: \"registry.example/base:v2\" # keep base rationale",
+		"        EXTRA_FLAG: \"enabled\"",
+		"      context: .",
+		"      dockerfile: Dockerfile.custom",
+		"      - ./custom:/opt/custom:ro,z",
+		"    <<: *common",
+		"    image: old.example/worker:v1 # untouched worker",
 	} {
 		if !strings.Contains(first, want) {
 			t.Fatalf("set did not preserve or write %q:\n%s", want, first)
@@ -265,9 +265,9 @@ services:
 	}
 	updated := readComposeOverrideForTest(t, path)
 	for _, want := range []string{
-		"        image: \"registry.example/app:v3\" # keep image rationale",
-		"                BASE_IMAGE: \"registry.example/base:v3\" # keep base rationale",
-		"                EXTRA_FLAG: \"enabled\"",
+		"    image: \"registry.example/app:v3\" # keep image rationale",
+		"        BASE_IMAGE: \"registry.example/base:v3\" # keep base rationale",
+		"        EXTRA_FLAG: \"enabled\"",
 	} {
 		if !strings.Contains(updated, want) {
 			t.Fatalf("update did not preserve or write %q:\n%s", want, updated)
@@ -284,11 +284,11 @@ services:
 	for _, want := range []string{
 		"# downstream operator comment",
 		"x-common: &common",
-		"            context: .",
-		"            dockerfile: Dockerfile.custom",
-		"            - ./custom:/opt/custom:ro,z",
-		"        <<: *common",
-		"        image: old.example/worker:v1 # untouched worker",
+		"      context: .",
+		"      dockerfile: Dockerfile.custom",
+		"      - ./custom:/opt/custom:ro,z",
+		"    <<: *common",
+		"    image: old.example/worker:v1 # untouched worker",
 	} {
 		if !strings.Contains(cleared, want) {
 			t.Fatalf("clear did not preserve unrelated value %q:\n%s", want, cleared)

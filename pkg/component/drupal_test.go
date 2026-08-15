@@ -34,6 +34,62 @@ func TestDrupalConfigSetDeleteMapEntriesAcrossFiles(t *testing.T) {
 	}
 }
 
+func TestDrupalConfigSetDeleteMapEntriesTreatsKeysLiterallyAndMatchesScalarText(t *testing.T) {
+	t.Parallel()
+
+	const key = `role.admin[blue]`
+	set := NewDrupalConfigSet("config/sync", map[string][]byte{
+		"example.yml": []byte(`
+"role.admin[blue]": 0
+nested:
+  "role.admin[blue]": " 0 "
+  keep: true
+`),
+	})
+
+	if err := set.DeleteMapEntries(MapEntryMatch{Key: key, Value: "0"}); err != nil {
+		t.Fatalf("DeleteMapEntries() error = %v", err)
+	}
+
+	result := string(set.files["example.yml"])
+	if strings.Contains(result, key) {
+		t.Fatalf("expected literal key %q removed at every depth, got:\n%s", key, result)
+	}
+	if !strings.Contains(result, "keep: true") {
+		t.Fatalf("expected unrelated map entry preserved, got:\n%s", result)
+	}
+}
+
+func TestDrupalConfigSetDeleteMapEntriesTreatsGlobCharactersLiterally(t *testing.T) {
+	t.Parallel()
+
+	set := NewDrupalConfigSet("config/sync", map[string][]byte{
+		"example.yml": []byte("\"*\": 0\nkeep: 0\n"),
+	})
+	if err := set.DeleteMapEntries(MapEntryMatch{Key: "*", Value: "0"}); err != nil {
+		t.Fatalf("DeleteMapEntries() error = %v", err)
+	}
+
+	result := string(set.files["example.yml"])
+	if strings.Contains(result, "*") {
+		t.Fatalf("expected literal wildcard key removed, got:\n%s", result)
+	}
+	if !strings.Contains(result, "keep: 0") {
+		t.Fatalf("expected non-matching key preserved, got:\n%s", result)
+	}
+
+	set = NewDrupalConfigSet("config/sync", map[string][]byte{
+		"example.yml": []byte("first:\n  target: '*'\nsecond:\n  target: other\n"),
+	})
+	if err := set.DeleteMapEntries(MapEntryMatch{Key: "target", Value: "*"}); err != nil {
+		t.Fatalf("DeleteMapEntries(value glob) error = %v", err)
+	}
+	result = string(set.files["example.yml"])
+	if strings.Contains(result, "target: '*'") || !strings.Contains(result, "target: other") {
+		t.Fatalf("expected wildcard value matched literally, got:\n%s", result)
+	}
+}
+
 func TestReplaceStringsTransformApplyAcrossFiles(t *testing.T) {
 	t.Parallel()
 

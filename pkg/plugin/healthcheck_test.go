@@ -24,6 +24,43 @@ func TestShouldPreferTraefikHealthcheckURLUsesTraefikDomain(t *testing.T) {
 	}
 }
 
+func TestStandardComposeWebHealthcheckAppRouteUsesContextAwareDefaultDomain(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		ctx        *config.Context
+		opts       StandardComposeWebHealthcheckOptions
+		wantDomain string
+	}{
+		{
+			name:       "local context defaults to localhost",
+			ctx:        &config.Context{DockerHostType: config.ContextLocal},
+			wantDomain: "localhost",
+		},
+		{
+			name: "remote context has no localhost fallback",
+			ctx:  &config.Context{DockerHostType: config.ContextRemote},
+		},
+		{
+			name:       "explicit remote domain is preserved",
+			ctx:        &config.Context{DockerHostType: config.ContextRemote},
+			opts:       StandardComposeWebHealthcheckOptions{DefaultDomain: "repo.example.org"},
+			wantDomain: "repo.example.org",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := standardComposeWebHealthcheckAppRoute(tt.ctx, "drupal", tt.opts)
+			if route.DefaultDomain != tt.wantDomain {
+				t.Fatalf("standardComposeWebHealthcheckAppRoute().DefaultDomain = %q, want %q", route.DefaultDomain, tt.wantDomain)
+			}
+		})
+	}
+}
+
 func TestHealthcheckURLFromServiceEnvironmentUsesAppURL(t *testing.T) {
 	t.Parallel()
 

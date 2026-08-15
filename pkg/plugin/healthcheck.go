@@ -82,14 +82,7 @@ func (r standardComposeWebHealthcheckRunner) Run(cmd *cobra.Command, ctx *config
 	if serviceURL := healthcheckURLFromServiceEnvironment(ctx, appService, r.opts); serviceURL != "" {
 		targetURL = serviceURL
 	}
-	appRoute := IngressRoute{
-		Name:          "app",
-		Service:       appService,
-		Router:        r.opts.TraefikRouter,
-		DefaultScheme: firstHealthcheckValue(r.opts.DefaultScheme, "http"),
-		DefaultDomain: firstHealthcheckValue(r.opts.DefaultDomain, "localhost"),
-		Primary:       true,
-	}
+	appRoute := standardComposeWebHealthcheckAppRoute(ctx, appService, r.opts)
 	if resolved, err := ResolveIngressRoute(ctx, IngressRoutes{Routes: []IngressRoute{appRoute}}, appRoute.Name); err == nil &&
 		resolved.Resolution == IngressRouteResolutionTraefik &&
 		shouldPreferTraefikHealthcheckURL(targetURL, resolved.URL) {
@@ -111,6 +104,17 @@ func (r standardComposeWebHealthcheckRunner) Run(cmd *cobra.Command, ctx *config
 		results = append(results, checker.CheckSolrCore(cmd.Context(), firstHealthcheckValue(r.opts.SolrService, "solr"), firstHealthcheckValue(r.opts.SolrCore, "default")))
 	}
 	return results, nil
+}
+
+func standardComposeWebHealthcheckAppRoute(ctx *config.Context, appService string, opts StandardComposeWebHealthcheckOptions) IngressRoute {
+	return IngressRoute{
+		Name:          "app",
+		Service:       appService,
+		Router:        opts.TraefikRouter,
+		DefaultScheme: firstHealthcheckValue(opts.DefaultScheme, "http"),
+		DefaultDomain: firstHealthcheckValue(opts.DefaultDomain, standardComposeWebDefaultDomain(ctx)),
+		Primary:       true,
+	}
 }
 
 func healthcheckURLFromServiceEnvironment(ctx *config.Context, appService string, opts StandardComposeWebHealthcheckOptions) string {

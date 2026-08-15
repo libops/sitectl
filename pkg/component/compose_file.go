@@ -1,19 +1,21 @@
 package component
 
 import (
+	"bytes"
 	"fmt"
 	"os"
-	"path"
+	pathpkg "path"
 	"strings"
 
 	"github.com/libops/sitectl/pkg/config"
-	"gopkg.in/yaml.v3"
+	"github.com/mikefarah/yq/v4/pkg/yqlib"
 )
 
 type ComposeFile struct {
-	path  string
-	lines []string
-	ctx   *config.Context
+	path        string
+	doc         *YAMLDocument
+	ctx         *config.Context
+	retainEmpty bool
 }
 
 func LoadComposeFile(path string) (*ComposeFile, error) {
@@ -21,25 +23,19 @@ func LoadComposeFile(path string) (*ComposeFile, error) {
 }
 
 func LoadComposeFileForContext(ctx *config.Context, path string) (*ComposeFile, error) {
+	var (
+		data []byte
+		err  error
+	)
 	if ctx != nil && ctx.DockerHostType == config.ContextRemote {
-		data, err := ctx.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read compose file: %w", err)
-		}
-		return &ComposeFile{
-			path:  path,
-			lines: strings.Split(string(data), "\n"),
-			ctx:   ctx,
-		}, nil
+		data, err = ctx.ReadFile(path)
+	} else {
+		data, err = os.ReadFile(path) // #nosec G304 -- compose file path is an explicit project configuration path.
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- compose file path is an explicit project configuration path.
 	if err != nil {
 		return nil, fmt.Errorf("read compose file: %w", err)
 	}
-	return &ComposeFile{
-		path:  path,
-		lines: strings.Split(string(data), "\n"),
-	}, nil
+	return newComposeFile(ctx, path, data)
 }
 
 func LoadComposeFileOptional(path string) (*ComposeFile, error) {
@@ -53,51 +49,60 @@ func LoadComposeFileOptionalForContext(ctx *config.Context, path string) (*Compo
 			return nil, fmt.Errorf("check compose file: %w", err)
 		}
 		if !exists {
-			return &ComposeFile{
-				path: path,
-				ctx:  ctx,
-			}, nil
+			return newComposeFile(ctx, path, nil)
 		}
 		data, err := ctx.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("read compose file: %w", err)
 		}
-		return &ComposeFile{
-			path:  path,
-			lines: strings.Split(string(data), "\n"),
-			ctx:   ctx,
-		}, nil
+		return newComposeFile(ctx, path, data)
 	}
+
 	data, err := os.ReadFile(path) // #nosec G304 -- compose file path is an explicit project configuration path.
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &ComposeFile{
-				path:  path,
-				lines: nil,
-			}, nil
+			return newComposeFile(nil, path, nil)
 		}
 		return nil, fmt.Errorf("read compose file: %w", err)
 	}
+	return newComposeFile(nil, path, data)
+}
+
+func newComposeFile(ctx *config.Context, filePath string, data []byte) (*ComposeFile, error) {
+	doc, err := LoadYAMLDocument(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse compose file: %w", err)
+	}
 	return &ComposeFile{
-		path:  path,
-		lines: strings.Split(string(data), "\n"),
+		path:        filePath,
+		doc:         doc,
+		ctx:         ctx,
+		retainEmpty: len(bytes.TrimSpace(data)) > 0 && composeEmptyMapping(doc.node),
 	}, nil
 }
 
 func (c *ComposeFile) Save() error {
-	if len(composeContentLines(c.lines)) == 0 {
-		if c.ctx != nil {
+	if c == nil || c.doc == nil || composeDocumentEmpty(c.doc.node, c.retainEmpty) {
+		if c != nil && c.ctx != nil {
 			return c.ctx.RemoveFile(c.path)
+		}
+		if c == nil {
+			return nil
 		}
 		if err := os.Remove(c.path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return nil
 	}
-	if c.ctx != nil {
-		return c.ctx.WriteFile(c.path, []byte(strings.Join(c.lines, "\n")))
+
+	data, err := c.doc.Bytes()
+	if err != nil {
+		return fmt.Errorf("encode compose file: %w", err)
 	}
-	return os.WriteFile(c.path, []byte(strings.Join(c.lines, "\n")), 0o600)
+	if c.ctx != nil {
+		return c.ctx.WriteFile(c.path, data)
+	}
+	return os.WriteFile(c.path, data, 0o600)
 }
 
 func (c *ComposeFile) DeleteService(name string) error {
@@ -109,13 +114,11 @@ func (c *ComposeFile) DeleteVolume(name string) error {
 }
 
 func (c *ComposeFile) HasService(name string) bool {
-	_, ok := c.findService(name)
-	return ok
+	return c.hasPath("services", name)
 }
 
 func (c *ComposeFile) HasVolume(name string) bool {
-	_, ok := c.findSectionEntry("volumes", name)
-	return ok
+	return c.hasPath("volumes", name)
 }
 
 func (c *ComposeFile) ServiceBlock(name string) (string, bool) {
@@ -134,124 +137,51 @@ func (c *ComposeFile) AddVolumeBlock(name, block string) error {
 	return c.addSectionEntryBlock("volumes", name, block)
 }
 
-func (c *ComposeFile) addSectionEntryBlock(section, name, block string) error {
-	if strings.TrimSpace(block) == "" {
-		return fmt.Errorf("%s block for %q is empty", section, name)
-	}
-	if _, ok := c.findSectionEntry(section, name); ok {
-		return nil
-	}
-
-	sectionIdx, ok := findMapKey(c.lines, 0, section, 0)
-	if !ok {
-		c.lines = append(c.lines, section+":")
-		sectionIdx = len(c.lines) - 1
-	}
-	insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, sectionIdx, 0))
-	c.lines = insertLines(c.lines, insertAt, strings.Split(strings.TrimRight(block, "\n"), "\n"))
-	return nil
-}
-
 func (c *ComposeFile) SetServiceStringList(service, key string, values []string) error {
-	serviceIdx, ok := c.findService(service)
-	if !ok {
+	if !c.HasService(service) {
 		return fmt.Errorf("service %q not found in compose file", service)
 	}
-	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
-	listBlock := []string{"    " + key + ":"}
-	for _, value := range values {
-		listBlock = append(listBlock, fmt.Sprintf("      - %s", value))
-	}
-	if ok {
-		end := findBlockEnd(c.lines, keyIdx, 4)
-		c.lines = append(c.lines[:keyIdx], append(listBlock, c.lines[end:]...)...)
-		return nil
-	}
-	insertAt := findBlockEnd(c.lines, serviceIdx, 2)
-	c.lines = insertLines(c.lines, insertAt, listBlock)
-	return nil
+	return c.doc.setYAMLValue([]string{"services", service, key}, values)
 }
 
-// AppendUniqueServiceString appends value to a service string list or block
-// scalar key while preserving the surrounding compose file text.
+// AppendUniqueServiceString appends a scalar to a service string sequence or
+// block scalar without changing unrelated YAML nodes.
 func (c *ComposeFile) AppendUniqueServiceString(service, key, value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
 	}
-	serviceIdx, ok := c.findService(service)
-	if !ok {
+	if !c.HasService(service) {
 		return fmt.Errorf("service %q not found in compose file", service)
 	}
-	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
-	if !ok {
-		insertAt := findBlockEnd(c.lines, serviceIdx, 2)
-		c.lines = insertLines(c.lines, insertAt, []string{
-			"    " + key + ":",
-			"      - " + value,
-		})
+	candidate, err := composeScalarCandidate(value)
+	if err != nil {
+		return fmt.Errorf("service %q key %q: %w", service, key, err)
+	}
+	target := c.pathCandidate("services", service, key)
+	if target != nil && target.Kind == yqlib.ScalarNode && target.Style == yqlib.FoldedStyle {
+		if !scalarStringContains(target.Value, candidate.Value) {
+			target.Value = strings.TrimSpace(target.Value) + " " + candidate.Value
+		}
 		return nil
 	}
-
-	keyLine := strings.TrimSpace(c.lines[keyIdx])
-	if isBlockScalarKeyLine(keyLine, key) {
-		end := findBlockEnd(c.lines, keyIdx, 4)
-		for _, line := range c.lines[keyIdx+1 : end] {
-			if strings.TrimSpace(line) == value {
-				return nil
-			}
-		}
-		insertAt := insertionIndexBeforeTrailingBlanks(c.lines, end)
-		c.lines = insertLines(c.lines, insertAt, []string{"      " + value})
-		return nil
-	}
-	if keyLine == key+":" {
-		end := findBlockEnd(c.lines, keyIdx, 4)
-		for _, line := range c.lines[keyIdx+1 : end] {
-			trimmed := strings.TrimSpace(line)
-			if !strings.HasPrefix(trimmed, "- ") {
-				if trimmed == "" {
-					continue
-				}
-				return fmt.Errorf("service %q key %q is not a string sequence", service, key)
-			}
-			if strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")) == value {
-				return nil
-			}
-		}
-		insertAt := insertionIndexBeforeTrailingBlanks(c.lines, end)
-		c.lines = insertLines(c.lines, insertAt, []string{"      - " + value})
-		return nil
-	}
-
-	prefix := key + ":"
-	if strings.HasPrefix(keyLine, prefix) {
-		existing := strings.TrimSpace(strings.TrimPrefix(keyLine, prefix))
-		if existing == value {
-			return nil
-		}
-		replacement := []string{"    " + key + ":"}
-		if existing != "" && existing != "{}" && existing != "[]" {
-			replacement = append(replacement, "      - "+existing)
-		}
-		replacement = append(replacement, "      - "+value)
-		end := findBlockEnd(c.lines, keyIdx, 4)
-		c.lines = append(c.lines[:keyIdx], append(replacement, c.lines[end:]...)...)
-		return nil
-	}
-	return fmt.Errorf("service %q key %q is not a string sequence", service, key)
+	return c.doc.appendUniqueYAMLString([]string{"services", service, key}, candidate.Value)
 }
 
-// RemoveServiceString removes value from a service string list or block scalar
-// key while preserving the surrounding compose file text.
+// RemoveServiceString removes a scalar from a service sequence or block scalar.
 func (c *ComposeFile) RemoveServiceString(service, key, value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
 	}
-	return c.removeServiceStrings(service, key, func(candidate string) bool {
-		return strings.TrimSpace(candidate) == value
-	})
+	candidate, err := composeScalarCandidate(value)
+	if err != nil {
+		return fmt.Errorf("service %q key %q: %w", service, key, err)
+	}
+	if yamlCandidateAtKeys(c.doc.node, "services", service, key) == nil {
+		return nil
+	}
+	return c.doc.RemoveString(yamlPath("services", service, key), candidate.Value)
 }
 
 func (c *ComposeFile) RemoveServiceStringsByPrefix(service, key, prefix string) error {
@@ -259,245 +189,109 @@ func (c *ComposeFile) RemoveServiceStringsByPrefix(service, key, prefix string) 
 	if prefix == "" {
 		return nil
 	}
-	return c.removeServiceStrings(service, key, func(candidate string) bool {
+	if yamlCandidateAtKeys(c.doc.node, "services", service, key) == nil {
+		return nil
+	}
+	_, err := c.doc.RemoveMatchingString(yamlPath("services", service, key), func(candidate string) bool {
 		return strings.HasPrefix(strings.TrimSpace(candidate), prefix)
 	})
+	return err
 }
 
-// RemoveServiceVolumesBySource removes short- and long-syntax service volume
-// entries whose source exactly matches sourcePath while preserving other Compose
-// text and list entries.
+// RemoveServiceVolumesBySource removes short- and long-syntax volume entries
+// whose source is sourcePath.
 func (c *ComposeFile) RemoveServiceVolumesBySource(service, sourcePath string) error {
 	sourcePath = strings.TrimSpace(sourcePath)
 	if sourcePath == "" {
 		return nil
 	}
-	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
-	if err != nil || !ok {
-		return err
-	}
-	volumesLocation, ok := c.flexibleMappingChild(serviceLocation, "volumes")
-	if !ok || !flexibleMappingLineCanHaveChildren(c.lines[volumesLocation.index], "volumes") {
+	target := c.pathCandidate("services", service, "volumes")
+	if target == nil || target.Kind != yqlib.SequenceNode {
 		return nil
 	}
-
-	end := findBlockEnd(c.lines, volumesLocation.index, volumesLocation.indent)
-	itemIndent := flexibleDirectChildIndent(c.lines, volumesLocation.index, volumesLocation.indent, volumesLocation.step)
-	filtered := make([]string, 0, end-volumesLocation.index-1)
-	for index := volumesLocation.index + 1; index < end; {
-		if !composeSequenceItemAtIndent(c.lines[index], itemIndent) {
-			filtered = append(filtered, c.lines[index])
-			index++
-			continue
+	matches := make([]*yqlib.CandidateNode, 0)
+	for _, item := range target.Content {
+		if pathpkg.Clean(composeVolumeCandidateSource(item)) == pathpkg.Clean(sourcePath) {
+			matches = append(matches, item)
 		}
-
-		itemEnd := index + 1
-		for itemEnd < end && !composeSequenceItemAtIndent(c.lines[itemEnd], itemIndent) {
-			itemEnd++
-		}
-		if path.Clean(composeVolumeSource(c.lines[index:itemEnd])) != path.Clean(sourcePath) {
-			filtered = append(filtered, c.lines[index:itemEnd]...)
-		}
-		index = itemEnd
 	}
-	c.lines = append(c.lines[:volumesLocation.index+1], append(filtered, c.lines[end:]...)...)
-	return nil
-}
-
-func composeSequenceItemAtIndent(line string, indent int) bool {
-	if leadingSpaces(line) != indent {
-		return false
-	}
-	trimmed := strings.TrimSpace(line)
-	return trimmed == "-" || strings.HasPrefix(trimmed, "- ")
-}
-
-func composeVolumeSource(lines []string) string {
-	if len(lines) == 0 {
-		return ""
-	}
-	indent := leadingSpaces(lines[0])
-	fragment := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if len(line) >= indent {
-			line = line[indent:]
-		}
-		fragment = append(fragment, line)
-	}
-	var entries []any
-	if err := yaml.Unmarshal([]byte(strings.Join(fragment, "\n")), &entries); err != nil || len(entries) != 1 {
-		return ""
-	}
-	switch entry := entries[0].(type) {
-	case string:
-		parts := strings.SplitN(entry, ":", 2)
-		if len(parts) == 2 {
-			return strings.TrimSpace(parts[0])
-		}
-	case map[string]any:
-		source, _ := entry["source"].(string)
-		return strings.TrimSpace(source)
-	}
-	return ""
-}
-
-func (c *ComposeFile) removeServiceStrings(service, key string, remove func(string) bool) error {
-	if remove == nil {
-		return nil
-	}
-	serviceIdx, ok := c.findService(service)
-	if !ok {
-		return nil
-	}
-	keyIdx, ok := findMapKey(c.lines, serviceIdx+1, key, 4)
-	if !ok {
-		return nil
-	}
-
-	keyLine := strings.TrimSpace(c.lines[keyIdx])
-	if isBlockScalarKeyLine(keyLine, key) {
-		end := findBlockEnd(c.lines, keyIdx, 4)
-		filtered := make([]string, 0, end-keyIdx)
-		filtered = append(filtered, c.lines[keyIdx])
-		for _, line := range c.lines[keyIdx+1 : end] {
-			if remove(strings.TrimSpace(line)) {
-				continue
-			}
-			filtered = append(filtered, line)
-		}
-		if len(composeContentLines(filtered[1:])) == 0 {
-			c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
-			return nil
-		}
-		c.lines = append(c.lines[:keyIdx], append(filtered, c.lines[end:]...)...)
-		return nil
-	}
-	if keyLine == key+":" {
-		end := findBlockEnd(c.lines, keyIdx, 4)
-		filtered := make([]string, 0, end-keyIdx)
-		filtered = append(filtered, c.lines[keyIdx])
-		for _, line := range c.lines[keyIdx+1 : end] {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "- ") && remove(strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))) {
-				continue
-			}
-			filtered = append(filtered, line)
-		}
-		if len(composeContentLines(filtered[1:])) == 0 {
-			c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
-			return nil
-		}
-		c.lines = append(c.lines[:keyIdx], append(filtered, c.lines[end:]...)...)
-		return nil
-	}
-
-	prefix := key + ":"
-	if strings.HasPrefix(keyLine, prefix) && remove(strings.TrimSpace(strings.TrimPrefix(keyLine, prefix))) {
-		end := findBlockEnd(c.lines, keyIdx, 4)
-		c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
-	}
-	return nil
+	return deleteYAMLCandidates(matches...)
 }
 
 func (c *ComposeFile) DeleteServiceKey(service, key string) error {
-	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil
-	}
-	c.deleteFlexibleMappingChild(serviceLocation, key)
-	return nil
+	return c.doc.deleteYAMLKeys("services", service, key)
 }
 
 func (c *ComposeFile) SetServiceScalar(service, key, value string) error {
-	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
-	if err != nil {
-		return err
-	}
-	if !ok {
+	if !c.HasService(service) {
 		return fmt.Errorf("service %q not found in compose file", service)
 	}
-	return c.setFlexibleMappingScalar(serviceLocation, key, value)
+	return c.setRawScalar([]string{"services", service, key}, value)
 }
 
-// SetServiceOverrideScalar sets a service scalar while creating missing
-// services and preserving all unrelated Compose text.
+// SetServiceOverrideScalar sets a service scalar while creating missing services.
 func (c *ComposeFile) SetServiceOverrideScalar(service, key, value string) error {
-	serviceLocation, _, err := c.flexibleServiceLocation(service, true)
-	if err != nil {
-		return err
+	if strings.TrimSpace(service) == "" {
+		return fmt.Errorf("service name is empty")
 	}
-	return c.setFlexibleMappingScalar(serviceLocation, key, value)
+	return c.setRawScalar([]string{"services", service, key}, value)
 }
 
-// SetServiceBuildArg sets a nested services.<service>.build.args value without
-// reformatting the rest of the Compose file. Scalar build contexts are
-// expanded to build.context before args are added.
+// SetServiceBuildArg sets services.<service>.build.args.<name>. Scalar build
+// contexts are expanded to build.context first.
 func (c *ComposeFile) SetServiceBuildArg(service, name, value string) error {
-	serviceLocation, _, err := c.flexibleServiceLocation(service, true)
-	if err != nil {
-		return err
+	if strings.TrimSpace(service) == "" {
+		return fmt.Errorf("service name is empty")
 	}
-	buildLocation, err := c.ensureFlexibleMappingChild(serviceLocation, "build", true)
-	if err != nil {
-		return fmt.Errorf("service %q build: %w", service, err)
+	build := c.pathCandidate("services", service, "build")
+	if build != nil && build.Kind == yqlib.ScalarNode && build.Tag != "!!null" {
+		context := build.Copy()
+		context.LineComment = ""
+		build.Key.LineComment = build.LineComment
+		build.LineComment = ""
+		build.Kind = yqlib.MappingNode
+		build.Tag = "!!map"
+		build.Value = ""
+		build.Style = 0
+		build.Alias = nil
+		build.Content = nil
+		build.AddKeyValueChild(newYAMLStringCandidate("context", 0), context)
+	} else if build != nil && build.Kind != yqlib.MappingNode && build.Tag != "!!null" {
+		return fmt.Errorf("service %q build is not a mapping", service)
 	}
-	argsLocation, err := c.ensureFlexibleMappingChild(buildLocation, "args", false)
-	if err != nil {
-		return fmt.Errorf("service %q build args: %w", service, err)
+	args := c.pathCandidate("services", service, "build", "args")
+	if args != nil && args.Kind != yqlib.MappingNode && args.Tag != "!!null" {
+		return fmt.Errorf("service %q build args is not a mapping", service)
 	}
-	return c.setFlexibleMappingScalar(argsLocation, name, fmt.Sprintf("%q", value))
+	return c.doc.setYAMLString([]string{"services", service, "build", "args", name}, value)
 }
 
-// DeleteServiceBuildArgs removes the build.args mapping while preserving
-// build.context, dockerfile, and other service settings.
+// DeleteServiceBuildArgs removes build.args and prunes build when it becomes empty.
 func (c *ComposeFile) DeleteServiceBuildArgs(service string) error {
-	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
-	if err != nil || !ok {
+	args := c.pathCandidate("services", service, "build", "args")
+	if args == nil {
+		return nil
+	}
+	if err := c.doc.deleteYAMLKeys("services", service, "build", "args"); err != nil {
 		return err
 	}
-	buildLocation, ok := c.flexibleMappingChild(serviceLocation, "build")
-	if !ok {
-		return nil
-	}
-	if !flexibleMappingLineCanHaveChildren(c.lines[buildLocation.index], "build") {
-		return nil
-	}
-	if !c.deleteFlexibleMappingChild(buildLocation, "args") {
-		return nil
-	}
-	if !c.flexibleMappingHasContent(buildLocation) {
-		c.deleteFlexibleMappingChild(serviceLocation, "build")
+	build := c.pathCandidate("services", service, "build")
+	if composeEmptyMapping(build) {
+		return c.doc.deleteYAMLKeys("services", service, "build")
 	}
 	return nil
 }
 
-// PruneEmptyService removes a service and then services when neither contains
-// any YAML values after an override is cleared.
+// PruneEmptyService removes an empty service and then an empty services section.
 func (c *ComposeFile) PruneEmptyService(service string) error {
-	serviceLocation, ok, err := c.flexibleServiceLocation(service, false)
-	if err != nil || !ok {
-		return err
-	}
-	if c.flexibleMappingHasContent(serviceLocation) {
+	node := c.pathCandidate("services", service)
+	if node == nil {
 		return nil
 	}
-	serviceEnd := findBlockEnd(c.lines, serviceLocation.index, serviceLocation.indent)
-	c.lines = append(c.lines[:serviceLocation.index], c.lines[serviceEnd:]...)
-
-	servicesIndex, ok := findMapKey(c.lines, 0, "services", 0)
-	if !ok {
+	if !composeEmptyValue(node) {
 		return nil
 	}
-	servicesLocation := flexibleMapLocation{index: servicesIndex, indent: 0, step: flexibleChildStep(c.lines, servicesIndex, 0, 2)}
-	if c.flexibleMappingHasContent(servicesLocation) {
-		return nil
-	}
-	servicesEnd := findBlockEnd(c.lines, servicesIndex, 0)
-	c.lines = append(c.lines[:servicesIndex], c.lines[servicesEnd:]...)
-	return nil
+	return c.DeleteService(service)
 }
 
 func (c *ComposeFile) DeleteSectionEntry(section, key string) error {
@@ -505,449 +299,324 @@ func (c *ComposeFile) DeleteSectionEntry(section, key string) error {
 }
 
 func (c *ComposeFile) SectionEntryBlock(section, key string) (string, bool) {
-	sectionIdx, ok := findMapKey(c.lines, 0, section, 0)
-	if !ok {
-		return "", false
-	}
-	entryIdx, ok := findMapKey(c.lines, sectionIdx+1, key, 2)
-	if !ok {
-		return "", false
-	}
-	end := findBlockEnd(c.lines, entryIdx, 2)
-	return strings.Join(c.lines[entryIdx:end], "\n"), true
+	return c.sectionEntryBlock(section, key)
 }
 
 func (c *ComposeFile) AddSectionEntryBlock(section, key, block string) error {
-	if strings.TrimSpace(block) == "" {
-		return fmt.Errorf("section block for %s.%s is empty", section, key)
-	}
-	if _, ok := c.SectionEntryBlock(section, key); ok {
-		return nil
-	}
-
-	sectionIdx, ok := findMapKey(c.lines, 0, section, 0)
-	if !ok {
-		c.lines = append(c.lines, section+":")
-		sectionIdx = len(c.lines) - 1
-	}
-	insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, sectionIdx, 0))
-	c.lines = insertLines(c.lines, insertAt, strings.Split(strings.TrimRight(block, "\n"), "\n"))
-	return nil
+	return c.addSectionEntryBlock(section, key, block)
 }
 
 func (c *ComposeFile) DeleteServiceEnv(service, key string) error {
-	serviceIdx, ok := c.findService(service)
-	if !ok {
-		return nil
-	}
-	envIdx, envStyle, ok := findEnvironmentBlock(c.lines, serviceIdx)
-	if !ok || envStyle == envInlineEmpty {
-		return nil
-	}
-	keyIdx, ok := findMapKey(c.lines, envIdx+1, key, 6)
-	if !ok {
-		return nil
-	}
-	end := findBlockEnd(c.lines, keyIdx, 6)
-	c.lines = append(c.lines[:keyIdx], c.lines[end:]...)
-	return nil
+	return c.doc.deleteYAMLKeys("services", service, "environment", key)
 }
 
 func (c *ComposeFile) SetServiceEnv(service, key, value string) error {
-	serviceIdx, ok := c.findService(service)
-	if !ok {
+	if !c.HasService(service) {
 		return fmt.Errorf("service %q not found in compose file", service)
 	}
-	envIdx, envStyle, ok := findEnvironmentBlock(c.lines, serviceIdx)
-	if !ok {
-		insertAt := findBlockEnd(c.lines, serviceIdx, 2)
-		block := []string{
-			"    environment:",
-			fmt.Sprintf("      %s: %q", key, value),
-		}
-		c.lines = insertLines(c.lines, insertAt, block)
-		return nil
-	}
-
-	switch envStyle {
-	case envInlineEmpty:
-		c.lines[envIdx] = "    environment:"
-		c.lines = insertLines(c.lines, envIdx+1, []string{fmt.Sprintf("      %s: %q", key, value)})
-		return nil
-	case envBlock:
-		if keyIdx, ok := findMapKey(c.lines, envIdx+1, key, 6); ok {
-			c.lines[keyIdx] = fmt.Sprintf("      %s: %q", key, value)
-			return nil
-		}
-		insertAt := findBlockEnd(c.lines, envIdx, 4)
-		c.lines = insertLines(c.lines, insertAt, []string{fmt.Sprintf("      %s: %q", key, value)})
-		return nil
-	default:
-		return fmt.Errorf("unsupported environment style for service %q", service)
-	}
+	return c.doc.setYAMLString([]string{"services", service, "environment", key}, value)
 }
 
 func (c *ComposeFile) deleteSectionEntry(section, key string) error {
-	sectionIdx, ok := findMapKey(c.lines, 0, section, 0)
-	if !ok {
-		return nil
+	if err := c.doc.deleteYAMLKeys(section, key); err != nil {
+		return err
 	}
-	entryIdx, ok := findMapKey(c.lines, sectionIdx+1, key, 2)
-	if !ok {
-		return nil
-	}
-	end := findBlockEnd(c.lines, entryIdx, 2)
-	c.lines = append(c.lines[:entryIdx], c.lines[end:]...)
-	sectionEnd := findBlockEnd(c.lines, sectionIdx, 0)
-	if len(composeContentLines(c.lines[sectionIdx+1:sectionEnd])) == 0 {
-		c.lines = append(c.lines[:sectionIdx], c.lines[sectionEnd:]...)
+	sectionNode := c.pathCandidate(section)
+	if composeEmptyMapping(sectionNode) {
+		return c.doc.deleteYAMLKeys(section)
 	}
 	return nil
-}
-
-func (c *ComposeFile) findService(service string) (int, bool) {
-	servicesIdx, ok := findMapKey(c.lines, 0, "services", 0)
-	if !ok {
-		return 0, false
-	}
-	return findMapKey(c.lines, servicesIdx+1, service, 2)
-}
-
-func (c *ComposeFile) findSectionEntry(section, key string) (int, bool) {
-	sectionIdx, ok := findMapKey(c.lines, 0, section, 0)
-	if !ok {
-		return 0, false
-	}
-	return findMapKey(c.lines, sectionIdx+1, key, 2)
-}
-
-func isBlockScalarKeyLine(line, key string) bool {
-	prefix := key + ":"
-	if !strings.HasPrefix(line, prefix) {
-		return false
-	}
-	value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
-	return strings.HasPrefix(value, ">") || strings.HasPrefix(value, "|")
 }
 
 func (c *ComposeFile) sectionEntryBlock(section, key string) (string, bool) {
-	entryIdx, ok := c.findSectionEntry(section, key)
-	if !ok {
+	_, _, valueNode := composeMappingEntry(c.doc.node, section)
+	if valueNode == nil || valueNode.Kind != yqlib.MappingNode {
 		return "", false
 	}
-	end := findBlockEnd(c.lines, entryIdx, 2)
-	return strings.Join(c.lines[entryIdx:end], "\n"), true
+	_, entryKey, entryValue := composeMappingEntry(valueNode, key)
+	if entryValue == nil {
+		return "", false
+	}
+	block, err := composeEncodeEntry(entryKey, entryValue)
+	if err != nil {
+		return "", false
+	}
+	return composeIndentBlock(block, 2), true
 }
 
-type flexibleMapLocation struct {
-	index  int
-	indent int
-	step   int
-	key    string
-}
-
-func (c *ComposeFile) flexibleServiceLocation(service string, create bool) (flexibleMapLocation, bool, error) {
-	service = strings.TrimSpace(service)
-	if service == "" {
-		return flexibleMapLocation{}, false, fmt.Errorf("service name is empty")
+func (c *ComposeFile) addSectionEntryBlock(section, key, block string) error {
+	if strings.TrimSpace(block) == "" {
+		return fmt.Errorf("section block for %s.%s is empty", section, key)
 	}
-	servicesIndex, ok := findMapKey(c.lines, 0, "services", 0)
-	if !ok {
-		if !create {
-			return flexibleMapLocation{}, false, nil
-		}
-		c.lines = append(c.lines, "services:")
-		servicesIndex = len(c.lines) - 1
-	}
-	servicesLocation := flexibleMapLocation{
-		index:  servicesIndex,
-		indent: 0,
-		step:   flexibleChildStep(c.lines, servicesIndex, 0, 2),
-		key:    "services",
-	}
-	if _, err := c.normalizeFlexibleMappingParent(servicesLocation, false); err != nil {
-		return flexibleMapLocation{}, false, err
-	}
-
-	serviceIndent := flexibleDirectChildIndent(c.lines, servicesIndex, 0, servicesLocation.step)
-	serviceIndex, ok := findMapKey(c.lines, servicesIndex+1, service, serviceIndent)
-	if !ok {
-		if !create {
-			return flexibleMapLocation{}, false, nil
-		}
-		insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, servicesIndex, 0))
-		c.lines = insertLines(c.lines, insertAt, []string{strings.Repeat(" ", serviceIndent) + service + ":"})
-		serviceIndex = insertAt
-	}
-	location := flexibleMapLocation{
-		index:  serviceIndex,
-		indent: serviceIndent,
-		step:   flexibleChildStep(c.lines, serviceIndex, serviceIndent, servicesLocation.step),
-		key:    service,
-	}
-	if _, err := c.normalizeFlexibleMappingParent(location, false); err != nil {
-		return flexibleMapLocation{}, false, err
-	}
-	return location, true, nil
-}
-
-func (c *ComposeFile) ensureFlexibleMappingChild(parent flexibleMapLocation, key string, allowScalarContext bool) (flexibleMapLocation, error) {
-	if _, err := c.normalizeFlexibleMappingParent(parent, false); err != nil {
-		return flexibleMapLocation{}, err
-	}
-	if location, ok := c.flexibleMappingChild(parent, key); ok {
-		scalar, err := c.normalizeFlexibleMappingParent(location, allowScalarContext)
-		if err != nil {
-			return flexibleMapLocation{}, err
-		}
-		if scalar != "" {
-			contextLine := strings.Repeat(" ", location.indent+location.step) + "context: " + scalar
-			c.lines = insertLines(c.lines, location.index+1, []string{contextLine})
-		}
-		location.step = flexibleChildStep(c.lines, location.index, location.indent, location.step)
-		return location, nil
-	}
-
-	childIndent := flexibleDirectChildIndent(c.lines, parent.index, parent.indent, parent.step)
-	insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, parent.index, parent.indent))
-	c.lines = insertLines(c.lines, insertAt, []string{strings.Repeat(" ", childIndent) + key + ":"})
-	return flexibleMapLocation{index: insertAt, indent: childIndent, step: parent.step, key: key}, nil
-}
-
-func (c *ComposeFile) flexibleMappingChild(parent flexibleMapLocation, key string) (flexibleMapLocation, bool) {
-	childIndent := flexibleDirectChildIndent(c.lines, parent.index, parent.indent, parent.step)
-	childIndex, ok := findMapKey(c.lines, parent.index+1, key, childIndent)
-	if !ok {
-		return flexibleMapLocation{}, false
-	}
-	return flexibleMapLocation{
-		index:  childIndex,
-		indent: childIndent,
-		step:   flexibleChildStep(c.lines, childIndex, childIndent, parent.step),
-		key:    key,
-	}, true
-}
-
-func (c *ComposeFile) setFlexibleMappingScalar(parent flexibleMapLocation, key, value string) error {
-	if _, err := c.normalizeFlexibleMappingParent(parent, false); err != nil {
-		return err
-	}
-	childIndent := flexibleDirectChildIndent(c.lines, parent.index, parent.indent, parent.step)
-	line := strings.Repeat(" ", childIndent) + key + ": " + value
-	if childIndex, ok := findMapKey(c.lines, parent.index+1, key, childIndent); ok {
-		_, comment, _ := flexibleMappingLineParts(c.lines[childIndex], key)
-		line += comment
-		end := findBlockEnd(c.lines, childIndex, childIndent)
-		c.lines = append(c.lines[:childIndex], append([]string{line}, c.lines[end:]...)...)
+	if c.hasPath(section, key) {
 		return nil
 	}
-	insertAt := insertionIndexBeforeTrailingBlanks(c.lines, findBlockEnd(c.lines, parent.index, parent.indent))
-	c.lines = insertLines(c.lines, insertAt, []string{line})
+	entryKey, entryValue, err := c.parseEntryBlock(block, key)
+	if err != nil {
+		return fmt.Errorf("parse %s block for %q: %w", section, key, err)
+	}
+	sectionNode, err := c.ensureSectionMapping(section)
+	if err != nil {
+		return err
+	}
+	composeAddMappingEntry(sectionNode, entryKey, entryValue)
 	return nil
 }
 
-func (c *ComposeFile) deleteFlexibleMappingChild(parent flexibleMapLocation, key string) bool {
-	location, ok := c.flexibleMappingChild(parent, key)
-	if !ok {
-		return false
+func (c *ComposeFile) ensureSectionMapping(section string) (*yqlib.CandidateNode, error) {
+	node := c.pathCandidate(section)
+	if node == nil || (node.Kind == yqlib.ScalarNode && node.Tag == "!!null") {
+		if err := c.doc.assignYAMLKeys([]string{section}, newYAMLMappingCandidate()); err != nil {
+			return nil, err
+		}
+		return c.pathCandidate(section), nil
 	}
-	end := findBlockEnd(c.lines, location.index, location.indent)
-	c.lines = append(c.lines[:location.index], c.lines[end:]...)
-	return true
+	if node.Kind != yqlib.MappingNode {
+		return nil, fmt.Errorf("compose section %q is not a mapping", section)
+	}
+	return node, nil
 }
 
-func (c *ComposeFile) flexibleMappingHasContent(location flexibleMapLocation) bool {
-	end := findBlockEnd(c.lines, location.index, location.indent)
-	for _, line := range c.lines[location.index+1 : end] {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			return true
+func (c *ComposeFile) setRawScalar(keys []string, value string) error {
+	candidate, err := composeScalarCandidate(value)
+	if err != nil {
+		return err
+	}
+	return c.doc.assignYAMLKeys(keys, candidate)
+}
+
+func (c *ComposeFile) hasPath(keys ...string) bool {
+	return yamlCandidateAtKeys(c.doc.node, keys...) != nil
+}
+
+func (c *ComposeFile) pathCandidate(keys ...string) *yqlib.CandidateNode {
+	return yamlCandidateAtKeys(c.doc.node, keys...)
+}
+
+func composeScalarCandidate(value string) (*yqlib.CandidateNode, error) {
+	doc, err := LoadYAMLDocument([]byte("value: " + value + "\n"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid YAML scalar %q: %w", value, err)
+	}
+	_, _, candidate := composeMappingEntry(doc.node, "value")
+	if candidate == nil || candidate.Kind != yqlib.ScalarNode {
+		return nil, fmt.Errorf("value %q is not a YAML scalar", value)
+	}
+	return candidate.Copy(), nil
+}
+
+func composeMappingEntry(mapping *yqlib.CandidateNode, key string) (int, *yqlib.CandidateNode, *yqlib.CandidateNode) {
+	if mapping == nil || mapping.Kind != yqlib.MappingNode {
+		return -1, nil, nil
+	}
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			return index, mapping.Content[index], mapping.Content[index+1]
 		}
 	}
-	return false
+	return -1, nil, nil
 }
 
-func (c *ComposeFile) normalizeFlexibleMappingParent(location flexibleMapLocation, allowScalarContext bool) (string, error) {
-	value, comment, ok := flexibleMappingLineParts(c.lines[location.index], location.key)
-	if !ok {
-		return "", fmt.Errorf("mapping key %q is malformed", location.key)
+func composeVolumeCandidateSource(candidate *yqlib.CandidateNode) string {
+	if candidate == nil {
+		return ""
 	}
-	switch {
-	case value == "":
-		return "", nil
-	case value == "{}" || value == "{ }":
-		c.lines[location.index] = strings.Repeat(" ", location.indent) + location.key + ":" + comment
-		return "", nil
-	case strings.HasPrefix(value, "&") || strings.HasPrefix(value, "!"):
-		return "", nil
-	case allowScalarContext:
-		c.lines[location.index] = strings.Repeat(" ", location.indent) + location.key + ":" + comment
-		return value, nil
-	default:
-		return "", fmt.Errorf("mapping key %q has scalar value %q", location.key, value)
-	}
-}
-
-func flexibleMappingLineCanHaveChildren(line, key string) bool {
-	value, _, ok := flexibleMappingLineParts(line, key)
-	return ok && (value == "" || value == "{}" || value == "{ }" || strings.HasPrefix(value, "&") || strings.HasPrefix(value, "!"))
-}
-
-func flexibleMappingLineParts(line, key string) (string, string, bool) {
-	trimmed := strings.TrimLeft(line, " ")
-	prefix := key + ":"
-	if !strings.HasPrefix(trimmed, prefix) {
-		return "", "", false
-	}
-	value, comment := splitFlexibleInlineComment(strings.TrimPrefix(trimmed, prefix))
-	return strings.TrimSpace(value), comment, true
-}
-
-func splitFlexibleInlineComment(value string) (string, string) {
-	inSingle := false
-	inDouble := false
-	escaped := false
-	for index := 0; index < len(value); index++ {
-		character := value[index]
-		if inDouble && escaped {
-			escaped = false
-			continue
+	if candidate.Kind == yqlib.ScalarNode {
+		parts := strings.SplitN(candidate.Value, ":", 2)
+		if len(parts) == 2 {
+			return strings.TrimSpace(parts[0])
 		}
-		if inDouble && character == '\\' {
-			escaped = true
-			continue
+		return ""
+	}
+	_, _, source := composeMappingEntry(candidate, "source")
+	if source != nil && source.Kind == yqlib.ScalarNode {
+		return strings.TrimSpace(source.Value)
+	}
+	return ""
+}
+
+func composeEmptyMapping(node *yqlib.CandidateNode) bool {
+	return node != nil && node.Kind == yqlib.MappingNode && len(node.Content) == 0
+}
+
+func composeEmptyValue(node *yqlib.CandidateNode) bool {
+	return composeEmptyMapping(node) || (node != nil && node.Kind == yqlib.ScalarNode && node.Tag == "!!null")
+}
+
+func composeDocumentEmpty(node *yqlib.CandidateNode, retainEmpty bool) bool {
+	if node == nil {
+		return true
+	}
+	if composeEmptyMapping(node) {
+		return !retainEmpty && node.LeadingContent == "" && node.HeadComment == "" && node.LineComment == "" && node.FootComment == ""
+	}
+	return node.Kind == yqlib.ScalarNode && node.Tag == "!!null" && strings.TrimSpace(node.Value) == "" &&
+		node.LeadingContent == "" && node.HeadComment == "" && node.LineComment == "" && node.FootComment == ""
+}
+
+func composeEncodeEntry(key, value *yqlib.CandidateNode) (string, error) {
+	root := newYAMLMappingCandidate()
+	// AddKeyValueChild clones both nodes, so normalizing merge tags for the
+	// standalone block cannot mutate the live compose document.
+	root.AddKeyValueChild(key, value)
+	stripImplicitMergeTags(root)
+	prefs := yamlPreferences()
+	prefs.PrintDocSeparators = false
+	prefs.UnwrapScalar = false
+	var output bytes.Buffer
+	if err := yqlib.NewYamlEncoder(prefs).Encode(&output, root); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(output.String(), "\r\n"), nil
+}
+
+func composeIndentBlock(block string, spaces int) string {
+	prefix := strings.Repeat(" ", spaces)
+	lines := strings.Split(block, "\n")
+	for index, line := range lines {
+		if line != "" {
+			lines[index] = prefix + line
 		}
-		switch character {
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (c *ComposeFile) parseEntryBlock(block, key string) (*yqlib.CandidateNode, *yqlib.CandidateNode, error) {
+	const wrapperKey = "x-sitectl-entry"
+	const anchorWrapperKey = "x-sitectl-anchors"
+	normalizedBlock := strings.TrimRight(block, "\r\n")
+	if len(normalizedBlock)-len(strings.TrimLeft(normalizedBlock, " ")) < 2 {
+		normalizedBlock = composeIndentBlock(normalizedBlock, 2)
+	}
+
+	dummyAnchors := []string{}
+	seenDummyAnchor := map[string]bool{}
+	var parsed *YAMLDocument
+	for {
+		var input strings.Builder
+		if len(dummyAnchors) > 0 {
+			input.WriteString(anchorWrapperKey + ":\n")
+			for index, anchor := range dummyAnchors {
+				_, _ = fmt.Fprintf(&input, "  anchor-%d: &%s {}\n", index, anchor)
 			}
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
-			}
-		case '#':
-			if inSingle || inDouble || (index > 0 && value[index-1] != ' ' && value[index-1] != '\t') {
-				continue
-			}
-			commentStart := index
-			for commentStart > 0 && (value[commentStart-1] == ' ' || value[commentStart-1] == '\t') {
-				commentStart--
-			}
-			return value[:commentStart], value[commentStart:]
 		}
-	}
-	return value, ""
-}
+		input.WriteString(wrapperKey + ":\n")
+		input.WriteString(normalizedBlock)
+		input.WriteByte('\n')
 
-func flexibleDirectChildIndent(lines []string, parentIndex, parentIndent, fallbackStep int) int {
-	end := findBlockEnd(lines, parentIndex, parentIndent)
-	for _, line := range lines[parentIndex+1 : end] {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		indent := leadingSpaces(line)
-		if indent > parentIndent {
-			return indent
-		}
-	}
-	if fallbackStep <= 0 {
-		fallbackStep = 2
-	}
-	return parentIndent + fallbackStep
-}
-
-func flexibleChildStep(lines []string, parentIndex, parentIndent, fallbackStep int) int {
-	childIndent := flexibleDirectChildIndent(lines, parentIndex, parentIndent, fallbackStep)
-	if step := childIndent - parentIndent; step > 0 {
-		return step
-	}
-	if fallbackStep > 0 {
-		return fallbackStep
-	}
-	return 2
-}
-
-type envBlockStyle int
-
-const (
-	envBlock envBlockStyle = iota
-	envInlineEmpty
-)
-
-func findEnvironmentBlock(lines []string, serviceIdx int) (int, envBlockStyle, bool) {
-	serviceEnd := findBlockEnd(lines, serviceIdx, 2)
-	for i := serviceIdx + 1; i < serviceEnd; i++ {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "environment:" {
-			return i, envBlock, true
-		}
-		if trimmed == "environment: {}" {
-			return i, envInlineEmpty, true
-		}
-	}
-	return 0, envBlock, false
-}
-
-func findMapKey(lines []string, start int, key string, indent int) (int, bool) {
-	prefix := strings.Repeat(" ", indent) + key + ":"
-	for i := start; i < len(lines); i++ {
-		line := lines[i]
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		currentIndent := leadingSpaces(line)
-		if currentIndent < indent {
+		var err error
+		parsed, err = LoadYAMLDocument([]byte(input.String()))
+		if err == nil {
 			break
 		}
-		if currentIndent == indent && strings.HasPrefix(line, prefix) {
-			return i, true
+		anchor := composeUnknownAnchor(err)
+		if anchor == "" || seenDummyAnchor[anchor] || len(dummyAnchors) >= 32 {
+			return nil, nil, err
+		}
+		seenDummyAnchor[anchor] = true
+		dummyAnchors = append(dummyAnchors, anchor)
+	}
+	_, _, entries := composeMappingEntry(parsed.node, wrapperKey)
+	_, entryKey, entryValue := composeMappingEntry(entries, key)
+	if entryValue == nil {
+		return nil, nil, fmt.Errorf("block does not define %q", key)
+	}
+	_, _, anchors := composeMappingEntry(parsed.node, anchorWrapperKey)
+	for index := 1; anchors != nil && index < len(anchors.Content); index += 2 {
+		dummy := anchors.Content[index]
+		if actual := composeAnchor(c.doc.node, dummy.Anchor); actual != nil {
+			composeReplaceAlias(entryValue, dummy, actual)
+		} else if err := composeDropUnresolvedMergeAlias(entryValue, dummy); err != nil {
+			return nil, nil, err
 		}
 	}
-	return 0, false
+	return entryKey, entryValue, nil
 }
 
-func findBlockEnd(lines []string, start int, indent int) int {
-	for i := start + 1; i < len(lines); i++ {
-		line := lines[i]
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if leadingSpaces(line) <= indent {
-			return i
+func composeUnknownAnchor(err error) string {
+	const marker = "unknown anchor '"
+	message := err.Error()
+	start := strings.Index(message, marker)
+	if start < 0 {
+		return ""
+	}
+	name := message[start+len(marker):]
+	end := strings.IndexByte(name, '\'')
+	if end <= 0 {
+		return ""
+	}
+	name = name[:end]
+	if strings.Trim(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != "" {
+		return ""
+	}
+	return name
+}
+
+func composeAnchor(node *yqlib.CandidateNode, name string) *yqlib.CandidateNode {
+	if node == nil || name == "" {
+		return nil
+	}
+	if node.Anchor == name {
+		return node
+	}
+	for _, child := range node.Content {
+		if anchor := composeAnchor(child, name); anchor != nil {
+			return anchor
 		}
 	}
-	return len(lines)
+	return nil
 }
 
-func insertLines(lines []string, index int, inserted []string) []string {
-	result := make([]string, 0, len(lines)+len(inserted))
-	result = append(result, lines[:index]...)
-	result = append(result, inserted...)
-	result = append(result, lines[index:]...)
-	return result
-}
-
-func insertionIndexBeforeTrailingBlanks(lines []string, index int) int {
-	for index > 0 && strings.TrimSpace(lines[index-1]) == "" {
-		index--
+func composeReplaceAlias(node, oldAnchor, newAnchor *yqlib.CandidateNode) {
+	if node == nil {
+		return
 	}
-	return index
+	if node.Alias == oldAnchor {
+		node.Alias = newAnchor
+	}
+	for _, child := range node.Content {
+		composeReplaceAlias(child, oldAnchor, newAnchor)
+	}
 }
 
-func leadingSpaces(line string) int {
-	return len(line) - len(strings.TrimLeft(line, " "))
-}
-
-func composeContentLines(lines []string) []string {
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
+func composeDropUnresolvedMergeAlias(node, anchor *yqlib.CandidateNode) error {
+	var deletions []*yqlib.CandidateNode
+	var visit func(*yqlib.CandidateNode) error
+	visit = func(candidate *yqlib.CandidateNode) error {
+		if candidate == nil {
+			return nil
 		}
-		out = append(out, line)
+		if candidate.Alias == anchor {
+			mergeValue := candidate.Key != nil && candidate.Key.Value == "<<"
+			mergeSequence := candidate.Parent != nil && candidate.Parent.Key != nil && candidate.Parent.Key.Value == "<<"
+			if !mergeValue && !mergeSequence {
+				return fmt.Errorf("block references unknown anchor %q outside a merge key", anchor.Anchor)
+			}
+			if mergeSequence && len(candidate.Parent.Content) == 1 {
+				deletions = append(deletions, candidate.Parent)
+			} else {
+				deletions = append(deletions, candidate)
+			}
+			return nil
+		}
+		for _, child := range candidate.Content {
+			if err := visit(child); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	return out
+	if err := visit(node); err != nil {
+		return err
+	}
+	return deleteYAMLCandidates(deletions...)
+}
+
+func composeAddMappingEntry(mapping, key, value *yqlib.CandidateNode) {
+	key.SetParent(mapping)
+	key.IsMapKey = true
+	value.SetParent(mapping)
+	value.IsMapKey = false
+	value.Key = key
+	mapping.Content = append(mapping.Content, key, value)
 }
