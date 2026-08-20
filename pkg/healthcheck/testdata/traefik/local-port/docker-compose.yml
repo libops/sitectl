@@ -1,8 +1,8 @@
 services:
   drupal:
-    image: drupal:latest
+    image: drupal:latest@sha256:369ec2a0bb23e1d6b4a378fbe15e36b52def0bb145c1821b8b33e28c3ec1b490
   traefik:
-    image: traefik:v3
+    image: traefik:v3@sha256:5203c3f39ca70de6790d964624e042463ffbd57715bc82be155cf224c0dd5144
     command: >-
       --entryPoints.http.address=:80
       --providers.file.directory=/etc/traefik/dynamic
