@@ -92,6 +92,7 @@ func init() {
 	)
 
 	registerCoreServiceCommands()
+	RootCmd.AddCommand(hostCommand())
 	discoverAndRegisterPlugins()
 }
 
