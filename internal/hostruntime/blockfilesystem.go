@@ -506,7 +506,7 @@ func persistFilesystems(ctx context.Context, options FilesystemOptions, dataProv
 	if err := os.MkdirAll(filepath.Dir(options.FstabPath), 0o755); err != nil {
 		return err
 	}
-	lock, err := AcquireLock(options.FstabLockPath)
+	lock, err := AcquireLock(ctx, options.FstabLockPath)
 	if err != nil {
 		return err
 	}

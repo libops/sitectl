@@ -744,7 +744,7 @@ func hostAppsLifecycleCommand(manifestPath, dataRoot *string) *cobra.Command {
 		Short: "Run a validated lifecycle for managed applications",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			lock, err := hostruntime.AcquireLock(lockPath)
+			lock, err := hostruntime.AcquireLock(cmd.Context(), lockPath)
 			if err != nil {
 				return err
 			}

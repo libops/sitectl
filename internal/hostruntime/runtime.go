@@ -115,7 +115,7 @@ func InstallManagedRuntime(ctx context.Context, options RuntimeInstallOptions) e
 	if err := requireTrustedRuntimeDirectory(options.StateDir, 0o700, options.TrustedUID); err != nil {
 		return err
 	}
-	lock, err := AcquireLock(filepath.Join(options.StateDir, "runtime.lock"))
+	lock, err := AcquireLock(ctx, filepath.Join(options.StateDir, "runtime.lock"))
 	if err != nil {
 		return err
 	}

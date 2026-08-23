@@ -103,7 +103,7 @@ func ConvergeKeyRotation(ctx context.Context, options KeyRotationOptions) error 
 	if err := os.MkdirAll(filepath.Dir(options.CredentialsFile), 0o750); err != nil {
 		return fmt.Errorf("prepare credential directory: %w", err)
 	}
-	lock, err := AcquireLock(options.CredentialsFile + ".rotation.lock")
+	lock, err := AcquireLock(ctx, options.CredentialsFile+".rotation.lock")
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func RollbackKeyRotation(ctx context.Context, options KeyRotationOptions) error 
 	if err := os.MkdirAll(filepath.Dir(options.CredentialsFile), 0o750); err != nil {
 		return fmt.Errorf("prepare credential directory: %w", err)
 	}
-	lock, err := AcquireLock(options.CredentialsFile + ".rotation.lock")
+	lock, err := AcquireLock(ctx, options.CredentialsFile+".rotation.lock")
 	if err != nil {
 		return err
 	}
@@ -137,7 +137,7 @@ func RetireKeyCredentials(ctx context.Context, options KeyRotationOptions) error
 	if err := os.MkdirAll(filepath.Dir(options.CredentialsFile), 0o750); err != nil {
 		return fmt.Errorf("prepare credential directory: %w", err)
 	}
-	lock, err := AcquireLock(options.CredentialsFile + ".rotation.lock")
+	lock, err := AcquireLock(ctx, options.CredentialsFile+".rotation.lock")
 	if err != nil {
 		return err
 	}

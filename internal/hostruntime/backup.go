@@ -96,7 +96,7 @@ func RunMariaDBBackups(ctx context.Context, manifest Manifest, options BackupOpt
 	if options.RetentionDays < 1 {
 		return fmt.Errorf("backup retention must be positive")
 	}
-	lock, err := AcquireLock(options.LockPath)
+	lock, err := AcquireLock(ctx, options.LockPath)
 	if err != nil {
 		return err
 	}
@@ -176,7 +176,7 @@ func RunOffhostBackup(ctx context.Context, manifest Manifest, options BackupOpti
 	if err := validateDriver(options.Driver); err != nil {
 		return err
 	}
-	lock, err := AcquireLock(options.LockPath)
+	lock, err := AcquireLock(ctx, options.LockPath)
 	if err != nil {
 		return err
 	}

@@ -19,7 +19,7 @@ func PruneDocker(ctx context.Context, until, lockPath string, stdout, stderr io.
 	if !dockerDurationPattern.MatchString(until) {
 		return fmt.Errorf("docker prune duration must look like 168h")
 	}
-	lock, err := AcquireLock(lockPath)
+	lock, err := AcquireLock(ctx, lockPath)
 	if err != nil {
 		return err
 	}
