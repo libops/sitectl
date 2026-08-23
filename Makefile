@@ -1,4 +1,4 @@
-.PHONY: build deps deps-update lint mod-check test work docker integration-test plugins install-plugins publish-aptly-repo install bump-captcha-protect
+.PHONY: build cross-build deps deps-update lint mod-check test work docker integration-test plugins install-plugins publish-aptly-repo install bump-captcha-protect
 
 BINARY_NAME=sitectl
 DOCS_PORT ?= 3000
@@ -20,6 +20,10 @@ work:
 
 build: deps plugins
 	go build -o $(BINARY_NAME) .
+
+cross-build:
+	GOOS=darwin GOARCH=amd64 go build -o /dev/null .
+	GOOS=windows GOARCH=amd64 go build -o /dev/null .
 
 install: build
 	sudo cp $(BINARY_NAME) $(INSTALL_DIR)$(BINARY_NAME)
@@ -51,7 +55,7 @@ lint:
 mod-check:
 	go mod tidy -diff
 
-test: deps
+test: deps cross-build
 	go test -v -race ./...
 
 publish-aptly-repo:
