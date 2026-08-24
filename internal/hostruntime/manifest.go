@@ -19,6 +19,7 @@ type Application struct {
 	Name                string   `json:"name"`
 	DockerComposeRepo   string   `json:"docker_compose_repo"`
 	DockerComposeBranch string   `json:"docker_compose_branch"`
+	RepoPath            string   `json:"repo_path"`
 	ProjectDir          string   `json:"project_dir"`
 	ComposeProjectName  string   `json:"compose_project_name"`
 	IngressPort         int      `json:"ingress_port"`
