@@ -10,7 +10,7 @@ func TestLoadManifestValidatesAndSortsApplications(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "apps.json")
 	contents := `{
-  "zeta":{"name":"zeta","docker_compose_repo":"https://github.com/libops/zeta","docker_compose_branch":"main","repo_path":"libops/zeta.git","project_dir":"` + filepath.Join(root, "zeta") + `","compose_project_name":"zeta","sitectl_context_name":"zeta"},
+  "zeta":{"name":"zeta","docker_compose_repo":"https://github.com/libops/zeta","docker_compose_branch":"main","repo_path":"libops/zeta.git","project_dir":"` + filepath.Join(root, "zeta") + `","compose_project_name":"zeta","sitectl_context_name":"zeta","sitectl_packages":["sitectl","sitectl-zeta"]},
   "alpha":{"name":"alpha","docker_compose_repo":"https://github.com/libops/alpha","docker_compose_branch":"main","project_dir":"` + filepath.Join(root, "alpha") + `","compose_project_name":"alpha","sitectl_context_name":"alpha"}
 }`
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
@@ -26,6 +26,10 @@ func TestLoadManifestValidatesAndSortsApplications(t *testing.T) {
 	}
 	if manifest["zeta"].RepoPath != "libops/zeta.git" {
 		t.Fatalf("RepoPath = %q", manifest["zeta"].RepoPath)
+	}
+	packages := manifest["zeta"].SitectlPackages
+	if len(packages) != 2 || packages[0] != "sitectl" || packages[1] != "sitectl-zeta" {
+		t.Fatalf("SitectlPackages = %v", packages)
 	}
 }
 

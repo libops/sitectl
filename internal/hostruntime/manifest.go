@@ -26,6 +26,7 @@ type Application struct {
 	SitectlContextName  string   `json:"sitectl_context_name"`
 	SitectlPlugin       string   `json:"sitectl_plugin"`
 	SitectlEnvironment  string   `json:"sitectl_environment"`
+	SitectlPackages     []string `json:"sitectl_packages"`
 	SitectlVerifyArgs   []string `json:"sitectl_verify_args"`
 	Ingress             Ingress  `json:"ingress"`
 	InitCommands        []string `json:"init_commands"`
