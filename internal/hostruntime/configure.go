@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -77,6 +78,9 @@ func ConfigureHost(ctx context.Context, options ConfigureOptions) error {
 			return err
 		}
 	}
+	if err := secureSSHAccess(options.RuntimeHome, runtimeID, runtimeID); err != nil {
+		return err
+	}
 	bin := filepath.Join(options.RuntimeHome, "bin")
 	if err := requireDirectory(bin); err != nil {
 		return fmt.Errorf("managed command directory: %w", err)
@@ -127,6 +131,29 @@ func ConfigureHost(ctx context.Context, options ConfigureOptions) error {
 		}
 	}
 	return nil
+}
+
+func secureSSHAccess(home string, uid, gid int) error {
+	directory := filepath.Join(home, ".ssh")
+	if err := secureDirectory(directory, 0o700, uid, gid); err != nil {
+		return fmt.Errorf("secure SSH directory: %w", err)
+	}
+	path := filepath.Join(directory, "authorized_keys")
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	metadata, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || metadata.Nlink != 1 {
+		return fmt.Errorf("unsafe SSH authorized keys file: %s", path)
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func convergeRuntimeAccount(ctx context.Context, stdout, stderr io.Writer) error {
