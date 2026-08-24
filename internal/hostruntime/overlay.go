@@ -26,6 +26,9 @@ type OverlayOptions struct {
 
 // MountOverlays converges the declared Docker volume overlays.
 func MountOverlays(ctx context.Context, options OverlayOptions) error {
+	if len(options.Volumes) == 0 {
+		return nil
+	}
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("overlay mounting must run as root")
 	}

@@ -1,10 +1,21 @@
 package hostruntime
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestMountOverlaysWithoutVolumesIsNoOp(t *testing.T) {
+	options := OverlayOptions{
+		VolumesRoot: filepath.Join(t.TempDir(), "missing-volumes"),
+		LowerRoot:   filepath.Join(t.TempDir(), "missing-lower"),
+	}
+	if err := MountOverlays(context.Background(), options); err != nil {
+		t.Fatalf("MountOverlays() error = %v", err)
+	}
+}
 
 func TestEnsureOverlayDirectoryRejectsSymlinkTraversal(t *testing.T) {
 	root := t.TempDir()
