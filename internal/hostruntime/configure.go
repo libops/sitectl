@@ -18,6 +18,13 @@ import (
 
 const runtimeID = 770077
 
+type managedDirectory struct {
+	path string
+	mode os.FileMode
+	uid  int
+	gid  int
+}
+
 // ConfigureOptions controls root-owned host account and runtime preparation.
 type ConfigureOptions struct {
 	Provider        string
@@ -57,23 +64,7 @@ func ConfigureHost(ctx context.Context, options ConfigureOptions) error {
 			return err
 		}
 	}
-	for _, directory := range []struct {
-		path string
-		mode os.FileMode
-		uid  int
-		gid  int
-	}{
-		{options.RuntimeHome, 0o755, 0, 0},
-		{filepath.Join(options.RuntimeHome, "apps"), 0o750, runtimeID, runtimeID},
-		{filepath.Join(options.RuntimeHome, "state"), 0o750, runtimeID, runtimeID},
-		{filepath.Join(options.RuntimeHome, ".sitectl"), 0o750, runtimeID, runtimeID},
-		{filepath.Join(options.RuntimeHome, ".cache"), 0o750, runtimeID, runtimeID},
-		{filepath.Join(options.RuntimeHome, ".config"), 0o750, runtimeID, runtimeID},
-		{filepath.Join(options.RuntimeHome, ".local"), 0o750, runtimeID, runtimeID},
-		{options.DataRoot, 0o1775, 0, runtimeID},
-		{options.VolumesRoot, 0o775, runtimeID, runtimeID},
-		{filepath.Join(options.DataRoot, "libops"), 0o775, runtimeID, runtimeID},
-	} {
+	for _, directory := range managedHostDirectories(options) {
 		if err := secureDirectory(directory.path, directory.mode, directory.uid, directory.gid); err != nil {
 			return err
 		}
@@ -131,6 +122,22 @@ func ConfigureHost(ctx context.Context, options ConfigureOptions) error {
 		}
 	}
 	return nil
+}
+
+func managedHostDirectories(options ConfigureOptions) []managedDirectory {
+	return []managedDirectory{
+		{options.RuntimeHome, 0o755, 0, 0},
+		{filepath.Join(options.RuntimeHome, "apps"), 0o750, runtimeID, runtimeID},
+		{filepath.Join(options.RuntimeHome, "state"), 0o750, runtimeID, runtimeID},
+		{filepath.Join(options.RuntimeHome, ".sitectl"), 0o750, runtimeID, runtimeID},
+		{filepath.Join(options.RuntimeHome, ".cache"), 0o750, runtimeID, runtimeID},
+		{filepath.Join(options.RuntimeHome, ".config"), 0o750, runtimeID, runtimeID},
+		{filepath.Join(options.RuntimeHome, ".local"), 0o750, runtimeID, runtimeID},
+		{options.DataRoot, 0o1775, 0, runtimeID},
+		{filepath.Join(options.DataRoot, "docker-config"), 0o700, runtimeID, runtimeID},
+		{options.VolumesRoot, 0o775, runtimeID, runtimeID},
+		{filepath.Join(options.DataRoot, "libops"), 0o775, runtimeID, runtimeID},
+	}
 }
 
 func secureSSHAccess(home string, uid, gid int) error {
