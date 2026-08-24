@@ -23,7 +23,10 @@ import (
 	"time"
 )
 
-const maximumRuntimeArchiveBytes = 256 << 20
+const (
+	maximumRuntimeArchiveBytes = 256 << 20
+	runtimeStateMode           = 0o711
+)
 
 var (
 	runtimePackagePattern = regexp.MustCompile(`^sitectl(?:-[a-z0-9]+)*$`)
@@ -109,10 +112,13 @@ func InstallManagedRuntime(ctx context.Context, options RuntimeInstallOptions) e
 	if err := validateDownloadBase(options.APIBase, options.AllowHTTP); err != nil {
 		return fmt.Errorf("API base: %w", err)
 	}
-	if err := ensureSafeDirectory(options.StateDir, 0o700); err != nil {
+	// Published commands are symlinks into the immutable generation. Keep the
+	// state unlistable while allowing the runtime account to traverse the
+	// root-owned path and execute those commands.
+	if err := ensureSafeDirectory(options.StateDir, runtimeStateMode); err != nil {
 		return err
 	}
-	if err := requireTrustedRuntimeDirectory(options.StateDir, 0o700, options.TrustedUID); err != nil {
+	if err := requireTrustedRuntimeDirectory(options.StateDir, runtimeStateMode, options.TrustedUID); err != nil {
 		return err
 	}
 	lock, err := AcquireLock(ctx, filepath.Join(options.StateDir, "runtime.lock"))
@@ -120,7 +126,7 @@ func InstallManagedRuntime(ctx context.Context, options RuntimeInstallOptions) e
 		return err
 	}
 	defer lock.Close()
-	if err := ensureSafeDirectory(filepath.Join(options.StateDir, "generations"), 0o700); err != nil {
+	if err := ensureSafeDirectory(filepath.Join(options.StateDir, "generations"), runtimeStateMode); err != nil {
 		return err
 	}
 	if err := ensureSafeDirectory(options.PublishedDir, 0o755); err != nil {
@@ -171,6 +177,9 @@ func activeRuntimeMatches(packages []string, versions map[string]string, options
 	current := filepath.Join(options.StateDir, "current")
 	target, err := os.Readlink(current)
 	if err != nil || !withinRoot(target, filepath.Join(options.StateDir, "generations")) {
+		return false
+	}
+	if requireTrustedRuntimeDirectory(target, runtimeStateMode, options.TrustedUID) != nil {
 		return false
 	}
 	contents, err := os.ReadFile(filepath.Join(target, "versions.json"))
@@ -401,6 +410,9 @@ func publishRuntimeGeneration(packages []runtimePackage, options RuntimeInstallO
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(stage, "versions.json"), append(metadata, '\n'), 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(stage, runtimeStateMode); err != nil {
 		return err
 	}
 	generation := filepath.Join(generations, strings.TrimPrefix(filepath.Base(stage), ".stage-")+"-"+fmt.Sprint(time.Now().UnixNano()))

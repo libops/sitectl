@@ -53,6 +53,28 @@ func TestInstallManagedRuntimePublishesCompleteGenerationAndRemovesStalePlugin(t
 	if err != nil || filepath.Dir(current) != filepath.Join(state, "generations") {
 		t.Fatalf("current generation = %q, %v", current, err)
 	}
+	for path, want := range map[string]os.FileMode{
+		state:                               runtimeStateMode,
+		filepath.Join(state, "generations"): runtimeStateMode,
+		current:                             runtimeStateMode,
+	} {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("stat %s: %v", path, statErr)
+		}
+		if info.Mode().Perm() != want {
+			t.Fatalf("mode %s = %v; want %v", path, info.Mode().Perm(), want)
+		}
+	}
+	for name := range map[string]string{"sitectl": "core-v2", "sitectl-drupal": "plugin-v2"} {
+		info, statErr := os.Stat(filepath.Join(published, name))
+		if statErr != nil {
+			t.Fatalf("stat published %s: %v", name, statErr)
+		}
+		if info.Mode().Perm()&0o005 != 0o005 {
+			t.Fatalf("published %s is not executable by the runtime account: %v", name, info.Mode().Perm())
+		}
+	}
 	firstRequests := *requests
 	if err := InstallManagedRuntime(context.Background(), RuntimeInstallOptions{
 		StateDir: state, PublishedDir: published, Packages: []string{"sitectl-drupal"},
