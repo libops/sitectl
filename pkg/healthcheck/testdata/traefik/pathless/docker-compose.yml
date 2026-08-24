@@ -2,7 +2,7 @@ services:
   archivesspace:
     image: archivesspace:latest
   traefik:
-    image: traefik:v3
+    image: traefik:v3@sha256:5203c3f39ca70de6790d964624e042463ffbd57715bc82be155cf224c0dd5144
     command:
       - --entryPoints.web.address=:80
       - --providers.file.directory=/etc/traefik/dynamic
