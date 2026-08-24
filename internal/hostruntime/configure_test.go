@@ -6,6 +6,19 @@ import (
 	"testing"
 )
 
+func TestManagedHostDirectoriesAssignDockerConfigToRuntimeAccount(t *testing.T) {
+	options := ConfigureOptions{DataRoot: "/test/data"}
+	for _, directory := range managedHostDirectories(options) {
+		if directory.path == "/test/data/docker-config" {
+			if directory.mode != 0o700 || directory.uid != runtimeID || directory.gid != runtimeID {
+				t.Fatalf("Docker config contract = %#v", directory)
+			}
+			return
+		}
+	}
+	t.Fatal("managed host directories omit Docker config")
+}
+
 func TestSecureSSHAccessRepairsOwnershipModes(t *testing.T) {
 	home := t.TempDir()
 	directory := filepath.Join(home, ".ssh")
